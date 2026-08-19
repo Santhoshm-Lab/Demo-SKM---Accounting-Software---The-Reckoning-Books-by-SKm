@@ -1,0 +1,3285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Reckoning Books by SKm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F4F7F5;
+    --surface:#FFFFFF;
+    --surface-strong:#EEF3EF;
+    --field:#FFFFFF;
+    --border:#E1E7E3;
+    --border-strong:#C7D2CB;
+    --ink:#1B2420;
+    --ink-soft:#5C6B62;
+    --ink-faint:#8B978F;
+    --accent1:#2CA01C;
+    --accent2:#1E7A12;
+    --accent-grad:#2CA01C;
+    --credit:#2CA01C;
+    --credit-bg:rgba(44,160,28,0.11);
+    --debit:#D64545;
+    --debit-bg:rgba(214,69,69,0.10);
+    --gold:#F2994A;
+    --radius:10px;
+    --radius-sm:7px;
+    --radius-btn:6px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;min-height:100vh;color:var(--ink);
+    font-family:'Inter',sans-serif;font-size:13.5px;-webkit-font-smoothing:antialiased;
+    background:var(--bg);
+  }
+  .app{display:flex;flex-direction:column;min-height:100vh;}
+
+  /* Title bar */
+  .titlebar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:14px;letter-spacing:-.01em;}
+  .titlebar span:first-child{color:var(--accent1);}
+  .titlebar .winbtns{display:none;}
+
+  /* Menu bar */
+  .menubar{background:var(--surface);border-bottom:1px solid var(--border);display:flex;gap:4px;padding:7px 16px;font-size:12.5px;}
+  .menubar span{padding:5px 10px;border-radius:var(--radius-sm);cursor:default;color:var(--ink-soft);font-weight:600;transition:all .15s;}
+  .menubar span:hover{background:var(--surface-strong);color:var(--ink);}
+
+  /* Tab strip → pill segmented control */
+  .tabstrip{display:flex;gap:6px;padding:14px 20px 4px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .navtab{font-family:inherit;font-size:12.5px;font-weight:700;padding:8px 16px;background:#fff;border:1px solid var(--border);border-radius:999px;cursor:pointer;color:var(--ink-soft);transition:all .15s;display:inline-flex;align-items:center;gap:7px;}
+  .navtab:hover:not(.active){background:var(--surface-strong);color:var(--ink);border-color:var(--border-strong);}
+  .navtab.active{background:var(--accent1);color:#fff;border-color:var(--accent1);box-shadow:0 3px 10px rgba(44,160,28,0.28);}
+  .tab-icon{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
+  .main{flex:1;min-width:0;padding:20px 24px 50px;overflow-x:auto;}
+
+  /* Status bar */
+  .statusbar{display:flex;justify-content:space-between;background:var(--surface);border-top:1px solid var(--border);padding:0;font-size:11px;color:var(--ink-faint);}
+  .statusbar span{padding:7px 16px;}
+
+  .masthead{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+  .masthead h1{font-family:inherit;font-weight:800;font-size:20px;margin:0;letter-spacing:-.02em;color:var(--ink);}
+  .masthead .sub{font-size:12px;color:var(--ink-soft);margin-top:2px;}
+  .datebadge{font-family:inherit;font-variant-numeric:tabular-nums;font-weight:700;font-size:11.5px;color:var(--ink-soft);border:1px solid var(--border);background:var(--surface-strong);padding:5px 11px;border-radius:999px;}
+
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px;}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:0 1px 2px rgba(20,30,25,0.04);}
+  .stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:8px;font-weight:700;}
+  .stat .val{font-family:inherit;font-variant-numeric:tabular-nums;font-size:21px;font-weight:800;letter-spacing:-.01em;color:var(--ink);}
+  .stat .val.dr{color:var(--debit);}
+  .stat .val.cr{color:var(--credit);}
+
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:18px;overflow:hidden;box-shadow:0 1px 3px rgba(20,30,25,0.05);}
+  .panel-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);}
+  .panel-head h2{font-family:inherit;font-size:14px;font-weight:800;margin:0;letter-spacing:-.01em;color:var(--ink);}
+  .panel-body{padding:16px 18px;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface-strong);}
+  td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top;color:var(--ink);}
+  tr:last-child td{border-bottom:none;}
+  tr:hover td{background:#FAFBFA;}
+  .num{font-family:inherit;font-variant-numeric:tabular-nums;font-weight:600;text-align:right;white-space:nowrap;}
+  .num.dr{color:var(--debit);}
+  .num.cr{color:var(--credit);}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:10.5px;font-family:inherit;font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:.02em;}
+  .pill.dr{background:var(--debit-bg);color:var(--debit);}
+  .pill.cr{background:var(--credit-bg);color:var(--credit);}
+  .muted{color:var(--ink-faint);}
+  .empty{padding:28px;text-align:center;color:var(--ink-faint);font-size:12.5px;}
+
+  button{font-family:'Inter',sans-serif;cursor:pointer;}
+  .btn{background:var(--accent1);color:#fff;border:1px solid var(--accent1);padding:9px 18px;border-radius:var(--radius-btn);font-size:12.5px;font-weight:700;letter-spacing:-.005em;box-shadow:0 1px 2px rgba(44,160,28,0.25);transition:background .12s, box-shadow .12s;}
+  .btn:hover:not(:disabled){background:var(--accent2);border-color:var(--accent2);}
+  .btn:active:not(:disabled){background:var(--accent2);}
+  .btn.secondary{background:#fff;color:var(--ink);border:1px solid var(--border-strong);box-shadow:none;}
+  .btn.secondary:hover:not(:disabled){background:var(--surface-strong);}
+  .btn.small{padding:6px 13px;font-size:11.5px;}
+  .btn:disabled{opacity:.4;cursor:not-allowed;box-shadow:none;}
+
+  select, input[type=text], input[type=date], input[type=number]{
+    font-family:inherit;font-size:12.5px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--field);color:var(--ink);width:100%;transition:border-color .15s, box-shadow .15s;
+  }
+  select:focus, input:focus{outline:none;border-color:var(--accent1);box-shadow:0 0 0 3px rgba(44,160,28,0.16);}
+  input[type=number]{font-variant-numeric:tabular-nums;font-weight:600;text-align:right;}
+  label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);margin-bottom:6px;font-weight:700;}
+  .field{margin-bottom:14px;}
+  .row{display:flex;gap:12px;}
+  .row > *{flex:1;}
+
+  .vtype-tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;}
+  .vtype-tabs button{padding:7px 16px;border-radius:999px;border:1px solid var(--border);background:#fff;font-size:12px;font-weight:600;color:var(--ink-soft);}
+  .vtype-tabs button.active{background:var(--accent1);color:#fff;border-color:var(--accent1);box-shadow:0 3px 10px rgba(44,160,28,0.28);}
+
+  .entry-row{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:8px;margin-bottom:8px;align-items:center;}
+  .entry-row .rm{background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--debit);font-size:14px;padding:6px 10px;font-weight:700;}
+  .entry-row .rm:hover{background:var(--debit-bg);border-color:var(--debit);}
+  .totals-line{display:flex;justify-content:flex-end;gap:26px;padding-top:12px;margin-top:8px;border-top:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:13px;font-weight:700;}
+  .totals-line.balanced{color:var(--credit);}
+  .totals-line.unbalanced{color:var(--debit);}
+
+  .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#1B2420;color:#fff;box-shadow:0 12px 28px rgba(0,0,0,0.25);padding:11px 22px;border-radius:999px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+
+  .section-title{font-family:inherit;font-size:11.5px;font-weight:800;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.06em;margin:22px 0 9px;}
+  .section-title:first-child{margin-top:0;}
+
+  a.linklike{color:var(--accent1);text-decoration:none;cursor:pointer;font-weight:600;}
+  a.linklike:hover{text-decoration:underline;}
+
+  .loading{padding:60px;text-align:center;color:var(--ink-soft);font-size:12px;}
+
+  /* Calendar */
+  .calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+  .calendar-grid .dow{font-size:10px;font-weight:700;text-align:center;padding:6px 0;color:var(--ink-faint);text-transform:uppercase;}
+  .calendar-day{position:relative;min-height:56px;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 8px;cursor:pointer;font-variant-numeric:tabular-nums;font-size:12px;transition:all .12s;}
+  .calendar-day:hover{background:var(--surface-strong);border-color:var(--border-strong);}
+  .calendar-day.empty{background:transparent;border-color:transparent;cursor:default;}
+  .calendar-day.empty:hover{background:transparent;border-color:transparent;}
+  .calendar-day.today{border-color:var(--accent1);box-shadow:0 0 0 1px var(--accent1);}
+  .calendar-day.selected{background:var(--accent1);color:#fff;border-color:var(--accent1);}
+  .calendar-day .count{position:absolute;bottom:4px;right:4px;font-size:9px;background:var(--debit);color:#fff;padding:1px 5px;border-radius:999px;}
+  .calendar-day.selected .count{background:rgba(255,255,255,0.35);color:#fff;}
+  .calendar-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+  .calendar-nav .monthlabel{font-weight:800;font-size:13.5px;letter-spacing:-.01em;color:var(--ink);}
+  .calendar-nav .navbtns{display:flex;gap:6px;}
+
+  /* Gateway — company selection */
+  .gateway-shell{display:flex;align-items:flex-start;justify-content:center;gap:20px;flex-wrap:wrap;min-height:65vh;padding:40px 20px;background:var(--bg);}
+  .gateway-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:380px;color:var(--ink);box-shadow:0 8px 28px rgba(20,30,25,0.08);overflow:hidden;}
+  .gateway-box .gw-title{background:var(--accent1);color:#fff;font-weight:800;padding:14px 18px;font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;}
+  .gateway-list{list-style:none;margin:0;padding:8px;min-height:40px;}
+  .gateway-list li{padding:10px 14px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center;transition:background .12s;}
+  .gateway-list li:hover{background:var(--surface-strong);}
+  .gateway-list .num{display:inline-block;width:22px;color:var(--accent1);font-weight:700;}
+  .gateway-list .co-del{font-size:10px;text-decoration:underline;color:var(--ink-faint);}
+  .gateway-list .co-del:hover{color:var(--debit);}
+  .gateway-empty{padding:16px 18px;font-size:12px;color:var(--ink-faint);}
+  .gateway-hint{padding:10px 18px 14px;font-size:11px;color:var(--ink-faint);border-top:1px solid var(--border);margin-top:2px;}
+  .gateway-form{padding:2px;}
+  .gateway-form label{color:var(--ink-faint);}
+
+  /* Menu dropdown (View) */
+  .menu-dropdown{position:absolute;top:100%;left:0;margin-top:8px;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-sm);box-shadow:0 12px 28px rgba(20,30,25,0.14);min-width:170px;z-index:60;overflow:hidden;text-align:left;}
+  .menu-dropdown a{display:block;padding:9px 14px;font-size:12.5px;color:var(--ink);text-decoration:none;cursor:pointer;font-weight:600;}
+  .menu-dropdown a:hover{background:var(--surface-strong);}
+
+  /* Modal (Edit Company / Help) */
+  .modal-overlay{position:fixed;inset:0;background:rgba(20,30,25,0.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
+  .modal-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:400px;max-width:100%;box-shadow:0 24px 60px rgba(20,30,25,0.25);overflow:hidden;}
+  .modal-card .panel-head{padding:14px 18px;}
+  .modal-card .panel-body{padding:18px;}
+
+  @media (max-width:760px){
+    .grid{grid-template-columns:1fr 1fr;}
+    .main{padding:14px;}
+    .entry-row{grid-template-columns:1fr;}
+    .row{flex-direction:column;}
+    .tabstrip{flex-wrap:wrap;}
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="loading">Opening the books…</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ---------------------------------------------------------------
+   STORAGE SHIM
+   This app expects window.storage (get/set/delete/list), which is
+   provided automatically inside Claude's artifact environment.
+   When this file is downloaded and opened directly in a browser,
+   window.storage doesn't exist — so we polyfill it with an
+   equivalent backed by localStorage, keeping the exact same
+   interface. Everything else in the app works unchanged either way.
+--------------------------------------------------------------- */
+(function(){
+  if (typeof window.storage !== 'undefined') return; // already provided (Claude environment)
+  const LS_PREFIX = 'reckoningBooksBySKm:';
+  window.storage = {
+    async get(key){
+      try{
+        const raw = localStorage.getItem(LS_PREFIX+key);
+        if(raw===null) return null;
+        return { key, value: raw };
+      }catch(e){ return null; }
+    },
+    async set(key, value){
+      try{
+        localStorage.setItem(LS_PREFIX+key, value);
+        return { key, value };
+      }catch(e){ return null; }
+    },
+    async delete(key){
+      try{
+        const existed = localStorage.getItem(LS_PREFIX+key) !== null;
+        localStorage.removeItem(LS_PREFIX+key);
+        return { key, deleted: existed };
+      }catch(e){ return null; }
+    },
+    async list(prefix){
+      try{
+        const keys = [];
+        for(let i=0;i<localStorage.length;i++){
+          const k = localStorage.key(i);
+          if(k && k.indexOf(LS_PREFIX)===0){
+            const stripped = k.slice(LS_PREFIX.length);
+            if(!prefix || stripped.indexOf(prefix)===0) keys.push(stripped);
+          }
+        }
+        return { keys };
+      }catch(e){ return { keys: [] }; }
+    }
+  };
+})();
+
+/* ---------------------------------------------------------------
+   DATA MODEL
+   Ledgers carry a signed opening balance (Dr = positive, Cr = negative)
+   Vouchers carry entries [{ledgerId, dr, cr}] where sum(dr) === sum(cr)
+   Ledger running balance = opening_signed + sum(dr) - sum(cr) across vouchers
+--------------------------------------------------------------- */
+
+const GROUPS = [
+  {id:'cap',  name:'Capital Account',      nature:'Cr', cat:'Capital'},
+  {id:'loan', name:'Loans (Liability)',    nature:'Cr', cat:'Liabilities'},
+  {id:'curl', name:'Current Liabilities',  nature:'Cr', cat:'Liabilities'},
+  {id:'fa',   name:'Fixed Assets',         nature:'Dr', cat:'Assets'},
+  {id:'ca',   name:'Current Assets',       nature:'Dr', cat:'Assets'},
+  {id:'bank', name:'Bank Accounts',        nature:'Dr', cat:'Assets'},
+  {id:'cash', name:'Cash-in-hand',         nature:'Dr', cat:'Assets'},
+  {id:'sales',name:'Sales Account',        nature:'Cr', cat:'Income'},
+  {id:'dinc', name:'Direct Income',        nature:'Cr', cat:'Income'},
+  {id:'purch',name:'Purchase Account',     nature:'Dr', cat:'Expenses'},
+  {id:'dexp', name:'Direct Expenses',      nature:'Dr', cat:'Expenses'},
+  {id:'iexp', name:'Indirect Expenses',    nature:'Dr', cat:'Expenses'},
+];
+
+const VOUCHER_TYPES = ['Payment','Receipt','Contra','Sales','Credit Note','Purchase','Debit Note','Journal'];
+
+const STOCK_GROUPS = ['Primary','Raw Materials','Finished Goods','Trading Goods','Packaging Materials','Consumables'];
+const UNITS = ['PCS','NOS','KG','GM','LTR','MTR','BOX','SET','DZN','BAG'];
+const INDIAN_STATES = [
+  'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh','Goa','Gujarat','Haryana',
+  'Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra','Manipur',
+  'Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana',
+  'Tripura','Uttar Pradesh','Uttarakhand','West Bengal',
+  'Andaman and Nicobar Islands','Chandigarh','Dadra and Nagar Haveli and Daman and Diu','Delhi',
+  'Jammu and Kashmir','Ladakh','Lakshadweep','Puducherry',
+];
+
+const GST_LEDGERS = [
+  {id:'l_ocgst', name:'Output CGST', group:'curl', opening:0, gstType:'output_cgst'},
+  {id:'l_osgst', name:'Output SGST', group:'curl', opening:0, gstType:'output_sgst'},
+  {id:'l_oigst', name:'Output IGST', group:'curl', opening:0, gstType:'output_igst'},
+  {id:'l_icgst', name:'Input CGST',  group:'ca',   opening:0, gstType:'input_cgst'},
+  {id:'l_isgst', name:'Input SGST',  group:'ca',   opening:0, gstType:'input_sgst'},
+  {id:'l_iigst', name:'Input IGST',  group:'ca',   opening:0, gstType:'input_igst'},
+];
+const DEFAULT_LEDGERS = [
+  {id:'l_cash',  name:'Cash',            group:'cash',  opening:0},
+  {id:'l_bank',  name:'Bank Account',    group:'bank',  opening:0},
+  {id:'l_cap',   name:'Capital Account', group:'cap',   opening:0},
+  ...GST_LEDGERS,
+];
+
+let state = {
+  ledgers: [],
+  vouchers: [],
+  items: [],
+  stockAdjustments: [],
+};
+let view = 'dashboard';
+let vform = null; // active voucher form draft
+let calState = { year: new Date().getFullYear(), month: new Date().getMonth(), selected: new Date().toISOString().slice(0,10) };
+let companies = [];
+let currentCompany = null;
+let screen = 'loading'; // 'gateway' | 'app'
+let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
+let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
+let viewMenuOpen = false;  // View menu dropdown toggle
+let editCoDraft = null;    // draft for the Edit Company modal
+let fileMenuOpen = false;  // Gateway File menu dropdown toggle
+let isDetailCategory = null; // which Income Statement line was clicked, for the detail modal
+let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
+let pieChartLedgerId = null; // which ledger's pie chart to show
+let stockDetailItemId = null;  // which item's stock movement modal to show
+let stockAdjustItemId = null;  // which item's adjust-stock modal to show
+
+function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
+function defaultFYStart(){
+  const t = new Date();
+  const y = t.getMonth()>=3 ? t.getFullYear() : t.getFullYear()-1;
+  return `${y}-04-01`;
+}
+function fmt(n){
+  const v = Math.abs(n);
+  const dp = (typeof currentCompany !== 'undefined' && currentCompany && currentCompany.decimalPlaces!=null) ? currentCompany.decimalPlaces : 2;
+  return v.toLocaleString('en-IN',{minimumFractionDigits:dp,maximumFractionDigits:dp});
+}
+function fmtTimestamp(iso){
+  if(!iso) return '—';
+  try{
+    return new Date(iso).toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+  }catch(e){ return '—'; }
+}
+function itemsSummary(v){
+  if(!v.items || !v.items.length) return '';
+  const text = v.items.map(it=>`${it.qty}× ${it.name}`).join(', ');
+  return `<div class="muted" style="font-size:10.5px;margin-top:3px;">Items: ${text}</div>`;
+}
+function groupOf(id){ return GROUPS.find(g=>g.id===id); }
+function ledgerOf(id){ return state.ledgers.find(l=>l.id===id); }
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._h);
+  toast._h = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ---------------- persistence ---------------- */
+async function loadCompanies(){
+  try{
+    const c = await window.storage.get('companies');
+    companies = c ? JSON.parse(c.value) : [];
+  }catch(e){ companies = []; }
+}
+async function saveCompanies(){
+  try{ await window.storage.set('companies', JSON.stringify(companies)); }
+  catch(e){ toast('Could not save companies'); }
+}
+async function migrateLegacyData(){
+  if(companies.length) return;
+  let legacyLedgers = null, legacyVouchers = null;
+  try{ const l = await window.storage.get('ledgers'); legacyLedgers = l ? JSON.parse(l.value) : null; }catch(e){}
+  try{ const v = await window.storage.get('vouchers'); legacyVouchers = v ? JSON.parse(v.value) : null; }catch(e){}
+  if(legacyLedgers || legacyVouchers){
+    const company = { id: uid('co'), name:'My Business', fyStart: defaultFYStart(), gstin:'' };
+    companies.push(company);
+    await saveCompanies();
+    try{ await window.storage.set('ledgers:'+company.id, JSON.stringify(legacyLedgers||DEFAULT_LEDGERS.slice())); }catch(e){}
+    try{ await window.storage.set('vouchers:'+company.id, JSON.stringify(legacyVouchers||[])); }catch(e){}
+  }
+}
+
+/* ---------------- Demo company (sample data) ---------------- */
+const DEMO_COMPANY_ID = 'co_demo';
+const DEMO_DATA_VERSION = 6;
+function demoLedgers(){
+  return [
+    {id:'l_cash', name:'Cash', group:'cash', opening:50000},
+    {id:'l_bank', name:'Bank Account', group:'bank', opening:300000},
+    {id:'l_cap',  name:'Capital Account', group:'cap', opening:-500000},
+    ...GST_LEDGERS.map(l=>({...l})),
+    {id:'l_furniture', name:'Furniture & Fixtures', group:'fa', opening:150000},
+    {id:'l_computer',  name:'Computer Equipment',   group:'fa', opening:150000},
+    {id:'l_loan',      name:'Loan from Bank',       group:'loan', opening:-150000},
+    {id:'l_sales',     name:'Sales Account',        group:'sales', opening:0, gstRate:18},
+    {id:'l_purchase',  name:'Purchase Account',     group:'purch', opening:0, gstRate:18},
+    {id:'l_rent',      name:'Rent Expense',         group:'iexp', opening:0},
+    {id:'l_salaries',  name:'Salaries',             group:'iexp', opening:0},
+    {id:'l_electricity',name:'Electricity Expense', group:'iexp', opening:0},
+    {id:'l_supplies',  name:'Office Supplies',      group:'dexp', opening:0},
+    {id:'l_bankcharges',name:'Bank Charges',        group:'iexp', opening:0},
+    {id:'l_telephone',  name:'Internet & Telephone', group:'iexp', opening:0},
+    {id:'l_depreciation',name:'Depreciation',        group:'iexp', opening:0},
+    {id:'l_commission',name:'Commission Income',    group:'dinc', opening:0},
+    {id:'l_cust1',     name:'Rahul Traders (Customer)', group:'ca', opening:0},
+    {id:'l_cust2',     name:'Nova Retail (Customer)',   group:'ca', opening:0},
+    {id:'l_supp1',     name:'Om Enterprises (Supplier)', group:'curl', opening:0},
+    {id:'l_supp2',     name:'Prime Suppliers (Supplier)', group:'curl', opening:0},
+  ];
+}
+function demoVouchers(){
+  const v = (type,date,narration,entries,items) => {
+    const voucher = {id: uid('v'), type, date, narration, entries};
+    if(items) voucher.items = items;
+    return voucher;
+  };
+  return [
+    v('Payment','2026-06-01','Office rent for June',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
+    v('Sales','2026-06-05','Sale of goods — Invoice #101',[
+      {ledgerId:'l_cust1',dr:118000,cr:0},
+      {ledgerId:'l_sales',dr:0,cr:100000},
+      {ledgerId:'l_ocgst',dr:0,cr:9000},
+      {ledgerId:'l_osgst',dr:0,cr:9000},
+    ], [{itemId:'i_widgetA', name:'Widget A', qty:200, rate:500}]),
+    v('Purchase','2026-06-08','Purchase of raw materials',[
+      {ledgerId:'l_purchase',dr:60000,cr:0},
+      {ledgerId:'l_icgst',dr:5400,cr:0},
+      {ledgerId:'l_isgst',dr:5400,cr:0},
+      {ledgerId:'l_supp1',dr:0,cr:70800},
+    ], [{itemId:'i_rawmat', name:'Raw Material Roll', qty:400, rate:150}]),
+    v('Receipt','2026-06-20','Received payment from Rahul Traders — Invoice #101',[{ledgerId:'l_bank',dr:118000,cr:0},{ledgerId:'l_cust1',dr:0,cr:118000}]),
+    v('Payment','2026-06-25','Paid Om Enterprises for purchase',[{ledgerId:'l_supp1',dr:70800,cr:0},{ledgerId:'l_bank',dr:0,cr:70800}]),
+    v('Payment','2026-06-30','Staff salaries for June',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
+    v('Payment','2026-07-01','Office rent for July',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
+    v('Sales','2026-07-04','Sale of goods — Invoice #102 (interstate)',[
+      {ledgerId:'l_cust2',dr:177000,cr:0},
+      {ledgerId:'l_sales',dr:0,cr:150000},
+      {ledgerId:'l_oigst',dr:0,cr:27000},
+    ], [{itemId:'i_widgetB', name:'Widget B', qty:125, rate:1200}]),
+    v('Purchase','2026-07-07','Purchase of packaging material (interstate)',[
+      {ledgerId:'l_purchase',dr:40000,cr:0},
+      {ledgerId:'l_iigst',dr:7200,cr:0},
+      {ledgerId:'l_supp2',dr:0,cr:47200},
+    ], [{itemId:'i_packaging', name:'Packaging Material', qty:500, rate:80}]),
+    v('Payment','2026-07-10','Electricity bill for July',[{ledgerId:'l_electricity',dr:8000,cr:0},{ledgerId:'l_bank',dr:0,cr:8000}]),
+    v('Receipt','2026-07-15','Commission received',[{ledgerId:'l_cash',dr:15000,cr:0},{ledgerId:'l_commission',dr:0,cr:15000}]),
+    v('Receipt','2026-07-20','Partial payment received from Nova Retail',[{ledgerId:'l_bank',dr:100000,cr:0},{ledgerId:'l_cust2',dr:0,cr:100000}]),
+    v('Payment','2026-07-31','Staff salaries for July',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
+    v('Contra','2026-08-02','Cash withdrawn from bank for petty expenses',[{ledgerId:'l_cash',dr:20000,cr:0},{ledgerId:'l_bank',dr:0,cr:20000}]),
+    v('Payment','2026-08-01','Office rent for August',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
+    v('Payment','2026-08-05','Purchased stationery',[{ledgerId:'l_supplies',dr:6000,cr:0},{ledgerId:'l_cash',dr:0,cr:6000}]),
+    v('Sales','2026-08-08','Sale of goods — Invoice #103',[
+      {ledgerId:'l_cust1',dr:94400,cr:0},
+      {ledgerId:'l_sales',dr:0,cr:80000},
+      {ledgerId:'l_ocgst',dr:0,cr:7200},
+      {ledgerId:'l_osgst',dr:0,cr:7200},
+    ], [{itemId:'i_widgetA', name:'Widget A', qty:160, rate:500}]),
+    v('Journal','2026-08-12','Bank charges debited by bank',[{ledgerId:'l_bankcharges',dr:500,cr:0},{ledgerId:'l_bank',dr:0,cr:500}]),
+    v('Receipt','2026-08-18','Payment received from Nova Retail',[{ledgerId:'l_bank',dr:47000,cr:0},{ledgerId:'l_cust2',dr:0,cr:47000}]),
+    v('Credit Note','2026-08-20','Sales return — Credit Note against Invoice #103',[
+      {ledgerId:'l_sales',dr:10000,cr:0},
+      {ledgerId:'l_ocgst',dr:900,cr:0},
+      {ledgerId:'l_osgst',dr:900,cr:0},
+      {ledgerId:'l_cust1',dr:0,cr:11800},
+    ], [{itemId:'i_widgetA', name:'Widget A', qty:20, rate:500}]),
+    v('Debit Note','2026-08-22','Purchase return — Debit Note to Prime Suppliers (interstate)',[
+      {ledgerId:'l_supp2',dr:5900,cr:0},
+      {ledgerId:'l_purchase',dr:0,cr:5000},
+      {ledgerId:'l_iigst',dr:0,cr:900},
+    ], [{itemId:'i_packaging', name:'Packaging Material', qty:62.5, rate:80}]),
+    v('Payment','2026-08-31','Staff salaries for August',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
+    v('Payment','2026-09-01','Office rent for September',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
+    v('Sales','2026-09-03','Sale of goods — Invoice #104',[
+      {ledgerId:'l_cust2',dr:70800,cr:0},
+      {ledgerId:'l_sales',dr:0,cr:60000},
+      {ledgerId:'l_ocgst',dr:0,cr:5400},
+      {ledgerId:'l_osgst',dr:0,cr:5400},
+    ]),
+    v('Purchase','2026-09-06','Purchase of raw materials — repeat order',[
+      {ledgerId:'l_purchase',dr:35000,cr:0},
+      {ledgerId:'l_icgst',dr:3150,cr:0},
+      {ledgerId:'l_isgst',dr:3150,cr:0},
+      {ledgerId:'l_supp1',dr:0,cr:41300},
+    ], [{itemId:'i_rawmat', name:'Raw Material Roll', qty:233.33, rate:150}]),
+    v('Receipt','2026-09-10','Partial payment received from Rahul Traders',[{ledgerId:'l_bank',dr:50000,cr:0},{ledgerId:'l_cust1',dr:0,cr:50000}]),
+    v('Payment','2026-09-12','Paid Prime Suppliers — balance settled',[{ledgerId:'l_supp2',dr:41300,cr:0},{ledgerId:'l_bank',dr:0,cr:41300}]),
+    v('Receipt','2026-09-15','Commission received',[{ledgerId:'l_cash',dr:8000,cr:0},{ledgerId:'l_commission',dr:0,cr:8000}]),
+    v('Contra','2026-09-18','Cash deposited into bank',[{ledgerId:'l_bank',dr:10000,cr:0},{ledgerId:'l_cash',dr:0,cr:10000}]),
+    v('Payment','2026-09-20','Internet and telephone bill',[{ledgerId:'l_telephone',dr:3500,cr:0},{ledgerId:'l_bank',dr:0,cr:3500}]),
+    v('Sales','2026-09-22','Cash sale of goods',[
+      {ledgerId:'l_cash',dr:23600,cr:0},
+      {ledgerId:'l_sales',dr:0,cr:20000},
+      {ledgerId:'l_ocgst',dr:0,cr:1800},
+      {ledgerId:'l_osgst',dr:0,cr:1800},
+    ], [{itemId:'i_widgetA', name:'Widget A', qty:40, rate:500}]),
+    v('Purchase','2026-09-25','Cash purchase of supplies (interstate)',[
+      {ledgerId:'l_purchase',dr:8000,cr:0},
+      {ledgerId:'l_iigst',dr:1440,cr:0},
+      {ledgerId:'l_cash',dr:0,cr:9440},
+    ], [{itemId:'i_packaging', name:'Packaging Material', qty:100, rate:80}]),
+    v('Payment','2026-09-30','Staff salaries for September',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
+    v('Journal','2026-09-30','Depreciation on computer equipment',[{ledgerId:'l_depreciation',dr:5000,cr:0},{ledgerId:'l_computer',dr:0,cr:5000}]),
+  ];
+}
+function demoItems(){
+  return [
+    {id:'i_widgetA', name:'Widget A', group:'Finished Goods', unit:'PCS', hsn:'8471', rate:500, gstRate:18, openingQty:500, openingRate:420, reorderLevel:100},
+    {id:'i_widgetB', name:'Widget B', group:'Finished Goods', unit:'PCS', hsn:'8471', rate:1200, gstRate:18, openingQty:150, openingRate:950, reorderLevel:30},
+    {id:'i_rawmat', name:'Raw Material Roll', group:'Raw Materials', unit:'KG', hsn:'3920', rate:150, gstRate:18, openingQty:200, openingRate:130, reorderLevel:100},
+    {id:'i_packaging', name:'Packaging Material', group:'Packaging Materials', unit:'BOX', hsn:'4819', rate:80, gstRate:18, openingQty:100, openingRate:65, reorderLevel:50},
+  ];
+}
+async function ensureDemoCompany(){
+  const existing = companies.find(c=>c.id===DEMO_COMPANY_ID);
+  if(!existing){
+    const company = { id: DEMO_COMPANY_ID, name:'Demo Company (Sample Data)', fyStart:'2026-04-01', gstin:'29ABCDE1234F1Z5', demoVersion: DEMO_DATA_VERSION };
+    companies.unshift(company);
+    await saveCompanies();
+    try{ await window.storage.set('ledgers:'+DEMO_COMPANY_ID, JSON.stringify(demoLedgers())); }catch(e){}
+    try{ await window.storage.set('vouchers:'+DEMO_COMPANY_ID, JSON.stringify(demoVouchers())); }catch(e){}
+    try{ await window.storage.set('items:'+DEMO_COMPANY_ID, JSON.stringify(demoItems())); }catch(e){}
+    return;
+  }
+  if(existing.demoVersion !== DEMO_DATA_VERSION){
+    existing.demoVersion = DEMO_DATA_VERSION;
+    await saveCompanies();
+    try{ await window.storage.set('ledgers:'+DEMO_COMPANY_ID, JSON.stringify(demoLedgers())); }catch(e){}
+    try{ await window.storage.set('vouchers:'+DEMO_COMPANY_ID, JSON.stringify(demoVouchers())); }catch(e){}
+    try{ await window.storage.set('items:'+DEMO_COMPANY_ID, JSON.stringify(demoItems())); }catch(e){}
+  }
+}
+
+async function loadState(){
+  const cid = currentCompany.id;
+  try{
+    const l = await window.storage.get('ledgers:'+cid);
+    state.ledgers = l ? JSON.parse(l.value) : DEFAULT_LEDGERS.slice();
+  }catch(e){ state.ledgers = DEFAULT_LEDGERS.slice(); }
+  try{
+    const v = await window.storage.get('vouchers:'+cid);
+    state.vouchers = v ? JSON.parse(v.value) : [];
+  }catch(e){ state.vouchers = []; }
+  try{
+    const it = await window.storage.get('items:'+cid);
+    state.items = it ? JSON.parse(it.value) : [];
+  }catch(e){ state.items = []; }
+  try{
+    const sa = await window.storage.get('stockadj:'+cid);
+    state.stockAdjustments = sa ? JSON.parse(sa.value) : [];
+  }catch(e){ state.stockAdjustments = []; }
+  if(!state.ledgers.length) state.ledgers = DEFAULT_LEDGERS.slice();
+  if(ensureCoreLedgers()) await saveLedgers();
+}
+function ensureCoreLedgers(){
+  let changed = false;
+  for(const dl of DEFAULT_LEDGERS){
+    if(!state.ledgers.find(l=>l.id===dl.id)){ state.ledgers.push({...dl}); changed = true; }
+  }
+  return changed;
+}
+async function saveLedgers(){
+  try{ await window.storage.set('ledgers:'+currentCompany.id, JSON.stringify(state.ledgers)); }
+  catch(e){ toast('Could not save ledgers'); }
+}
+async function saveVouchers(){
+  try{ await window.storage.set('vouchers:'+currentCompany.id, JSON.stringify(state.vouchers)); }
+  catch(e){ toast('Could not save vouchers'); }
+}
+async function saveItems(){
+  try{ await window.storage.set('items:'+currentCompany.id, JSON.stringify(state.items)); }
+  catch(e){ toast('Could not save items'); }
+}
+async function saveStockAdjustments(){
+  try{ await window.storage.set('stockadj:'+currentCompany.id, JSON.stringify(state.stockAdjustments)); }
+  catch(e){ toast('Could not save stock adjustments'); }
+}
+
+/* ---------------- balance computation ---------------- */
+function ledgerBalance(ledgerId){
+  const l = ledgerOf(ledgerId);
+  if(!l) return 0;
+  let bal = l.opening || 0;
+  for(const v of state.vouchers){
+    for(const e of v.entries){
+      if(e.ledgerId === ledgerId){
+        bal += (e.dr||0) - (e.cr||0);
+      }
+    }
+  }
+  return bal;
+}
+function balanceLabel(signed){
+  return signed >= 0 ? 'Dr' : 'Cr';
+}
+
+function totalsByCategory(cat){
+  return state.ledgers
+    .filter(l => groupOf(l.group).cat === cat)
+    .reduce((sum,l)=> sum + ledgerBalance(l.id), 0);
+}
+
+function gstOutputTotal(){ return -(ledgerBalance('l_ocgst')+ledgerBalance('l_osgst')+ledgerBalance('l_oigst')); }
+function gstInputTotal(){ return ledgerBalance('l_icgst')+ledgerBalance('l_isgst')+ledgerBalance('l_iigst'); }
+
+function r2(n){ return Number((n||0).toFixed(2)); }
+
+/* ---------------- IFRS statement data ---------------- */
+function fmtRatio(x){ return x==null ? '—' : x.toFixed(2); }
+function fmtPct(x){ return x==null ? '—' : x.toFixed(1)+'%'; }
+function fmtDays(x){ return x==null ? '—' : Math.round(x)+' days'; }
+
+function incomeStatementData(){
+  const revenueLedgers = state.ledgers.filter(l=>l.group==='sales');
+  const revenue = revenueLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const otherIncomeLedgers = state.ledgers.filter(l=>l.group==='dinc');
+  const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const costOfSalesLedgers = state.ledgers.filter(l=>l.group==='purch');
+  const costOfSales = costOfSalesLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const grossProfit = revenue - costOfSales;
+
+  const distributionLedgers = state.ledgers.filter(l=>l.group==='dexp');
+  const distributionCosts = distributionLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const allIndirect = state.ledgers.filter(l=>l.group==='iexp');
+  const financeLedgers = allIndirect.filter(l=>/interest|bank charge/i.test(l.name));
+  const adminLedgers = allIndirect.filter(l=>!/interest|bank charge/i.test(l.name));
+  const financeCosts = financeLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const adminExpenses = adminLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const operatingProfit = grossProfit + otherIncome - distributionCosts - adminExpenses;
+  const profitBeforeTax = operatingProfit - financeCosts;
+  const taxExpense = 0; // no dedicated income-tax ledger tracked separately from GST in this system
+  const profitForPeriod = profitBeforeTax - taxExpense;
+
+  return { revenue, revenueLedgers, otherIncome, otherIncomeLedgers, costOfSales, costOfSalesLedgers, grossProfit,
+    distributionLedgers, distributionCosts, adminLedgers, adminExpenses, financeLedgers, financeCosts,
+    operatingProfit, profitBeforeTax, taxExpense, profitForPeriod };
+}
+
+function balanceSheetIFRSData(profit){
+  const nonCurrentAssets = state.ledgers.filter(l=>l.group==='fa');
+  const nonCurrentAssetsTotal = nonCurrentAssets.reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const currentAssets = state.ledgers.filter(l=>['cash','bank','ca'].includes(l.group));
+  const currentAssetsTotal = currentAssets.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
+
+  const equityLedgers = state.ledgers.filter(l=>l.group==='cap');
+  const equityBase = equityLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const totalEquity = equityBase + profit;
+
+  const nonCurrentLiabilities = state.ledgers.filter(l=>l.group==='loan');
+  const nonCurrentLiabTotal = nonCurrentLiabilities.reduce((s,l)=>s-ledgerBalance(l.id),0);
+
+  const currentLiabilities = state.ledgers.filter(l=>l.group==='curl');
+  const currentLiabTotal = currentLiabilities.reduce((s,l)=>s-ledgerBalance(l.id),0);
+
+  const totalEquityAndLiab = totalEquity + nonCurrentLiabTotal + currentLiabTotal;
+
+  return { nonCurrentAssets, nonCurrentAssetsTotal, currentAssets, currentAssetsTotal, totalAssets,
+    equityLedgers, equityBase, totalEquity, nonCurrentLiabilities, nonCurrentLiabTotal,
+    currentLiabilities, currentLiabTotal, totalEquityAndLiab };
+}
+
+function ratioAnalysisData(is, bs){
+  const currentAssets = bs.currentAssetsTotal;
+  const currentLiab = bs.currentLiabTotal;
+  const cashAndBank = state.ledgers.filter(l=>['cash','bank'].includes(l.group)).reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const receivableLedgers = state.ledgers.filter(l=>l.group==='ca' && !l.gstType);
+  const receivables = receivableLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const payableLedgers = state.ledgers.filter(l=>l.group==='curl' && !l.gstType);
+  const payables = payableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+
+  const quickAssets = cashAndBank + receivables;
+
+  const currentRatio = currentLiab ? currentAssets/currentLiab : null;
+  const quickRatio = currentLiab ? quickAssets/currentLiab : null;
+  const cashRatio = currentLiab ? cashAndBank/currentLiab : null;
+  const workingCapital = currentAssets - currentLiab;
+
+  const totalLiab = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
+  const debtToEquity = bs.totalEquity ? totalLiab/bs.totalEquity : null;
+  const debtRatio = bs.totalAssets ? totalLiab/bs.totalAssets : null;
+  const equityRatio = bs.totalAssets ? bs.totalEquity/bs.totalAssets : null;
+
+  const grossMargin = is.revenue ? is.grossProfit/is.revenue*100 : null;
+  const operatingMargin = is.revenue ? is.operatingProfit/is.revenue*100 : null;
+  const netMargin = is.revenue ? is.profitForPeriod/is.revenue*100 : null;
+  const roa = bs.totalAssets ? is.profitForPeriod/bs.totalAssets*100 : null;
+  const roe = bs.totalEquity ? is.profitForPeriod/bs.totalEquity*100 : null;
+  const assetTurnover = bs.totalAssets ? is.revenue/bs.totalAssets : null;
+
+  const receivablesTurnover = receivables ? is.revenue/receivables : null;
+  const dso = receivablesTurnover ? 365/receivablesTurnover : null;
+  const payablesTurnover = payables ? is.costOfSales/payables : null;
+  const dpo = payablesTurnover ? 365/payablesTurnover : null;
+
+  return { currentRatio, quickRatio, cashRatio, workingCapital, debtToEquity, debtRatio, equityRatio,
+    grossMargin, operatingMargin, netMargin, roa, roe, assetTurnover, receivablesTurnover, dso, payablesTurnover, dpo };
+}
+
+function cashFlowClassify(voucher){
+  const others = voucher.entries.filter(e=>{
+    const l = ledgerOf(e.ledgerId);
+    return l && l.group!=='cash' && l.group!=='bank';
+  });
+  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && l.group==='fa'; })) return 'investing';
+  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && (l.group==='cap'||l.group==='loan'); })) return 'financing';
+  return 'operating';
+}
+function cashFlowData(){
+  let operating=0, investing=0, financing=0;
+  const detail = {operating:[], investing:[], financing:[]};
+  for(const v of state.vouchers){
+    if(v.type==='Contra') continue;
+    for(const e of v.entries){
+      const l = ledgerOf(e.ledgerId);
+      if(!l || (l.group!=='cash' && l.group!=='bank')) continue;
+      const net = (e.dr||0)-(e.cr||0);
+      if(Math.abs(net)<0.001) continue;
+      const cls = cashFlowClassify(v);
+      if(cls==='investing') investing+=net;
+      else if(cls==='financing') financing+=net;
+      else operating+=net;
+      detail[cls].push({date:v.date, type:v.type, narration:v.narration||v.type, ledger:l.name, amount:net});
+    }
+  }
+  const openingCash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank').reduce((s,l)=>s+(l.opening||0),0);
+  const netChange = operating+investing+financing;
+  const closingCash = openingCash+netChange;
+  const actualCash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank').reduce((s,l)=>s+ledgerBalance(l.id),0);
+  return { operating, investing, financing, netChange, openingCash, closingCash, actualCash, detail };
+}
+
+function buildIncomeStatementSheet(is){
+  const rows = [
+    ['Statement of Profit or Loss'],[],
+    ['Revenue', r2(is.revenue)],
+    ['Cost of Sales', r2(-is.costOfSales)],
+    ['Gross Profit', r2(is.grossProfit)],
+    ['Other Income', r2(is.otherIncome)],
+    ['Distribution Costs', r2(-is.distributionCosts)],
+    ['Administrative Expenses', r2(-is.adminExpenses)],
+    ['Operating Profit', r2(is.operatingProfit)],
+    ['Finance Costs', r2(-is.financeCosts)],
+    ['Profit Before Tax', r2(is.profitBeforeTax)],
+    ['Income Tax Expense', r2(-is.taxExpense)],
+    ['Profit for the Period', r2(is.profitForPeriod)],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+function buildBalanceSheetIFRSSheet(bs){
+  const rows = [
+    ['Statement of Financial Position'],[],
+    ['ASSETS'],
+    ['Non-current Assets'],
+    ...bs.nonCurrentAssets.map(l=>['  '+l.name, r2(ledgerBalance(l.id))]),
+    ['Total Non-current Assets', r2(bs.nonCurrentAssetsTotal)],[],
+    ['Current Assets'],
+    ...bs.currentAssets.map(l=>['  '+l.name, r2(ledgerBalance(l.id))]),
+    ['Total Current Assets', r2(bs.currentAssetsTotal)],[],
+    ['TOTAL ASSETS', r2(bs.totalAssets)],[],
+    ['EQUITY AND LIABILITIES'],
+    ['Equity'],
+    ...bs.equityLedgers.map(l=>['  '+l.name, r2(-ledgerBalance(l.id))]),
+    ['  Retained Earnings (Profit for the Period)', r2(bs.totalEquity-bs.equityBase)],
+    ['Total Equity', r2(bs.totalEquity)],[],
+    ['Non-current Liabilities'],
+    ...bs.nonCurrentLiabilities.map(l=>['  '+l.name, r2(-ledgerBalance(l.id))]),
+    ['Total Non-current Liabilities', r2(bs.nonCurrentLiabTotal)],[],
+    ['Current Liabilities'],
+    ...bs.currentLiabilities.map(l=>['  '+l.name, r2(-ledgerBalance(l.id))]),
+    ['Total Current Liabilities', r2(bs.currentLiabTotal)],[],
+    ['TOTAL EQUITY AND LIABILITIES', r2(bs.totalEquityAndLiab)],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+function buildRatiosSheet(ratios){
+  const rows = [
+    ['Ratio Analysis'],[],
+    ['Liquidity Ratios'],
+    ['Current Ratio', fmtRatio(ratios.currentRatio)],
+    ['Quick Ratio', fmtRatio(ratios.quickRatio)],
+    ['Cash Ratio', fmtRatio(ratios.cashRatio)],
+    ['Working Capital', r2(ratios.workingCapital)],[],
+    ['Solvency / Leverage Ratios'],
+    ['Debt-to-Equity Ratio', fmtRatio(ratios.debtToEquity)],
+    ['Debt Ratio', fmtRatio(ratios.debtRatio)],
+    ['Equity Ratio', fmtRatio(ratios.equityRatio)],[],
+    ['Profitability Ratios'],
+    ['Gross Profit Margin', fmtPct(ratios.grossMargin)],
+    ['Operating Profit Margin', fmtPct(ratios.operatingMargin)],
+    ['Net Profit Margin', fmtPct(ratios.netMargin)],
+    ['Return on Assets (ROA)', fmtPct(ratios.roa)],
+    ['Return on Equity (ROE)', fmtPct(ratios.roe)],[],
+    ['Efficiency Ratios'],
+    ['Asset Turnover', fmtRatio(ratios.assetTurnover)],
+    ['Trade Receivables Turnover', fmtRatio(ratios.receivablesTurnover)],
+    ['Days Sales Outstanding', fmtDays(ratios.dso)],
+    ['Trade Payables Turnover', fmtRatio(ratios.payablesTurnover)],
+    ['Days Payable Outstanding', fmtDays(ratios.dpo)],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+function buildCashFlowSheet(cf){
+  const rows = [
+    ['Statement of Cash Flows (Direct Method)'],[],
+    ['Cash Flows from Operating Activities'],
+    ...cf.detail.operating.map(d=>['  '+d.date+' — '+d.narration+' ('+d.ledger+')', r2(d.amount)]),
+    ['Net Cash from Operating Activities', r2(cf.operating)],[],
+    ['Cash Flows from Investing Activities'],
+    ...cf.detail.investing.map(d=>['  '+d.date+' — '+d.narration+' ('+d.ledger+')', r2(d.amount)]),
+    ['Net Cash from Investing Activities', r2(cf.investing)],[],
+    ['Cash Flows from Financing Activities'],
+    ...cf.detail.financing.map(d=>['  '+d.date+' — '+d.narration+' ('+d.ledger+')', r2(d.amount)]),
+    ['Net Cash from Financing Activities', r2(cf.financing)],[],
+    ['Net Increase / (Decrease) in Cash', r2(cf.netChange)],
+    ['Cash and Cash Equivalents — Opening', r2(cf.openingCash)],
+    ['Cash and Cash Equivalents — Closing', r2(cf.closingCash)],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+
+function buildReportsWorkbook(){
+  const wb = XLSX.utils.book_new();
+
+  const tb = state.ledgers.map(l=>({name:l.name, b:ledgerBalance(l.id)}));
+  let tbDr=0, tbCr=0;
+  const tbData = [['Ledger','Debit','Credit']];
+  tb.forEach(r=>{
+    tbData.push([r.name, r.b>0?r2(r.b):'', r.b<0?r2(-r.b):'']);
+    if(r.b>0) tbDr+=r.b; else tbCr+=-r.b;
+  });
+  tbData.push(['Total', r2(tbDr), r2(tbCr)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(tbData), 'Trial Balance');
+
+  const is = incomeStatementData();
+  XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(is), 'Income Statement');
+
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  XLSX.utils.book_append_sheet(wb, buildBalanceSheetIFRSSheet(bs), 'Balance Sheet');
+
+  const ratios = ratioAnalysisData(is, bs);
+  XLSX.utils.book_append_sheet(wb, buildRatiosSheet(ratios), 'Ratio Analysis');
+
+  const cf = cashFlowData();
+  XLSX.utils.book_append_sheet(wb, buildCashFlowSheet(cf), 'Cash Flow Statement');
+
+  return wb;
+}
+function exportReportsToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const wb = buildReportsWorkbook();
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  const filename = `${safeName}_Reports_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  toast('Reports exported to Excel');
+}
+function exportPLToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const is = incomeStatementData();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(is), 'Income Statement');
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  XLSX.writeFile(wb, `${safeName}_Income_Statement_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Income Statement exported to Excel');
+}
+function exportBalanceSheetToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildBalanceSheetIFRSSheet(bs), 'Balance Sheet');
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  XLSX.writeFile(wb, `${safeName}_Balance_Sheet_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Balance Sheet exported to Excel');
+}
+function exportRatiosToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const ratios = ratioAnalysisData(is, bs);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildRatiosSheet(ratios), 'Ratio Analysis');
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  XLSX.writeFile(wb, `${safeName}_Ratio_Analysis_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Ratio Analysis exported to Excel');
+}
+function exportCashFlowToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const cf = cashFlowData();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildCashFlowSheet(cf), 'Cash Flow Statement');
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  XLSX.writeFile(wb, `${safeName}_Cash_Flow_Statement_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Cash Flow Statement exported to Excel');
+}
+
+/* ---------------- Inventory ---------------- */
+function itemVoucherDirection(type){
+  if(type==='Purchase' || type==='Credit Note') return 1;  // inward: purchase in, sales-returned goods back in
+  if(type==='Sales' || type==='Debit Note') return -1;      // outward: sold out, returned-to-supplier out
+  return 0;
+}
+function stockMovementForItem(itemId){
+  const moves = [];
+  const sorted = state.vouchers.slice().sort((a,b)=> a.date.localeCompare(b.date));
+  for(const v of sorted){
+    if(!v.items) continue;
+    const dir = itemVoucherDirection(v.type);
+    if(dir===0) continue;
+    for(const it of v.items){
+      if(it.itemId===itemId && it.qty>0){
+        moves.push({date:v.date, type:v.type, narration:v.narration||v.type, qty:it.qty, dir});
+      }
+    }
+  }
+  for(const adj of state.stockAdjustments){
+    if(adj.itemId===itemId){
+      moves.push({date:adj.date, type:'Adjustment', narration:adj.reason||'Stock adjustment', qty:Math.abs(adj.qty), dir: adj.qty>=0?1:-1});
+    }
+  }
+  moves.sort((a,b)=> a.date.localeCompare(b.date));
+  return moves;
+}
+function stockSummaryForItem(item){
+  const moves = stockMovementForItem(item.id);
+  let qty = item.openingQty||0;
+  let inward=0, outward=0;
+  moves.forEach(m=>{
+    if(m.dir>0){ qty+=m.qty; inward+=m.qty; }
+    else { qty-=m.qty; outward+=m.qty; }
+  });
+  const rate = item.rate!=null ? item.rate : (item.openingRate||0);
+  return { opening:item.openingQty||0, inward, outward, closing:qty, value: qty*rate };
+}
+function stockSummaryAll(){
+  return state.items.map(it=>({ item: it, summary: stockSummaryForItem(it) }));
+}
+
+function gstBreakdownForVoucher(v){
+  let ocgst=0,osgst=0,oigst=0,icgst=0,isgst=0,iigst=0;
+  for(const e of v.entries){
+    if(e.ledgerId==='l_ocgst') ocgst += (e.cr||0)-(e.dr||0);
+    if(e.ledgerId==='l_osgst') osgst += (e.cr||0)-(e.dr||0);
+    if(e.ledgerId==='l_oigst') oigst += (e.cr||0)-(e.dr||0);
+    if(e.ledgerId==='l_icgst') icgst += (e.dr||0)-(e.cr||0);
+    if(e.ledgerId==='l_isgst') isgst += (e.dr||0)-(e.cr||0);
+    if(e.ledgerId==='l_iigst') iigst += (e.dr||0)-(e.cr||0);
+  }
+  const cgst = ocgst+icgst, sgst = osgst+isgst, igst = oigst+iigst;
+  const totalTax = cgst+sgst+igst;
+  return { cgst, sgst, igst, totalTax };
+}
+
+function buildGSTStatementWorkbook(){
+  const wb = XLSX.utils.book_new();
+  const netGST = gstOutputTotal() - gstInputTotal();
+
+  // Summary sheet
+  const summary = [
+    ['GST Statement', currentCompany.name],
+    ['Generated on', new Date().toLocaleDateString('en-IN')],
+    [],
+    ['Tax Head','Output (Payable)','Input (Credit)'],
+    ['CGST', r2(-ledgerBalance('l_ocgst')), r2(ledgerBalance('l_icgst'))],
+    ['SGST', r2(-ledgerBalance('l_osgst')), r2(ledgerBalance('l_isgst'))],
+    ['IGST', r2(-ledgerBalance('l_oigst')), r2(ledgerBalance('l_iigst'))],
+    ['Total', r2(gstOutputTotal()), r2(gstInputTotal())],
+    [],
+    ['Net GST', netGST>=0?'Payable':'Refundable / Carried Forward', r2(Math.abs(netGST))],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+
+  // Outward supplies (Sales)
+  const outward = [['Date','Voucher','Narration','Taxable Value','CGST','SGST','IGST','Total Tax','Invoice Value']];
+  let outTotals = {taxable:0,cgst:0,sgst:0,igst:0,tax:0,invoice:0};
+  state.vouchers.filter(v=>v.type==='Sales').forEach(v=>{
+    const g = gstBreakdownForVoucher(v);
+    if(g.totalTax<=0) return;
+    const invoice = voucherAmount(v);
+    const taxable = invoice - g.totalTax;
+    outward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]);
+    outTotals.taxable+=taxable; outTotals.cgst+=g.cgst; outTotals.sgst+=g.sgst; outTotals.igst+=g.igst; outTotals.tax+=g.totalTax; outTotals.invoice+=invoice;
+  });
+  if(outward.length>1) outward.push(['Total','','', r2(outTotals.taxable), r2(outTotals.cgst), r2(outTotals.sgst), r2(outTotals.igst), r2(outTotals.tax), r2(outTotals.invoice)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(outward), 'Outward Supplies (Sales)');
+
+  // Inward supplies (Purchase)
+  const inward = [['Date','Voucher','Narration','Taxable Value','CGST','SGST','IGST','Total Tax','Invoice Value']];
+  let inTotals = {taxable:0,cgst:0,sgst:0,igst:0,tax:0,invoice:0};
+  state.vouchers.filter(v=>v.type==='Purchase').forEach(v=>{
+    const g = gstBreakdownForVoucher(v);
+    if(g.totalTax<=0) return;
+    const invoice = voucherAmount(v);
+    const taxable = invoice - g.totalTax;
+    inward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]);
+    inTotals.taxable+=taxable; inTotals.cgst+=g.cgst; inTotals.sgst+=g.sgst; inTotals.igst+=g.igst; inTotals.tax+=g.totalTax; inTotals.invoice+=invoice;
+  });
+  if(inward.length>1) inward.push(['Total','','', r2(inTotals.taxable), r2(inTotals.cgst), r2(inTotals.sgst), r2(inTotals.igst), r2(inTotals.tax), r2(inTotals.invoice)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inward), 'Inward Supplies (Purchase)');
+
+  return wb;
+}
+function downloadGSTStatement(){
+  if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
+  const wb = buildGSTStatementWorkbook();
+  const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
+  const filename = `${safeName}_GST_Statement_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  toast('GST statement downloaded');
+}
+
+function netProfit(){
+  // Income ledgers carry Cr nature -> their signed balance is negative when in credit
+  const income = -totalsByCategory('Income');   // positive number = income earned
+  const expense = totalsByCategory('Expenses'); // positive number = expense incurred
+  return income - expense;
+}
+
+/* ---------------- rendering ---------------- */
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="titlebar">
+      <span>The Reckoning Books by SKm — [Company: ${currentCompany.name}]</span>
+      <span class="winbtns"><span>_</span><span>▢</span><span>✕</span></span>
+    </div>
+    <div class="menubar">
+      <span id="menuCompany">Company</span>
+      <span id="menuEdit">Edit</span>
+      <span id="menuView" style="position:relative;">View${viewMenuOpen?viewDropdown():''}</span>
+      <span id="menuHelp">Help</span>
+    </div>
+    <div class="tabstrip">
+      ${tab('dashboard','Dashboard')}
+      ${tab('voucher','Voucher')}
+      ${tab('daybook','Day Book')}
+      ${tab('calendar','Calendar')}
+      ${tab('ledgers','Ledgers')}
+      ${tab('coa','Accounts')}
+      ${tab('inventory','Inventory')}
+      ${tab('reports','Reports')}
+      ${tab('gst','GST')}
+    </div>
+    <div class="main">${renderView()}</div>
+    <div class="statusbar">
+      <span>Ready</span>
+      <span>Ledgers: ${state.ledgers.length}</span>
+      <span>Vouchers: ${state.vouchers.length}</span>
+      <span>Items: ${state.items.length}</span>
+    </div>
+    ${modal==='editCompany' ? editCompanyModal() : ''}
+    ${modal==='help' ? helpModal() : ''}
+    ${modal==='isDetail' ? incomeDetailModal() : ''}
+    ${modal==='ledgerDetail' ? ledgerDetailModal() : ''}
+    ${modal==='pieChart' ? pieChartModal() : ''}
+    ${modal==='stockDetail' ? itemStockModal() : ''}
+    ${modal==='stockAdjust' ? stockAdjustModal() : ''}
+    ${modal==='recentVouchers' ? recentVouchersModal() : ''}
+    ${modal==='balanceSheetDetail' ? balanceSheetDetailModal() : ''}
+    ${modal==='incomeStatementDetail' ? incomeStatementDetailModal() : ''}
+  `;
+  attachHandlers();
+
+  document.getElementById('menuCompany').addEventListener('click', ()=>{
+    screen = 'gateway';
+    renderGateway();
+  });
+  document.getElementById('menuEdit').addEventListener('click', ()=>{
+    editCoDraft = {
+      name: currentCompany.name,
+      directory: currentCompany.directory||'',
+      mailingName: currentCompany.mailingName||'',
+      address: currentCompany.address||'',
+      state: currentCompany.state||'',
+      pincode: currentCompany.pincode||'',
+      country: currentCompany.country||'India',
+      phone: currentCompany.phone||'',
+      mobile: currentCompany.mobile||'',
+      email: currentCompany.email||'',
+      website: currentCompany.website||'',
+      fyStart: currentCompany.fyStart||'',
+      booksFrom: currentCompany.booksFrom||currentCompany.fyStart||'',
+      gstin: currentCompany.gstin||'',
+      pan: currentCompany.pan||'',
+      currencySymbol: currentCompany.currencySymbol||'₹',
+      currencyFormalName: currentCompany.currencyFormalName||'INR',
+      decimalPlaces: currentCompany.decimalPlaces!=null ? currentCompany.decimalPlaces : 2,
+      fractionUnit: currentCompany.fractionUnit||'Paisa',
+      suffixSymbol: !!currentCompany.suffixSymbol,
+    };
+    modal = 'editCompany';
+    render();
+  });
+  document.getElementById('menuView').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    viewMenuOpen = !viewMenuOpen;
+    render();
+  });
+  document.getElementById('menuHelp').addEventListener('click', ()=>{
+    modal = 'help';
+    render();
+  });
+
+  if(viewMenuOpen){
+    document.querySelectorAll('[data-view-jump]').forEach(el=>{
+      el.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        view = el.dataset.viewJump;
+        viewMenuOpen = false;
+        render();
+      });
+    });
+  }
+
+  if(modal){
+    document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='modalOverlayBg'){ modal = null; render(); }
+    });
+    document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; render(); });
+  }
+  if(modal==='editCompany'){
+    document.getElementById('editCoName').addEventListener('input', e=> editCoDraft.name = e.target.value);
+    document.getElementById('editCoDirectory').addEventListener('input', e=> editCoDraft.directory = e.target.value);
+    document.getElementById('editCoMailingName').addEventListener('input', e=> editCoDraft.mailingName = e.target.value);
+    document.getElementById('editCoAddress').addEventListener('input', e=> editCoDraft.address = e.target.value);
+    document.getElementById('editCoState').addEventListener('change', e=> editCoDraft.state = e.target.value);
+    document.getElementById('editCoPincode').addEventListener('input', e=> editCoDraft.pincode = e.target.value);
+    document.getElementById('editCoCountry').addEventListener('input', e=> editCoDraft.country = e.target.value);
+    document.getElementById('editCoPhone').addEventListener('input', e=> editCoDraft.phone = e.target.value);
+    document.getElementById('editCoMobile').addEventListener('input', e=> editCoDraft.mobile = e.target.value);
+    document.getElementById('editCoEmail').addEventListener('input', e=> editCoDraft.email = e.target.value);
+    document.getElementById('editCoWebsite').addEventListener('input', e=> editCoDraft.website = e.target.value);
+    document.getElementById('editCoFY').addEventListener('input', e=> editCoDraft.fyStart = e.target.value);
+    document.getElementById('editCoBooksFrom').addEventListener('input', e=> editCoDraft.booksFrom = e.target.value);
+    document.getElementById('editCoGSTIN').addEventListener('input', e=> editCoDraft.gstin = e.target.value);
+    document.getElementById('editCoPAN').addEventListener('input', e=> editCoDraft.pan = e.target.value);
+    document.getElementById('editCoCurrencySymbol').addEventListener('input', e=> editCoDraft.currencySymbol = e.target.value);
+    document.getElementById('editCoCurrencyFormalName').addEventListener('input', e=> editCoDraft.currencyFormalName = e.target.value);
+    document.getElementById('editCoDecimalPlaces').addEventListener('change', e=> editCoDraft.decimalPlaces = Number(e.target.value));
+    document.getElementById('editCoFractionUnit').addEventListener('input', e=> editCoDraft.fractionUnit = e.target.value);
+    document.getElementById('editCoSuffixSymbol').addEventListener('change', e=> editCoDraft.suffixSymbol = e.target.checked);
+    document.getElementById('saveCoEditBtn').addEventListener('click', async ()=>{
+      if(!editCoDraft.name.trim()){ toast('Enter a company name'); return; }
+      Object.assign(currentCompany, {
+        name: editCoDraft.name.trim(),
+        directory: editCoDraft.directory.trim(),
+        mailingName: editCoDraft.mailingName.trim(),
+        address: editCoDraft.address.trim(),
+        state: editCoDraft.state,
+        pincode: editCoDraft.pincode.trim(),
+        country: editCoDraft.country.trim() || 'India',
+        phone: editCoDraft.phone.trim(),
+        mobile: editCoDraft.mobile.trim(),
+        email: editCoDraft.email.trim(),
+        website: editCoDraft.website.trim(),
+        fyStart: editCoDraft.fyStart,
+        booksFrom: editCoDraft.booksFrom || editCoDraft.fyStart,
+        gstin: editCoDraft.gstin.trim(),
+        pan: editCoDraft.pan.trim(),
+        currencySymbol: editCoDraft.currencySymbol.trim() || '₹',
+        currencyFormalName: editCoDraft.currencyFormalName.trim() || 'INR',
+        decimalPlaces: editCoDraft.decimalPlaces,
+        fractionUnit: editCoDraft.fractionUnit.trim() || 'Paisa',
+        suffixSymbol: editCoDraft.suffixSymbol,
+      });
+      const idx = companies.findIndex(c=>c.id===currentCompany.id);
+      if(idx>-1) companies[idx] = currentCompany;
+      await saveCompanies();
+      toast('Company details updated');
+      modal = null;
+      render();
+    });
+  }
+}
+function tabIcon(id){
+  const icons = {
+    dashboard: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>',
+    voucher: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    daybook: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
+    calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+    ledgers: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+    coa: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+    inventory: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+    reports: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+    gst: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  };
+  return `<svg class="tab-icon" viewBox="0 0 24 24">${icons[id]||''}</svg>`;
+}
+function tab(id,label){
+  return `<button class="navtab ${view===id?'active':''}" data-tab="${id}">${tabIcon(id)}<span>${label}</span></button>`;
+}
+function viewDropdown(){
+  const tabs = [
+    ['dashboard','Dashboard'],['voucher','Voucher'],['daybook','Day Book'],['calendar','Calendar'],
+    ['ledgers','Ledgers'],['coa','Accounts'],['inventory','Inventory'],['reports','Reports'],['gst','GST']
+  ];
+  return `<div class="menu-dropdown">${tabs.map(([id,label])=>`<a data-view-jump="${id}">${label}</a>`).join('')}</div>`;
+}
+function editCompanyModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:460px;">
+        <div class="panel-head"><h2>Edit Company</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;">
+          <div class="field"><label>Company Name</label><input type="text" id="editCoName" value="${escapeAttr(editCoDraft.name)}"></div>
+          <div class="field"><label>Directory</label><input type="text" id="editCoDirectory" value="${escapeAttr(editCoDraft.directory)}"></div>
+          <div class="field"><label>Mailing Name (if different)</label><input type="text" id="editCoMailingName" value="${escapeAttr(editCoDraft.mailingName)}"></div>
+          <div class="field"><label>Address</label><input type="text" id="editCoAddress" value="${escapeAttr(editCoDraft.address)}"></div>
+          <div class="row">
+            <div class="field" style="flex:2;"><label>State</label>
+              <select id="editCoState">
+                <option value="">— Select —</option>
+                ${INDIAN_STATES.map(s=>`<option value="${s}" ${editCoDraft.state===s?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field" style="flex:1;"><label>Pincode</label><input type="text" id="editCoPincode" value="${escapeAttr(editCoDraft.pincode)}"></div>
+          </div>
+          <div class="field"><label>Country</label><input type="text" id="editCoCountry" value="${escapeAttr(editCoDraft.country||'India')}"></div>
+
+          <div class="section-title" style="margin-top:14px;">Contact Details</div>
+          <div class="row">
+            <div class="field"><label>Phone</label><input type="text" id="editCoPhone" value="${escapeAttr(editCoDraft.phone)}"></div>
+            <div class="field"><label>Mobile</label><input type="text" id="editCoMobile" value="${escapeAttr(editCoDraft.mobile)}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Email</label><input type="text" id="editCoEmail" value="${escapeAttr(editCoDraft.email)}"></div>
+            <div class="field"><label>Website</label><input type="text" id="editCoWebsite" value="${escapeAttr(editCoDraft.website)}"></div>
+          </div>
+
+          <div class="section-title" style="margin-top:14px;">Financial Year Details</div>
+          <div class="row">
+            <div class="field"><label>Financial Year Begins From</label><input type="date" id="editCoFY" value="${editCoDraft.fyStart}"></div>
+            <div class="field"><label>Books Beginning From</label><input type="date" id="editCoBooksFrom" value="${editCoDraft.booksFrom||editCoDraft.fyStart}"></div>
+          </div>
+
+          <div class="section-title" style="margin-top:14px;">Tax Registration Details</div>
+          <div class="field"><label>GSTIN / UIN (optional)</label><input type="text" id="editCoGSTIN" value="${escapeAttr(editCoDraft.gstin)}" placeholder="22AAAAA0000A1Z5"></div>
+          <div class="field"><label>PAN / Income Tax No. (optional)</label><input type="text" id="editCoPAN" value="${escapeAttr(editCoDraft.pan)}" placeholder="AAAAA0000A"></div>
+
+          <div class="section-title" style="margin-top:14px;">Base Currency Information</div>
+          <div class="row">
+            <div class="field"><label>Base Currency Symbol</label><input type="text" id="editCoCurrencySymbol" value="${escapeAttr(editCoDraft.currencySymbol||'₹')}"></div>
+            <div class="field"><label>Formal Name</label><input type="text" id="editCoCurrencyFormalName" value="${escapeAttr(editCoDraft.currencyFormalName||'INR')}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Decimal Places</label>
+              <select id="editCoDecimalPlaces">
+                ${[0,1,2,3,4].map(d=>`<option value="${d}" ${Number(editCoDraft.decimalPlaces)===d?'selected':''}>${d}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Fraction Unit</label><input type="text" id="editCoFractionUnit" value="${escapeAttr(editCoDraft.fractionUnit||'Paisa')}"></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:2px;">
+            <input type="checkbox" id="editCoSuffixSymbol" style="width:auto;" ${editCoDraft.suffixSymbol?'checked':''}> Show symbol after the amount
+          </label>
+
+          <button class="btn" id="saveCoEditBtn" type="button" style="width:100%;margin-top:8px;">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function incomeDetailModal(){
+  const is = incomeStatementData();
+  const map = {
+    revenue:      { label:'Revenue',                 ledgers: is.revenueLedgers,      sign:-1, total: is.revenue },
+    costOfSales:  { label:'Cost of Sales',            ledgers: is.costOfSalesLedgers,  sign: 1, total: is.costOfSales },
+    otherIncome:  { label:'Other Income',             ledgers: is.otherIncomeLedgers,  sign:-1, total: is.otherIncome },
+    distribution: { label:'Distribution Costs',       ledgers: is.distributionLedgers, sign: 1, total: is.distributionCosts },
+    admin:        { label:'Administrative Expenses',  ledgers: is.adminLedgers,        sign: 1, total: is.adminExpenses },
+    finance:      { label:'Finance Costs',            ledgers: is.financeLedgers,      sign: 1, total: is.financeCosts },
+  };
+  const d = map[isDetailCategory];
+  if(!d) return '';
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:440px;">
+        <div class="panel-head"><h2>${d.label}</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="padding:0;">
+          <table>
+            <tr><th>Ledger</th><th class="num">Amount</th></tr>
+            ${d.ledgers.map(l=>`<tr><td>${l.name}</td><td class="num">₹${fmt(d.sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">No ledgers in this category yet.</td></tr>`}
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Total</td><td class="num">₹${fmt(d.total)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function ledgerDetailModal(){
+  if(!ledgerDetailId) return '';
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;position:relative;">
+        <button class="btn secondary small" id="modalClose" type="button" style="position:absolute;top:14px;right:14px;z-index:2;">✕</button>
+        <div style="padding:18px;max-height:75vh;overflow-y:auto;">
+          ${ledgerStatement(ledgerDetailId)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+const PIE_COLORS = ['#2CA01C','#4F8EF7','#F2994A','#A78BFA','#D64545','#F59E0B','#14B8A6','#EC4899'];
+function ledgerTypeBreakdown(ledgerId){
+  const totals = {};
+  for(const v of state.vouchers){
+    for(const e of v.entries){
+      if(e.ledgerId===ledgerId){
+        const amt = (e.dr||0)+(e.cr||0);
+        if(amt>0) totals[v.type] = (totals[v.type]||0) + amt;
+      }
+    }
+  }
+  return totals;
+}
+function pieChartModal(){
+  if(!pieChartLedgerId) return '';
+  const l = ledgerOf(pieChartLedgerId);
+  if(!l) return '';
+  const totals = ledgerTypeBreakdown(pieChartLedgerId);
+  const entries = Object.entries(totals).sort((a,b)=>b[1]-a[1]);
+  const grandTotal = entries.reduce((s,[,v])=>s+v,0);
+
+  let gradientStops = '';
+  let legendRows = '';
+  if(grandTotal>0){
+    let cursor = 0;
+    entries.forEach(([type,amt],i)=>{
+      const pct = amt/grandTotal*100;
+      const color = PIE_COLORS[i % PIE_COLORS.length];
+      gradientStops += `${color} ${cursor}% ${cursor+pct}%, `;
+      cursor += pct;
+      legendRows += `
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 0;">
+          <span style="display:flex;align-items:center;gap:8px;"><span style="width:11px;height:11px;border-radius:2px;background:${color};display:inline-block;"></span>${type}</span>
+          <span style="color:var(--ink-soft);">₹${fmt(amt)} <span class="muted">(${pct.toFixed(1)}%)</span></span>
+        </div>`;
+    });
+    gradientStops = gradientStops.slice(0, -2);
+  }
+
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:420px;">
+        <div class="panel-head"><h2>${l.name} — Activity Breakdown</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          ${grandTotal>0 ? `
+            <div style="display:flex;justify-content:center;margin-bottom:16px;">
+              <div style="width:180px;height:180px;border-radius:50%;background:conic-gradient(${gradientStops});box-shadow:0 2px 10px rgba(0,0,0,0.08);"></div>
+            </div>
+            <div style="border-top:1px solid var(--border);padding-top:6px;">${legendRows}</div>
+            <p class="muted" style="font-size:11px;margin-top:10px;">Breakdown by voucher type, based on total transaction volume (Dr + Cr) recorded against this ledger.</p>
+          ` : `<div class="empty">No transactions on this ledger yet.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function itemStockModal(){
+  if(!stockDetailItemId) return '';
+  const item = state.items.find(i=>i.id===stockDetailItemId);
+  if(!item) return '';
+  const moves = stockMovementForItem(item.id);
+  let running = item.openingQty||0;
+  const rows = moves.map(m=>{
+    running += m.dir>0 ? m.qty : -m.qty;
+    return {...m, running};
+  });
+  const summary = stockSummaryForItem(item);
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;">
+        <div class="panel-head">
+          <h2>${item.name} — Stock Movement</h2>
+          <button class="btn secondary small" id="modalClose" type="button">✕</button>
+        </div>
+        <div class="panel-body" style="padding:0;max-height:70vh;overflow-y:auto;">
+          <table>
+            <tr><th>Date</th><th>Voucher</th><th class="num">In</th><th class="num">Out</th><th class="num">Balance</th></tr>
+            <tr><td class="muted">—</td><td class="muted">Opening Stock</td><td class="num"></td><td class="num"></td><td class="num">${fmt(item.openingQty||0)} ${item.unit||''}</td></tr>
+            ${rows.map(r=>`<tr>
+              <td class="muted">${r.date}</td>
+              <td>${r.type} — ${r.narration}</td>
+              <td class="num cr">${r.dir>0?fmt(r.qty):''}</td>
+              <td class="num dr">${r.dir<0?fmt(r.qty):''}</td>
+              <td class="num">${fmt(r.running)} ${item.unit||''}</td>
+            </tr>`).join('') || `<tr><td colspan="5" class="empty">No stock movement recorded yet.</td></tr>`}
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="4">Closing Stock</td><td class="num">${fmt(summary.closing)} ${item.unit||''}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function stockAdjustModal(){
+  if(!stockAdjustItemId) return '';
+  const item = state.items.find(i=>i.id===stockAdjustItemId);
+  if(!item) return '';
+  const summary = stockSummaryForItem(item);
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:400px;">
+        <div class="panel-head"><h2>Adjust Stock</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;">${item.name} — current stock: <strong style="color:var(--ink);">${fmt(summary.closing)} ${item.unit||''}</strong></p>
+          <div class="field"><label>Adjustment Quantity (+ to add, − to remove)</label><input type="number" id="stockAdjQty" step="0.01" placeholder="e.g. -5 or 10"></div>
+          <div class="field"><label>Reason</label><input type="text" id="stockAdjReason" placeholder="e.g. Physical count correction, damage"></div>
+          <button class="btn" id="saveStockAdjBtn" type="button" style="width:100%;">Save Adjustment</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function balanceSheetDetailModal(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const rows = (ledgers, sign) => ledgers.map(l=>`<tr><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">None</td></tr>`;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:520px;">
+        <div class="panel-head"><h2>Balance Sheet — Statement of Financial Position</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th colspan="2">Non-current Assets</th></tr>
+            ${rows(bs.nonCurrentAssets,1)}
+            <tr style="font-weight:700;"><td>Total Non-current Assets</td><td class="num">₹${fmt(bs.nonCurrentAssetsTotal)}</td></tr>
+            <tr><th colspan="2">Current Assets</th></tr>
+            ${rows(bs.currentAssets,1)}
+            <tr style="font-weight:700;"><td>Total Current Assets</td><td class="num">₹${fmt(bs.currentAssetsTotal)}</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>TOTAL ASSETS</td><td class="num">₹${fmt(bs.totalAssets)}</td></tr>
+            <tr><th colspan="2">Equity</th></tr>
+            ${rows(bs.equityLedgers,-1)}
+            <tr><td>&nbsp;&nbsp;Retained Earnings (Profit for the Period)</td><td class="num">₹${fmt(bs.totalEquity-bs.equityBase)}</td></tr>
+            <tr style="font-weight:700;"><td>Total Equity</td><td class="num">₹${fmt(bs.totalEquity)}</td></tr>
+            <tr><th colspan="2">Non-current Liabilities</th></tr>
+            ${rows(bs.nonCurrentLiabilities,-1)}
+            <tr style="font-weight:700;"><td>Total Non-current Liabilities</td><td class="num">₹${fmt(bs.nonCurrentLiabTotal)}</td></tr>
+            <tr><th colspan="2">Current Liabilities</th></tr>
+            ${rows(bs.currentLiabilities,-1)}
+            <tr style="font-weight:700;"><td>Total Current Liabilities</td><td class="num">₹${fmt(bs.currentLiabTotal)}</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>TOTAL EQUITY AND LIABILITIES</td><td class="num">₹${fmt(bs.totalEquityAndLiab)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function incomeStatementDetailModal(){
+  const is = incomeStatementData();
+  const rows = (ledgers, sign) => ledgers.map(l=>`<tr><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">None</td></tr>`;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:520px;">
+        <div class="panel-head"><h2>Income Statement — Statement of Profit or Loss</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th colspan="2">Revenue</th></tr>
+            ${rows(is.revenueLedgers,-1)}
+            <tr style="font-weight:700;"><td>Total Revenue</td><td class="num">₹${fmt(is.revenue)}</td></tr>
+            <tr><th colspan="2">Cost of Sales</th></tr>
+            ${rows(is.costOfSalesLedgers,1)}
+            <tr style="font-weight:700;"><td>Total Cost of Sales</td><td class="num dr">(₹${fmt(is.costOfSales)})</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Gross Profit</td><td class="num">₹${fmt(is.grossProfit)}</td></tr>
+            <tr><th colspan="2">Other Income</th></tr>
+            ${rows(is.otherIncomeLedgers,-1)}
+            <tr style="font-weight:700;"><td>Total Other Income</td><td class="num">₹${fmt(is.otherIncome)}</td></tr>
+            <tr><th colspan="2">Distribution Costs</th></tr>
+            ${rows(is.distributionLedgers,1)}
+            <tr style="font-weight:700;"><td>Total Distribution Costs</td><td class="num dr">(₹${fmt(is.distributionCosts)})</td></tr>
+            <tr><th colspan="2">Administrative Expenses</th></tr>
+            ${rows(is.adminLedgers,1)}
+            <tr style="font-weight:700;"><td>Total Administrative Expenses</td><td class="num dr">(₹${fmt(is.adminExpenses)})</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Operating Profit</td><td class="num">₹${fmt(is.operatingProfit)}</td></tr>
+            <tr><th colspan="2">Finance Costs</th></tr>
+            ${rows(is.financeLedgers,1)}
+            <tr style="font-weight:700;"><td>Total Finance Costs</td><td class="num dr">(₹${fmt(is.financeCosts)})</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit Before Tax</td><td class="num">₹${fmt(is.profitBeforeTax)}</td></tr>
+            <tr><td>Income Tax Expense</td><td class="num dr">(₹${fmt(is.taxExpense)})</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit for the Period</td><td class="num ${is.profitForPeriod>=0?'cr':'dr'}">₹${fmt(is.profitForPeriod)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function helpModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card">
+        <div class="panel-head"><h2>Help</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.7;">
+            <strong style="color:var(--ink);">The Reckoning Books by SKm</strong> is a double-entry accounting workspace.<br><br>
+            • <strong style="color:var(--ink);">Voucher</strong> — record Payment, Receipt, Sales, Purchase, Journal, or Contra entries.<br>
+            • <strong style="color:var(--ink);">Day Book / Calendar</strong> — browse, edit, or delete past vouchers.<br>
+            • <strong style="color:var(--ink);">Ledgers</strong> — view running balances per account.<br>
+            • <strong style="color:var(--ink);">Accounts</strong> — manage your chart of accounts and GST rates.<br>
+            • <strong style="color:var(--ink);">Reports</strong> — Trial Balance, Profit &amp; Loss, Balance Sheet — exportable to Excel.<br>
+            • <strong style="color:var(--ink);">GST</strong> — output/input tax summary and a downloadable GST statement.<br><br>
+            Use <strong style="color:var(--ink);">Company</strong> to switch companies, and <strong style="color:var(--ink);">Edit</strong> to update this company's name, financial year, or GSTIN.
+          </p>
+          <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+            This software is created by Santhosh Kumar MuraliKrishnan.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------------- Gateway of Tally — company selection ---------------- */
+function renderGateway(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="titlebar">
+      <span>The Reckoning Books by SKm — Company Info</span>
+      <span class="winbtns"><span>_</span><span>▢</span><span>✕</span></span>
+    </div>
+    <div class="menubar">
+      <span id="gwMenuFile" style="position:relative;">File${fileMenuOpen?fileDropdown():''}</span>
+      <span id="gwMenuCompany">Company</span>
+      <span id="gwMenuHelp">Help</span>
+    </div>
+    <div class="gateway-shell">
+      <div class="gateway-box">
+        <div class="gw-title">Main Window — Select Company</div>
+        ${companies.length ? `<ul class="gateway-list">
+          ${companies.map((c,i)=>`<li data-select-co="${c.id}"><span><span class="num">${i+1}.</span>${c.name}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:6px;">Sample</span>':''}</span><span class="co-del" data-delete-co="${c.id}">Delete</span></li>`).join('')}
+        </ul>` : `<div class="gateway-empty">No companies yet. Create one to begin →</div>`}
+        <div class="gateway-hint">Select a company to load its books, or create a new one.</div>
+      </div>
+      <div class="gateway-box gateway-form" style="width:520px;">
+        <div class="gw-title">Create Company</div>
+        <div style="padding:14px 16px;max-height:70vh;overflow-y:auto;">
+          <label>Company Name</label>
+          <input type="text" id="coName" placeholder="e.g. Sunrise Traders" value="${escapeAttr(coform.name)}">
+          <label>Directory</label>
+          <input type="text" id="coDirectory" placeholder="Auto-filled from company name" value="${escapeAttr(coform.directory)}">
+          <label>Mailing Name (if different)</label>
+          <input type="text" id="coMailingName" placeholder="Same as company name if left blank" value="${escapeAttr(coform.mailingName)}">
+          <label>Address</label>
+          <input type="text" id="coAddress" placeholder="Building, street, area" value="${escapeAttr(coform.address)}">
+          <div class="row" style="gap:10px;">
+            <div style="flex:2;">
+              <label>State</label>
+              <select id="coState">
+                <option value="">— Select —</option>
+                ${INDIAN_STATES.map(s=>`<option value="${s}" ${coform.state===s?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label>Pincode</label>
+              <input type="text" id="coPincode" placeholder="e.g. 600001" value="${escapeAttr(coform.pincode)}">
+            </div>
+          </div>
+          <label>Country</label>
+          <input type="text" id="coCountry" value="${escapeAttr(coform.country||'India')}">
+
+          <div class="section-title" style="margin-top:16px;">Contact Details</div>
+          <div class="row" style="gap:10px;">
+            <div style="flex:1;">
+              <label>Phone</label>
+              <input type="text" id="coPhone" placeholder="Landline" value="${escapeAttr(coform.phone)}">
+            </div>
+            <div style="flex:1;">
+              <label>Mobile</label>
+              <input type="text" id="coMobile" placeholder="10-digit mobile" value="${escapeAttr(coform.mobile)}">
+            </div>
+          </div>
+          <div class="row" style="gap:10px;">
+            <div style="flex:1;">
+              <label>Email</label>
+              <input type="text" id="coEmail" placeholder="name@company.com" value="${escapeAttr(coform.email)}">
+            </div>
+            <div style="flex:1;">
+              <label>Website</label>
+              <input type="text" id="coWebsite" placeholder="www.company.com" value="${escapeAttr(coform.website)}">
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:16px;">Financial Year Details</div>
+          <div class="row" style="gap:10px;">
+            <div style="flex:1;">
+              <label>Financial Year Begins From</label>
+              <input type="date" id="coFY" value="${coform.fyStart || defaultFYStart()}">
+            </div>
+            <div style="flex:1;">
+              <label>Books Beginning From</label>
+              <input type="date" id="coBooksFrom" value="${coform.booksFrom || coform.fyStart || defaultFYStart()}">
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:16px;">Tax Registration Details</div>
+          <label>GSTIN / UIN (optional)</label>
+          <input type="text" id="coGSTIN" placeholder="22AAAAA0000A1Z5" value="${escapeAttr(coform.gstin)}">
+          <label>PAN / Income Tax No. (optional)</label>
+          <input type="text" id="coPAN" placeholder="AAAAA0000A" value="${escapeAttr(coform.pan)}">
+
+          <div class="section-title" style="margin-top:16px;">Base Currency Information</div>
+          <div class="row" style="gap:10px;">
+            <div style="flex:1;">
+              <label>Base Currency Symbol</label>
+              <input type="text" id="coCurrencySymbol" value="${escapeAttr(coform.currencySymbol||'₹')}">
+            </div>
+            <div style="flex:1;">
+              <label>Formal Name</label>
+              <input type="text" id="coCurrencyFormalName" value="${escapeAttr(coform.currencyFormalName||'INR')}">
+            </div>
+          </div>
+          <div class="row" style="gap:10px;">
+            <div style="flex:1;">
+              <label>Decimal Places</label>
+              <select id="coDecimalPlaces">
+                ${[0,1,2,3,4].map(d=>`<option value="${d}" ${Number(coform.decimalPlaces)===d?'selected':''}>${d}</option>`).join('')}
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label>Fraction Unit (e.g. Paisa, Cents)</label>
+              <input type="text" id="coFractionUnit" value="${escapeAttr(coform.fractionUnit||'Paisa')}">
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:2px;">
+            <input type="checkbox" id="coSuffixSymbol" style="width:auto;" ${coform.suffixSymbol?'checked':''}> Show symbol after the amount (e.g. 100₹ instead of ₹100)
+          </label>
+
+          <button class="btn" id="createCoBtn" type="button" style="width:100%;margin-top:12px;">Create Company</button>
+        </div>
+      </div>
+    </div>
+    ${modal==='help' ? helpModal() : ''}
+  `;
+  document.querySelectorAll('[data-select-co]').forEach(el=>{
+    el.addEventListener('click', async (e)=>{
+      if(e.target.closest('[data-delete-co]')) return;
+      const id = el.dataset.selectCo;
+      const c = companies.find(x=>x.id===id);
+      if(!c) return;
+      currentCompany = c;
+      await loadState();
+      screen = 'app';
+      view = 'dashboard';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-delete-co]').forEach(el=>{
+    el.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      const id = el.dataset.deleteCo;
+      const c = companies.find(x=>x.id===id);
+      if(!c) return;
+      const ok = window.confirm(`Delete company "${c.name}" and all its ledgers and vouchers?\n\nThis cannot be undone.`);
+      if(!ok) return;
+      companies = companies.filter(x=>x.id!==id);
+      await saveCompanies();
+      try{ await window.storage.delete('ledgers:'+id); }catch(err){}
+      try{ await window.storage.delete('vouchers:'+id); }catch(err){}
+      toast('Company deleted');
+      renderGateway();
+    });
+  });
+  document.getElementById('coName').addEventListener('input', e=>{
+    coform.name = e.target.value;
+    const dirEl = document.getElementById('coDirectory');
+    if(dirEl && !coform.directory){
+      dirEl.value = e.target.value ? `/ReckoningBooks/Data/${e.target.value.replace(/[^a-z0-9]+/gi,'_')}` : '';
+    }
+  });
+  document.getElementById('coDirectory').addEventListener('input', e=> coform.directory = e.target.value);
+  document.getElementById('coMailingName').addEventListener('input', e=> coform.mailingName = e.target.value);
+  document.getElementById('coAddress').addEventListener('input', e=> coform.address = e.target.value);
+  document.getElementById('coState').addEventListener('change', e=> coform.state = e.target.value);
+  document.getElementById('coPincode').addEventListener('input', e=> coform.pincode = e.target.value);
+  document.getElementById('coCountry').addEventListener('input', e=> coform.country = e.target.value);
+  document.getElementById('coPhone').addEventListener('input', e=> coform.phone = e.target.value);
+  document.getElementById('coMobile').addEventListener('input', e=> coform.mobile = e.target.value);
+  document.getElementById('coEmail').addEventListener('input', e=> coform.email = e.target.value);
+  document.getElementById('coWebsite').addEventListener('input', e=> coform.website = e.target.value);
+  document.getElementById('coFY').addEventListener('input', e=> coform.fyStart = e.target.value);
+  document.getElementById('coBooksFrom').addEventListener('input', e=> coform.booksFrom = e.target.value);
+  document.getElementById('coGSTIN').addEventListener('input', e=> coform.gstin = e.target.value);
+  document.getElementById('coPAN').addEventListener('input', e=> coform.pan = e.target.value);
+  document.getElementById('coCurrencySymbol').addEventListener('input', e=> coform.currencySymbol = e.target.value);
+  document.getElementById('coCurrencyFormalName').addEventListener('input', e=> coform.currencyFormalName = e.target.value);
+  document.getElementById('coDecimalPlaces').addEventListener('change', e=> coform.decimalPlaces = Number(e.target.value));
+  document.getElementById('coFractionUnit').addEventListener('input', e=> coform.fractionUnit = e.target.value);
+  document.getElementById('coSuffixSymbol').addEventListener('change', e=> coform.suffixSymbol = e.target.checked);
+  document.getElementById('createCoBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('coName').value.trim();
+    if(!name){ toast('Enter a company name'); return; }
+    const fyStart = document.getElementById('coFY').value || defaultFYStart();
+    const directory = document.getElementById('coDirectory').value.trim() || `/ReckoningBooks/Data/${name.replace(/[^a-z0-9]+/gi,'_')}`;
+    const company = {
+      id: uid('co'), name, directory,
+      mailingName: document.getElementById('coMailingName').value.trim(),
+      address: document.getElementById('coAddress').value.trim(),
+      state: document.getElementById('coState').value,
+      pincode: document.getElementById('coPincode').value.trim(),
+      country: document.getElementById('coCountry').value.trim() || 'India',
+      phone: document.getElementById('coPhone').value.trim(),
+      mobile: document.getElementById('coMobile').value.trim(),
+      email: document.getElementById('coEmail').value.trim(),
+      website: document.getElementById('coWebsite').value.trim(),
+      fyStart,
+      booksFrom: document.getElementById('coBooksFrom').value || fyStart,
+      gstin: document.getElementById('coGSTIN').value.trim(),
+      pan: document.getElementById('coPAN').value.trim(),
+      currencySymbol: document.getElementById('coCurrencySymbol').value.trim() || '₹',
+      currencyFormalName: document.getElementById('coCurrencyFormalName').value.trim() || 'INR',
+      decimalPlaces: Number(document.getElementById('coDecimalPlaces').value),
+      fractionUnit: document.getElementById('coFractionUnit').value.trim() || 'Paisa',
+      suffixSymbol: document.getElementById('coSuffixSymbol').checked,
+    };
+    companies.push(company);
+    await saveCompanies();
+    coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
+    currentCompany = company;
+    await loadState();
+    screen = 'app';
+    view = 'dashboard';
+    render();
+  });
+
+  document.getElementById('gwMenuFile').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    fileMenuOpen = !fileMenuOpen;
+    renderGateway();
+  });
+  document.getElementById('gwMenuCompany').addEventListener('click', ()=>{
+    fileMenuOpen = false;
+    renderGateway();
+  });
+  document.getElementById('gwMenuHelp').addEventListener('click', ()=>{
+    fileMenuOpen = false;
+    modal = 'help';
+    renderGateway();
+  });
+  if(fileMenuOpen){
+    document.getElementById('gwNewCompanyLink')?.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      fileMenuOpen = false;
+      renderGateway();
+      setTimeout(()=>{
+        const el = document.getElementById('coName');
+        el?.scrollIntoView({behavior:'smooth', block:'center'});
+        el?.focus();
+      }, 0);
+    });
+  }
+  if(modal==='help'){
+    document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='modalOverlayBg'){ modal = null; renderGateway(); }
+    });
+    document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; renderGateway(); });
+  }
+}
+function fileDropdown(){
+  return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a></div>`;
+}
+
+function renderView(){
+  switch(view){
+    case 'dashboard': return viewDashboard();
+    case 'voucher': return viewVoucher();
+    case 'daybook': return viewDaybook();
+    case 'calendar': return viewCalendar();
+    case 'ledgers': return viewLedgers();
+    case 'coa': return viewCOA();
+    case 'inventory': return viewInventory();
+    case 'reports': return viewReports();
+    case 'gst': return viewGST();
+    default: return '';
+  }
+}
+
+function masthead(title, sub){
+  const d = new Date();
+  return `<div class="masthead">
+    <div><h1>${title}</h1><div class="sub">${sub||''}</div></div>
+    <div class="datebadge">${d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</div>
+  </div>`;
+}
+
+function viewDashboard(){
+  const cash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank')
+    .reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const assets = totalsByCategory('Assets');
+  const liab = -totalsByCategory('Liabilities') - totalsByCategory('Capital');
+  const profit = netProfit();
+
+  return `
+    ${masthead('Dashboard','Overview of the books')}
+    <div class="grid">
+      <div class="stat"><div class="label">Cash &amp; Bank</div><div class="val ${cash>=0?'dr':'cr'}">₹${fmt(cash)}</div></div>
+      <div class="stat"><div class="label">Total Assets</div><div class="val dr">₹${fmt(assets)}</div></div>
+      <div class="stat"><div class="label">Liabilities + Capital</div><div class="val cr">₹${fmt(liab)}</div></div>
+      <div class="stat"><div class="label">${profit>=0?'Net Profit':'Net Loss'}</div><div class="val ${profit>=0?'cr':'dr'}">₹${fmt(profit)}</div></div>
+    </div>
+
+    <button class="btn secondary" id="openRecentVouchersBtn" type="button" style="margin-bottom:18px;">📋 Recent Vouchers (${state.vouchers.length})</button>
+
+    <div class="row" style="align-items:flex-start;">
+      <div style="flex:1;">${balanceSheetVisualCard()}</div>
+      <div style="flex:1;">${incomeStatementVisualCard()}</div>
+    </div>
+  `;
+}
+function legendRow(label, value, colorHex){
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 0;">
+      <span class="muted" style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:2px;background:${colorHex};display:inline-block;"></span>${label}</span>
+      <span style="font-weight:700;color:var(--ink);">₹${fmt(value)}</span>
+    </div>
+  `;
+}
+function balanceSheetVisualCard(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const liabilities = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
+  return `
+    <div class="panel" data-open-visual="balanceSheet" style="cursor:pointer;">
+      <div class="panel-head"><h2>Balance Sheet</h2><span class="muted" style="font-size:11px;">Click for details</span></div>
+      <div class="panel-body">
+        <canvas id="bsChart3D" width="360" height="220" style="width:100%;height:220px;display:block;"></canvas>
+        <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;">
+          ${legendRow('Total Assets', bs.totalAssets, '#2CA01C')}
+          ${legendRow('Equity', bs.totalEquity, '#4F8EF7')}
+          ${legendRow('Liabilities', liabilities, '#D64545')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function incomeStatementVisualCard(){
+  const is = incomeStatementData();
+  const totalExpenses = is.costOfSales + is.distributionCosts + is.adminExpenses + is.financeCosts;
+  return `
+    <div class="panel" data-open-visual="incomeStatement" style="cursor:pointer;">
+      <div class="panel-head"><h2>Income Statement</h2><span class="muted" style="font-size:11px;">Click for details</span></div>
+      <div class="panel-body">
+        <canvas id="isChart3D" width="360" height="220" style="width:100%;height:220px;display:block;"></canvas>
+        <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;">
+          ${legendRow('Revenue', is.revenue, '#F2994A')}
+          ${legendRow('Total Expenses', totalExpenses, '#D64545')}
+          ${legendRow(is.profitForPeriod>=0?'Net Profit':'Net Loss', is.profitForPeriod, is.profitForPeriod>=0?'#2CA01C':'#D64545')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function recentVouchersModal(){
+  const recent = state.vouchers.slice().sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAt||'').localeCompare(a.createdAt||'')).slice(0,25);
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:640px;">
+        <div class="panel-head"><h2>Recent Vouchers</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          ${recent.length ? `<table>
+            <tr><th>Date</th><th>Type</th><th>Narration</th><th class="num">Amount</th><th>Action</th></tr>
+            ${recent.map(v=>`<tr>
+              <td class="muted">${v.date}</td>
+              <td>${v.type}</td>
+              <td>${v.narration||'—'}${itemsSummary(v)}</td>
+              <td class="num">₹${fmt(voucherAmount(v))}</td>
+              <td><button class="btn small secondary" data-edit-voucher="${v.id}" type="button">Edit</button> <button class="btn small secondary" data-delete-voucher="${v.id}" type="button">Delete</button></td>
+            </tr>`).join('')}
+          </table>` : `<div class="empty">No vouchers yet. Head to <strong>Voucher</strong> to record your first entry.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function voucherAmount(v){
+  return v.entries.reduce((s,e)=>s+(e.dr||0),0);
+}
+
+/* ---------------- 3D bar charts (Three.js) ---------------- */
+let chart3DFrames = {}; // canvasId -> requestAnimationFrame id, so old loops stop when the canvas is replaced
+function init3DBarChart(canvasId, columns){
+  const canvas = document.getElementById(canvasId);
+  if(!canvas || typeof THREE === 'undefined') return;
+  if(chart3DFrames[canvasId]){ cancelAnimationFrame(chart3DFrames[canvasId]); delete chart3DFrames[canvasId]; }
+
+  const width = canvas.clientWidth || 360;
+  const height = canvas.clientHeight || 220;
+  let renderer;
+  try{
+    renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });
+  }catch(e){ return; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+  renderer.setSize(width, height, false);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(32, width/height, 0.1, 100);
+  camera.position.set(4.6, 3.4, 6.2);
+  camera.lookAt(0, 0.6, 0);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const dLight = new THREE.DirectionalLight(0xffffff, 0.75);
+  dLight.position.set(4, 7, 5);
+  scene.add(dLight);
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.25);
+  fillLight.position.set(-4, 2, -3);
+  scene.add(fillLight);
+
+  const columnTotals = columns.map(c=> c.segments.reduce((s,seg)=>s+Math.abs(seg.value),0));
+  const maxVal = Math.max(...columnTotals, 1);
+  const group = new THREE.Group();
+  const barWidth = 0.85, gap = 0.55;
+  const totalWidth = columns.length*barWidth + (columns.length-1)*gap;
+
+  // faint base grid for grounding
+  const gridGeo = new THREE.PlaneGeometry(totalWidth+2, 2.4);
+  const gridMat = new THREE.MeshBasicMaterial({ color:0xE1E7E3, transparent:true, opacity:0.5, side:THREE.DoubleSide });
+  const grid = new THREE.Mesh(gridGeo, gridMat);
+  grid.rotation.x = -Math.PI/2;
+  grid.position.y = -0.005;
+  group.add(grid);
+
+  columns.forEach((col,i)=>{
+    const x = -totalWidth/2 + barWidth/2 + i*(barWidth+gap);
+    let cumY = 0;
+    col.segments.forEach(seg=>{
+      const h = Math.max(0.06, (Math.abs(seg.value)/maxVal) * 2.7);
+      const geo = new THREE.BoxGeometry(barWidth, h, barWidth);
+      const mat = new THREE.MeshStandardMaterial({ color: seg.color, roughness:0.45, metalness:0.08 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.x = x;
+      mesh.position.y = cumY + h/2;
+      group.add(mesh);
+
+      const edges = new THREE.EdgesGeometry(geo);
+      const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color:0x000000, transparent:true, opacity:0.12 }));
+      line.position.copy(mesh.position);
+      group.add(line);
+
+      cumY += h;
+    });
+  });
+  scene.add(group);
+
+  function animate(){
+    group.rotation.y += 0.0055;
+    renderer.render(scene, camera);
+    if(document.getElementById(canvasId)){
+      chart3DFrames[canvasId] = requestAnimationFrame(animate);
+    } else {
+      renderer.dispose();
+      delete chart3DFrames[canvasId];
+    }
+  }
+  animate();
+}
+function renderDashboardCharts(){
+  if(typeof THREE === 'undefined') return;
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  init3DBarChart('bsChart3D', [
+    { segments: [{ value: bs.totalAssets, color: 0x2CA01C }] },
+    { segments: [
+      { value: bs.totalEquity, color: 0x4F8EF7 },
+      { value: bs.nonCurrentLiabTotal + bs.currentLiabTotal, color: 0xD64545 },
+    ]},
+  ]);
+  const totalExpenses = is.costOfSales + is.distributionCosts + is.adminExpenses + is.financeCosts;
+  init3DBarChart('isChart3D', [
+    { segments: [{ value: is.revenue, color: 0xF2994A }] },
+    { segments: [{ value: totalExpenses, color: 0xD64545 }] },
+    { segments: [{ value: Math.abs(is.profitForPeriod), color: is.profitForPeriod>=0 ? 0x2CA01C : 0xD64545 }] },
+  ]);
+}
+
+function viewVoucher(){
+  if(!vform){
+    vform = { type:'Payment', date:new Date().toISOString().slice(0,10), narration:'', entries:[{ledgerId:'',dr:0,cr:0},{ledgerId:'',dr:0,cr:0}], gst:{party:'', taxableLedger:'', amount:'', rate:18, supply:'intra', items:[]} };
+  }
+  if(!vform.mode) vform.mode = 'double';
+  if(!vform.single) vform.single = { ledgerA:'', ledgerB:'', amount:'' };
+
+  const singleEligible = ['Payment','Receipt','Contra'].includes(vform.type);
+  const effectiveMode = singleEligible ? vform.mode : 'double';
+  const showGST = ['Sales','Purchase','Credit Note','Debit Note'].includes(vform.type);
+  const editing = !!vform.id;
+
+  let dr=0, cr=0, balanced=false;
+  if(effectiveMode==='single'){
+    const s = vform.single;
+    const amt = Number(s.amount)||0;
+    balanced = !!(s.ledgerA && s.ledgerB && amt>0 && s.ledgerA!==s.ledgerB);
+    dr = amt; cr = amt;
+  } else {
+    dr = vform.entries.reduce((s,e)=>s+(Number(e.dr)||0),0);
+    cr = vform.entries.reduce((s,e)=>s+(Number(e.cr)||0),0);
+    balanced = Math.abs(dr-cr) < 0.005 && dr > 0;
+  }
+
+  return `
+    ${masthead(editing?'Edit Voucher':'New Voucher', editing?`Editing voucher dated ${vform.date}`:'Choose Single Entry for a quick Cash/Bank line, or Double Entry for full control')}
+    <div class="vtype-tabs">
+      ${VOUCHER_TYPES.map(t=>`<button data-vtype="${t}" class="${vform.type===t?'active':''}">${t}</button>`).join('')}
+    </div>
+    ${singleEligible ? `
+    <div class="vtype-tabs" style="margin-bottom:10px;">
+      <button data-mode="single" type="button" class="${effectiveMode==='single'?'active':''}">Single Entry</button>
+      <button data-mode="double" type="button" class="${effectiveMode==='double'?'active':''}">Double Entry</button>
+    </div>` : ''}
+    ${showGST ? gstCalculator() : ''}
+    <div class="panel">
+      <div class="panel-body">
+        <div class="row">
+          <div class="field"><label>Date</label><input type="date" id="vdate" value="${vform.date}"></div>
+          <div class="field" style="flex:2"><label>Narration</label><input type="text" id="vnarr" placeholder="e.g. Paid office rent for August" value="${escapeAttr(vform.narration)}"></div>
+        </div>
+
+        ${effectiveMode==='single' ? singleEntryFields() : `
+        <div class="section-title">Entries</div>
+        <div id="entryRows">
+          ${vform.entries.map((e,i)=>entryRow(e,i)).join('')}
+        </div>
+        <button class="btn secondary small" id="addRow" type="button">+ Add row</button>
+        <div class="totals-line ${balanced?'balanced':'unbalanced'}">
+          <span>Dr ₹${fmt(dr)}</span><span>Cr ₹${fmt(cr)}</span>
+          <span>${balanced?'Balanced ✓':'Not balanced'}</span>
+        </div>`}
+
+        <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn" id="saveVoucher" ${balanced?'':'disabled'}>${editing?'Update Voucher':'Save Voucher'}</button>
+          <button class="btn secondary" id="resetVoucher" type="button">${editing?'Cancel Edit':'Clear'}</button>
+          ${vform.type==='Sales' ? `<button class="btn secondary" id="printBillBtn" type="button">🖨️ Generate &amp; Print Bill</button>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function singleEntryFields(){
+  const s = vform.single;
+  let labelA, labelB;
+  if(vform.type==='Payment'){ labelA='Paid From (Cash/Bank)'; labelB='Paid To (Account)'; }
+  else if(vform.type==='Receipt'){ labelA='Received In (Cash/Bank)'; labelB='Received From (Account)'; }
+  else { labelA='From Account'; labelB='To Account'; }
+  return `
+    <div class="section-title">Single Entry</div>
+    <div class="row">
+      <div class="field"><label>${labelA}</label>
+        <select id="singleA">
+          <option value="">Select ledger…</option>
+          ${state.ledgers.map(l=>`<option value="${l.id}" ${s.ledgerA===l.id?'selected':''}>${l.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${labelB}</label>
+        <select id="singleB">
+          <option value="">Select ledger…</option>
+          ${state.ledgers.map(l=>`<option value="${l.id}" ${s.ledgerB===l.id?'selected':''}>${l.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="field" style="max-width:220px;"><label>Amount</label><input type="number" id="singleAmount" value="${s.amount}" step="0.01" placeholder="0.00"></div>
+    <p class="muted" style="font-size:12.5px;" id="singlePreview">${singleEntryPreviewText()}</p>
+  `;
+}
+function singleEntryPreviewText(){
+  const s = vform.single;
+  const a = ledgerOf(s.ledgerA), b = ledgerOf(s.ledgerB);
+  const amt = Number(s.amount)||0;
+  if(!a || !b || !amt) return 'Select both ledgers and an amount to see the entry preview.';
+  if(a.id===b.id) return 'The two ledgers must be different.';
+  if(vform.type==='Payment') return `Will record: Dr ${b.name} ₹${fmt(amt)} → Cr ${a.name} ₹${fmt(amt)}`;
+  if(vform.type==='Receipt') return `Will record: Dr ${a.name} ₹${fmt(amt)} → Cr ${b.name} ₹${fmt(amt)}`;
+  return `Will record: Dr ${b.name} ₹${fmt(amt)} → Cr ${a.name} ₹${fmt(amt)}`;
+}
+function entryRow(e,i){
+  return `<div class="entry-row" data-idx="${i}">
+    <select class="e-ledger" data-i="${i}">
+      <option value="">Select ledger…</option>
+      ${state.ledgers.map(l=>`<option value="${l.id}" ${e.ledgerId===l.id?'selected':''}>${l.name}</option>`).join('')}
+    </select>
+    <input type="number" class="e-dr" data-i="${i}" placeholder="Debit" value="${e.dr||''}" min="0" step="0.01">
+    <input type="number" class="e-cr" data-i="${i}" placeholder="Credit" value="${e.cr||''}" min="0" step="0.01">
+    <button class="rm" data-rm="${i}" title="Remove row">✕</button>
+  </div>`;
+}
+function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function generateAndPrintBill(){
+  const g = vform.gst;
+  const items = (g.items||[]).filter(it=>it.name && (Number(it.qty)||0)>0);
+  if(!g.party){ toast('Select a customer in the GST Calculator first'); return; }
+  const party = ledgerOf(g.party);
+  if(!party){ toast('Select a customer in the GST Calculator first'); return; }
+  if(!items.length){ toast('Add at least one item in the GST Calculator first'); return; }
+
+  const amt = itemsSubtotal(items);
+  const rate = Number(g.rate)||0;
+  const taxVal = amt*rate/100;
+  const total = amt+taxVal;
+  const now = new Date();
+  const billDate = vform.date;
+  const billTime = now.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  const printedAt = now.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  const rows = items.map((it,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td>${escapeHtml(it.name)}</td>
+      <td style="text-align:right;">${it.qty}</td>
+      <td style="text-align:right;">₹${fmt(Number(it.rate)||0)}</td>
+      <td style="text-align:right;">₹${fmt((Number(it.qty)||0)*(Number(it.rate)||0))}</td>
+    </tr>`).join('');
+
+  const taxTotalsRows = g.supply==='intra'
+    ? `<tr><td>CGST @ ${rate/2}%</td><td style="text-align:right;">₹${fmt(taxVal/2)}</td></tr>
+       <tr><td>SGST @ ${rate/2}%</td><td style="text-align:right;">₹${fmt(taxVal/2)}</td></tr>`
+    : `<tr><td>IGST @ ${rate}%</td><td style="text-align:right;">₹${fmt(taxVal)}</td></tr>`;
+
+  const html = `<!DOCTYPE html><html><head><title>Invoice — ${escapeHtml(party.name)}</title>
+<meta charset="UTF-8">
+<style>
+  body{font-family: Arial, Helvetica, sans-serif; color:#111; margin:0; padding:34px; font-size:13px;}
+  .bill-header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px;}
+  .bill-header h1{margin:0;font-size:20px;}
+  .bill-header .meta{text-align:right;font-size:12px;color:#333;}
+  .bill-header .meta .invtitle{font-size:16px;font-weight:bold;color:#111;margin-bottom:4px;}
+  .parties{display:flex;justify-content:space-between;margin-bottom:20px;font-size:12.5px;}
+  .parties h3{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#555;}
+  table{width:100%;border-collapse:collapse;margin-bottom:18px;}
+  th{background:#f0f0f0;text-align:left;padding:8px;font-size:11px;text-transform:uppercase;border-bottom:2px solid #111;}
+  td{padding:8px;border-bottom:1px solid #ddd;font-size:12.5px;}
+  .totals-table{width:320px;margin-left:auto;}
+  .totals-table td{border:none;padding:4px 8px;}
+  .grand-total td{font-weight:bold;font-size:15px;border-top:2px solid #111;padding-top:8px;}
+  .footer{margin-top:30px;font-size:10.5px;color:#777;border-top:1px solid #ddd;padding-top:10px;}
+  @media print{ body{padding:0;} }
+</style>
+</head><body>
+  <div class="bill-header">
+    <div>
+      <h1>${escapeHtml(currentCompany.name)}</h1>
+      ${currentCompany.address?`<div style="font-size:12px;color:#555;margin-top:2px;">${escapeHtml(currentCompany.address)}${currentCompany.state?', '+escapeHtml(currentCompany.state):''}${currentCompany.pincode?' - '+escapeHtml(currentCompany.pincode):''}</div>`:''}
+      ${currentCompany.gstin?`<div style="font-size:12px;color:#555;margin-top:4px;">GSTIN: ${escapeHtml(currentCompany.gstin)}</div>`:''}
+    </div>
+    <div class="meta">
+      <div class="invtitle">TAX INVOICE</div>
+      <div>Date: ${billDate}</div>
+      <div>Time: ${billTime}</div>
+    </div>
+  </div>
+  <div class="parties">
+    <div>
+      <h3>Bill To</h3>
+      <div style="font-size:14px;font-weight:bold;">${escapeHtml(party.name)}</div>
+    </div>
+    <div style="text-align:right;">
+      <h3>Supply Type</h3>
+      <div>${g.supply==='intra'?'Intrastate (CGST + SGST)':'Interstate (IGST)'}</div>
+    </div>
+  </div>
+  <table>
+    <tr><th>#</th><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Amount</th></tr>
+    ${rows}
+  </table>
+  <table class="totals-table">
+    <tr><td>Subtotal</td><td style="text-align:right;">₹${fmt(amt)}</td></tr>
+    ${taxTotalsRows}
+    <tr class="grand-total"><td>Grand Total</td><td style="text-align:right;">₹${fmt(total)}</td></tr>
+  </table>
+  ${vform.narration?`<div style="font-size:12px;color:#444;"><strong>Notes:</strong> ${escapeHtml(vform.narration)}</div>`:''}
+  <div class="footer">Generated by The Reckoning Books by SKm on ${printedAt}</div>
+  <script>window.onload = function(){ window.print(); };<\/script>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if(!w){ toast('Please allow pop-ups to print the bill'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
+
+function gstCalculator(){
+  const g = vform.gst;
+  if(!g.items) g.items = [];
+  const salesLike = vform.type === 'Sales' || vform.type === 'Credit Note';
+  const isReturn = vform.type === 'Credit Note' || vform.type === 'Debit Note';
+  const subtitle = {
+    'Sales':'Output tax on sale', 'Purchase':'Input tax on purchase',
+    'Credit Note':'Reverses output tax — sales return', 'Debit Note':'Reverses input tax — purchase return'
+  }[vform.type];
+  const taxableLabel = {
+    'Sales':'Sales Ledger', 'Purchase':'Purchase Ledger',
+    'Credit Note':'Sales Return Ledger', 'Debit Note':'Purchase Return Ledger'
+  }[vform.type];
+  return `
+    <div class="panel" style="border-color:var(--gold);">
+      <div class="panel-head"><h2>GST Calculator</h2><span class="muted" style="font-size:11.5px;">${subtitle}</span></div>
+      <div class="panel-body">
+        <div class="row">
+          <div class="field"><label>${salesLike?'Customer (Party) Ledger':'Supplier (Party) Ledger'}</label>
+            <select id="gstParty">
+              <option value="">Select ledger…</option>
+              ${state.ledgers.map(l=>`<option value="${l.id}" ${g.party===l.id?'selected':''}>${l.name}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>${taxableLabel}</label>
+            <select id="gstTaxable">
+              <option value="">Select ledger…</option>
+              ${state.ledgers.map(l=>`<option value="${l.id}" ${g.taxableLedger===l.id?'selected':''}>${l.name}${l.gstRate!=null?' ('+l.gstRate+'%)':''}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top:6px;">${isReturn?'Returned Items':'Items'}</div>
+        <div class="entry-row" style="grid-template-columns:2fr 0.8fr 1fr 1fr auto;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;margin-bottom:2px;padding:0 2px;">
+          <span>Item</span><span>Qty</span><span>Rate</span><span>Amount</span><span></span>
+        </div>
+        <div id="gstItemRows">${g.items.map((it,i)=>itemRow(it,i)).join('') || `<p class="muted" style="font-size:12px;margin:6px 0;">No items yet — add one below.</p>`}</div>
+        <button class="btn secondary small" id="addItemRow" type="button">+ Add item</button>
+        <div class="totals-line" style="justify-content:space-between;">
+          <span class="muted">${isReturn?'Return Value (auto)':'Taxable Value (auto)'}</span>
+          <span id="gstItemsTotal">₹${fmt(itemsSubtotal(g.items))}</span>
+        </div>
+
+        <div class="row" style="margin-top:6px;">
+          <div class="field" style="max-width:140px;"><label>GST Rate</label>
+            <select id="gstRate">
+              ${[0,5,12,18,28].map(r=>`<option value="${r}" ${Number(g.rate)===r?'selected':''}>${r}%</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="max-width:220px;"><label>Supply Type</label>
+            <select id="gstSupply">
+              <option value="intra" ${g.supply==='intra'?'selected':''}>Intrastate (CGST+SGST)</option>
+              <option value="inter" ${g.supply==='inter'?'selected':''}>Interstate (IGST)</option>
+            </select>
+          </div>
+        </div>
+        ${gstPreview(g)}
+        <button class="btn secondary small" id="applyGST" type="button">Add to Voucher</button>
+      </div>
+    </div>
+  `;
+}
+function itemsSubtotal(items){
+  return (items||[]).reduce((s,it)=> s + (Number(it.qty)||0)*(Number(it.rate)||0), 0);
+}
+function itemRow(it,i){
+  const isCustom = !it.itemId || it.itemId==='__custom__';
+  return `<div class="entry-row" style="grid-template-columns:2fr 0.8fr 1fr 1fr auto;align-items:start;" data-item-idx="${i}">
+    <div>
+      <select class="item-select" data-i="${i}">
+        <option value="__custom__" ${isCustom?'selected':''}>— Custom item —</option>
+        ${state.items.map(m=>`<option value="${m.id}" ${it.itemId===m.id?'selected':''}>${m.name}${m.unit?' ('+m.unit+')':''}</option>`).join('')}
+      </select>
+      ${isCustom ? `<input type="text" class="item-name" data-i="${i}" placeholder="Item name" value="${escapeAttr(it.name)}" style="margin-top:6px;">` : ''}
+    </div>
+    <input type="number" class="item-qty" data-i="${i}" placeholder="Qty" value="${it.qty||''}" min="0" step="0.01">
+    <input type="number" class="item-rate" data-i="${i}" placeholder="Rate" value="${it.rate||''}" min="0" step="0.01">
+    <input type="text" class="item-amount" value="₹${fmt((Number(it.qty)||0)*(Number(it.rate)||0))}" disabled>
+    <button class="rm" data-item-rm="${i}" type="button" title="Remove item">✕</button>
+  </div>`;
+}
+function gstPreview(g){
+  const amt = itemsSubtotal(g.items);
+  const rate = Number(g.rate)||0;
+  const tax = amt*rate/100;
+  const half = tax/2;
+  let inner;
+  if(!amt) inner = `Add items with a quantity and rate to see the tax split.`;
+  else if(g.supply==='intra') inner = `CGST @ ${rate/2}% = ₹${fmt(half)} &nbsp;+&nbsp; SGST @ ${rate/2}% = ₹${fmt(half)} &nbsp;→&nbsp; Total ₹${fmt(amt+tax)}`;
+  else inner = `IGST @ ${rate}% = ₹${fmt(tax)} &nbsp;→&nbsp; Total ₹${fmt(amt+tax)}`;
+  return `<p class="muted" style="font-size:12.5px;" id="gstPreviewBox">${inner}</p>`;
+}
+
+function viewDaybook(){
+  const rows = state.vouchers.slice().reverse();
+  return `
+    ${masthead('Day Book','All vouchers, most recent first')}
+    <div class="panel">
+      <div class="panel-body" style="padding:0;">
+        ${rows.length ? `<table>
+          <tr><th>Date</th><th>Type</th><th>Narration</th><th>Entries</th><th class="num">Amount</th><th>Action</th></tr>
+          ${rows.map(v=>`<tr>
+            <td class="muted">${v.date}</td>
+            <td>${v.type}</td>
+            <td>${v.narration||'—'}${itemsSummary(v)}${v.createdAt?`<div class="muted" style="font-size:10.5px;margin-top:3px;">Entered: ${fmtTimestamp(v.createdAt)}${v.updatedAt?` · Updated: ${fmtTimestamp(v.updatedAt)}`:''}</div>`:''}</td>
+            <td class="muted" style="font-size:12px;">${v.entries.map(e=>{
+              const l = ledgerOf(e.ledgerId);
+              const name = l?l.name:'?';
+              return e.dr ? `${name} Dr` : `${name} Cr`;
+            }).join(', ')}</td>
+            <td class="num">₹${fmt(voucherAmount(v))}</td>
+            <td><button class="btn small secondary" data-edit-voucher="${v.id}" type="button">Edit</button> <button class="btn small secondary" data-delete-voucher="${v.id}" type="button">Delete</button></td>
+          </tr>`).join('')}
+        </table>` : `<div class="empty">No vouchers recorded yet.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function viewCalendar(){
+  const {year, month} = calState;
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const first = new Date(year, month, 1);
+  const startDow = first.getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0,10);
+
+  const vouchersByDate = {};
+  for(const v of state.vouchers){
+    (vouchersByDate[v.date] = vouchersByDate[v.date] || []).push(v);
+  }
+
+  let cells = '';
+  for(let i=0;i<startDow;i++) cells += `<div class="calendar-day empty"></div>`;
+  for(let d=1; d<=daysInMonth; d++){
+    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const count = (vouchersByDate[dateStr]||[]).length;
+    const cls = ['calendar-day'];
+    if(dateStr===todayStr) cls.push('today');
+    if(dateStr===calState.selected) cls.push('selected');
+    cells += `<div class="${cls.join(' ')}" data-cal-day="${dateStr}">${d}${count?`<span class="count">${count}</span>`:''}</div>`;
+  }
+
+  const selectedVouchers = vouchersByDate[calState.selected] || [];
+
+  return `
+    ${masthead('Calendar','Browse vouchers by date')}
+    <div class="panel">
+      <div class="panel-body">
+        <div class="calendar-nav">
+          <div class="navbtns">
+            <button class="btn small secondary" id="calPrev" type="button">◀ Prev</button>
+            <button class="btn small secondary" id="calToday" type="button">Today</button>
+            <button class="btn small secondary" id="calNext" type="button">Next ▶</button>
+          </div>
+          <div class="monthlabel">${monthNames[month]} ${year}</div>
+        </div>
+        <div class="calendar-grid">
+          <div class="dow">Sun</div><div class="dow">Mon</div><div class="dow">Tue</div><div class="dow">Wed</div><div class="dow">Thu</div><div class="dow">Fri</div><div class="dow">Sat</div>
+          ${cells}
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Vouchers on ${calState.selected}</h2><span class="muted" style="font-size:12px;">${selectedVouchers.length} entr${selectedVouchers.length===1?'y':'ies'}</span></div>
+      <div class="panel-body" style="padding:0;">
+        ${selectedVouchers.length ? `<table>
+          <tr><th>Type</th><th>Narration</th><th class="num">Amount</th><th>Action</th></tr>
+          ${selectedVouchers.map(v=>`<tr>
+            <td>${v.type}</td>
+            <td>${v.narration||'—'}${itemsSummary(v)}${v.createdAt?`<div class="muted" style="font-size:10.5px;margin-top:3px;">Entered: ${fmtTimestamp(v.createdAt)}</div>`:''}</td>
+            <td class="num">₹${fmt(voucherAmount(v))}</td>
+            <td><button class="btn small secondary" data-edit-voucher="${v.id}" type="button">Edit</button> <button class="btn small secondary" data-delete-voucher="${v.id}" type="button">Delete</button></td>
+          </tr>`).join('')}
+        </table>` : `<div class="empty">No vouchers on this date. <a class="linklike" id="calNewVoucher">Add one →</a></div>`}
+      </div>
+    </div>
+  `;
+}
+
+function viewLedgers(){
+  const sel = view==='ledgers' && window._selectedLedger ? window._selectedLedger : (state.ledgers[0] && state.ledgers[0].id);
+  return `
+    ${masthead('Ledgers','Account-wise statements')}
+    <div class="row" style="align-items:flex-start;gap:20px;">
+      <div style="flex:0 0 240px;">
+        <div class="panel">
+          <div class="panel-body" style="padding:6px;">
+            ${state.ledgers.map(l=>{
+              const b = ledgerBalance(l.id);
+              return `<div class="linklike" data-select-ledger="${l.id}" style="display:flex;justify-content:space-between;padding:9px 10px;border-radius:3px;${sel===l.id?'background:var(--paper);':''}text-decoration:none;cursor:pointer;">
+                <span>${l.name}</span>
+                <span class="num ${b>=0?'dr':'cr'}" style="font-size:12px;">${fmt(b)}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;">
+        ${sel ? ledgerStatement(sel) : `<div class="empty">Select a ledger</div>`}
+      </div>
+    </div>
+  `;
+}
+function ledgerStatement(ledgerId){
+  const l = ledgerOf(ledgerId);
+  if(!l) return `<div class="empty">Ledger not found</div>`;
+  let running = l.opening || 0;
+  const rows = [];
+  const sorted = state.vouchers.slice().sort((a,b)=> a.date.localeCompare(b.date));
+  for(const v of sorted){
+    for(const e of v.entries){
+      if(e.ledgerId === ledgerId){
+        running += (e.dr||0) - (e.cr||0);
+        rows.push({date:v.date, particulars:v.narration||v.type, dr:e.dr, cr:e.cr, running});
+      }
+    }
+  }
+  const bal = ledgerBalance(ledgerId);
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>${l.name}</h2>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button class="btn small secondary" data-open-pie="${ledgerId}" type="button">📊 Pie Chart</button>
+          <span class="pill ${bal>=0?'dr':'cr'}">${fmt(bal)} ${balanceLabel(bal)}</span>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Date</th><th>Particulars</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr>
+          <tr><td class="muted">—</td><td class="muted">Opening Balance</td><td class="num">${l.opening>0?fmt(l.opening):''}</td><td class="num">${l.opening<0?fmt(l.opening):''}</td><td class="num ${l.opening>=0?'dr':'cr'}">${fmt(l.opening)} ${balanceLabel(l.opening)}</td></tr>
+          ${rows.map(r=>`<tr>
+            <td class="muted">${r.date}</td>
+            <td>${r.particulars}</td>
+            <td class="num">${r.dr?fmt(r.dr):''}</td>
+            <td class="num">${r.cr?fmt(r.cr):''}</td>
+            <td class="num ${r.running>=0?'dr':'cr'}">${fmt(r.running)} ${balanceLabel(r.running)}</td>
+          </tr>`).join('')}
+          ${!rows.length ? `<tr><td colspan="5" class="empty">No transactions on this ledger yet.</td></tr>`:''}
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function stockItemForm(){
+  return `
+    <div class="panel">
+      <div class="panel-head"><h2>Create Stock Item</h2></div>
+      <div class="panel-body">
+        <div class="field"><label>Name</label><input type="text" id="newItemName" placeholder="e.g. Widget A"></div>
+        <div class="row">
+          <div class="field"><label>Under (Stock Group)</label>
+            <select id="newItemGroup">${STOCK_GROUPS.map(g=>`<option value="${g}">${g}</option>`).join('')}</select>
+          </div>
+          <div class="field" style="max-width:140px;"><label>Units</label>
+            <select id="newItemUnit">${UNITS.map(u=>`<option value="${u}">${u}</option>`).join('')}</select>
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top:18px;">GST Details</div>
+        <div class="row">
+          <div class="field"><label>HSN / SAC Code</label><input type="text" id="newItemHSN" placeholder="e.g. 8471"></div>
+          <div class="field" style="max-width:140px;"><label>GST Rate</label>
+            <select id="newItemGST">
+              <option value="">— None —</option>
+              <option value="0">0%</option>
+              <option value="5">5%</option>
+              <option value="12">12%</option>
+              <option value="18">18%</option>
+              <option value="28">28%</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top:18px;">Pricing &amp; Opening Balance</div>
+        <div class="row">
+          <div class="field"><label>Standard Selling Rate</label><input type="number" id="newItemRate" step="0.01" placeholder="0.00"></div>
+          <div class="field"><label>Opening Quantity</label><input type="number" id="newItemOpeningQty" step="0.01" placeholder="0"></div>
+          <div class="field"><label>Opening Rate</label><input type="number" id="newItemOpeningRate" step="0.01" placeholder="0.00"></div>
+        </div>
+        <div class="field" style="max-width:220px;"><label>Reorder Level (optional)</label><input type="number" id="newItemReorderLevel" step="0.01" placeholder="e.g. 20"></div>
+        <button class="btn" id="addItemBtn" style="margin-top:4px;">Create Item</button>
+      </div>
+    </div>
+  `;
+}
+function attachStockItemFormHandlers(){
+  document.getElementById('addItemBtn')?.addEventListener('click', async ()=>{
+    const name = document.getElementById('newItemName').value.trim();
+    const group = document.getElementById('newItemGroup').value;
+    const unit = document.getElementById('newItemUnit').value;
+    const hsn = document.getElementById('newItemHSN').value.trim();
+    const rateRaw = document.getElementById('newItemRate').value;
+    const gstRaw = document.getElementById('newItemGST').value;
+    const openQtyRaw = document.getElementById('newItemOpeningQty').value;
+    const openRateRaw = document.getElementById('newItemOpeningRate').value;
+    const reorderRaw = document.getElementById('newItemReorderLevel').value;
+    if(!name){ toast('Enter an item name'); return; }
+    const item = { id: uid('it'), name, group, unit };
+    if(hsn) item.hsn = hsn;
+    if(rateRaw !== '') item.rate = Number(rateRaw);
+    if(gstRaw !== '') item.gstRate = Number(gstRaw);
+    if(openQtyRaw !== '') item.openingQty = Number(openQtyRaw);
+    if(openRateRaw !== '') item.openingRate = Number(openRateRaw);
+    if(reorderRaw !== '') item.reorderLevel = Number(reorderRaw);
+    state.items.push(item);
+    await saveItems();
+    toast('Stock item created — it will now show up in Sales/Purchase voucher item pickers');
+    render();
+  });
+}
+function viewCOA(){
+  const byCat = {};
+  for(const g of GROUPS){ byCat[g.cat] = byCat[g.cat]||[]; byCat[g.cat].push(g); }
+  return `
+    ${masthead('Chart of Accounts','Groups and ledgers')}
+    <div class="panel">
+      <div class="panel-head"><h2>Add Ledger</h2></div>
+      <div class="panel-body">
+        <div class="row">
+          <div class="field"><label>Ledger Name</label><input type="text" id="newLedgerName" placeholder="e.g. Electricity Expense"></div>
+          <div class="field"><label>Under Group</label>
+            <select id="newLedgerGroup">${GROUPS.map(g=>`<option value="${g.id}">${g.name} (${g.cat})</option>`).join('')}</select>
+          </div>
+          <div class="field" style="max-width:160px;"><label>Opening Balance</label><input type="number" id="newLedgerOpening" value="0" step="0.01"></div>
+          <div class="field" style="max-width:120px;"><label>Type</label>
+            <select id="newLedgerType"><option value="1">Dr</option><option value="-1">Cr</option></select>
+          </div>
+          <div class="field" style="max-width:140px;"><label>GST Rate</label>
+            <select id="newLedgerGST">
+              <option value="">— None —</option>
+              <option value="0">0%</option>
+              <option value="5">5%</option>
+              <option value="12">12%</option>
+              <option value="18">18%</option>
+              <option value="28">28%</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn" id="addLedgerBtn">Add Ledger</button>
+      </div>
+    </div>
+    ${Object.keys(byCat).map(cat=>`
+      <div class="section-title">${cat}</div>
+      <div class="panel">
+        <div class="panel-body" style="padding:0;">
+          <table>
+            <tr><th>Ledger</th><th>Group</th><th>GST</th><th class="num">Balance</th></tr>
+            ${state.ledgers.filter(l=>groupOf(l.group).cat===cat).map(l=>{
+              const b = ledgerBalance(l.id);
+              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
+            }).join('') || `<tr><td colspan="4" class="empty">No ledgers in this category yet.</td></tr>`}
+          </table>
+        </div>
+      </div>
+    `).join('')}
+
+    <div class="section-title">Item Master (Stock Items)</div>
+    ${stockItemForm()}
+
+    ${STOCK_GROUPS.map(grp=>{
+      const groupItems = state.items.filter(it=>(it.group||'Primary')===grp);
+      if(!groupItems.length) return '';
+      return `
+      <div class="section-title">${grp}</div>
+      <div class="panel">
+        <div class="panel-body" style="padding:0;">
+          <table>
+            <tr><th>Item</th><th>Unit</th><th>HSN</th><th class="num">Rate</th><th>GST</th><th class="num">Opening Qty</th><th class="num">Opening Value</th><th></th></tr>
+            ${groupItems.map(it=>{
+              const openVal = (Number(it.openingQty)||0)*(Number(it.openingRate)||0);
+              return `<tr>
+                <td>${it.name}</td>
+                <td class="muted">${it.unit||'—'}</td>
+                <td class="muted">${it.hsn||'—'}</td>
+                <td class="num">${it.rate!=null?'₹'+fmt(it.rate):'—'}</td>
+                <td class="muted">${it.gstRate!=null?it.gstRate+'%':'—'}</td>
+                <td class="num">${it.openingQty?fmt(it.openingQty)+' '+(it.unit||''):'—'}</td>
+                <td class="num">${openVal?'₹'+fmt(openVal):'—'}</td>
+                <td><button class="btn small secondary" data-delete-item="${it.id}" type="button">Delete</button></td>
+              </tr>`;
+            }).join('')}
+          </table>
+        </div>
+      </div>`;
+    }).join('') || `<div class="empty">No stock items yet — create one above. Items appear in the Sales/Purchase item picker once added.</div>`}
+  `;
+}
+
+function viewInventory(){
+  const summaries = stockSummaryAll();
+  const totalValue = summaries.reduce((s,r)=>s+r.summary.value,0);
+  const lowStock = summaries.filter(r=> r.item.reorderLevel!=null && r.summary.closing>0 && r.summary.closing<=r.item.reorderLevel).length;
+  const outOfStock = summaries.filter(r=> r.summary.closing<=0).length;
+
+  return `
+    ${masthead('Inventory','Stock summary, movement history, and adjustments')}
+    <div class="grid">
+      <div class="stat"><div class="label">Total Stock Value</div><div class="val dr">₹${fmt(totalValue)}</div></div>
+      <div class="stat"><div class="label">Total Items</div><div class="val">${state.items.length}</div></div>
+      <div class="stat"><div class="label">Low Stock</div><div class="val ${lowStock>0?'dr':''}">${lowStock}</div></div>
+      <div class="stat"><div class="label">Out of Stock</div><div class="val ${outOfStock>0?'dr':''}">${outOfStock}</div></div>
+    </div>
+
+    <div class="section-title">Add New Item</div>
+    ${stockItemForm()}
+
+    ${STOCK_GROUPS.map(grp=>{
+      const groupItems = summaries.filter(r=>(r.item.group||'Primary')===grp);
+      if(!groupItems.length) return '';
+      return `
+      <div class="section-title">${grp}</div>
+      <div class="panel">
+        <div class="panel-body" style="padding:0;">
+          <table>
+            <tr><th>Item</th><th class="num">Opening</th><th class="num">Inward</th><th class="num">Outward</th><th class="num">Closing</th><th class="num">Rate</th><th class="num">Value</th><th>Status</th><th></th></tr>
+            ${groupItems.map(({item,summary})=>{
+              const out = summary.closing<=0;
+              const low = !out && item.reorderLevel!=null && summary.closing<=item.reorderLevel;
+              const statusBadge = out ? `<span class="pill dr">Out of Stock</span>` : low ? `<span class="pill dr">Low Stock</span>` : `<span class="pill cr">OK</span>`;
+              return `<tr>
+                <td data-stock-detail="${item.id}" style="cursor:pointer;">${item.name}<div class="muted" style="font-size:10.5px;">${item.unit||''}${item.hsn?' · HSN '+item.hsn:''}</div></td>
+                <td class="num">${fmt(summary.opening)}</td>
+                <td class="num cr">${summary.inward?fmt(summary.inward):'—'}</td>
+                <td class="num dr">${summary.outward?fmt(summary.outward):'—'}</td>
+                <td class="num" style="font-weight:700;">${fmt(summary.closing)} ${item.unit||''}</td>
+                <td class="num">${item.rate!=null?'₹'+fmt(item.rate):'—'}</td>
+                <td class="num">₹${fmt(summary.value)}</td>
+                <td>${statusBadge}</td>
+                <td><button class="btn small secondary" data-stock-adjust="${item.id}" type="button">Adjust</button></td>
+              </tr>`;
+            }).join('')}
+          </table>
+        </div>
+      </div>`;
+    }).join('') || `<div class="empty">No stock items yet. Add items in the <strong>Accounts</strong> tab first.</div>`}
+    <p class="muted" style="font-size:11px;">Closing stock = Opening Quantity + Purchases + Sales Returns (Credit Notes) − Sales − Purchase Returns (Debit Notes) ± manual adjustments. Click an item name for its full movement history.</p>
+  `;
+}
+
+function viewReports(){
+  const tb = state.ledgers.map(l=>({l, b:ledgerBalance(l.id)}));
+  const tbDr = tb.reduce((s,r)=>s + (r.b>0?r.b:0),0);
+  const tbCr = tb.reduce((s,r)=>s + (r.b<0?-r.b:0),0);
+
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const ratios = ratioAnalysisData(is, bs);
+  const cf = cashFlowData();
+  const cashMatches = Math.abs(cf.closingCash - cf.actualCash) < 0.01;
+
+  const row2 = (label, val, opts={}) => `<tr ${opts.bold?'style="font-weight:700;border-top:2px solid var(--ink);"':''}><td>${label}</td><td class="num ${opts.cls||''}">${val}</td></tr>`;
+  const ledgerRows = (ledgers, sign) => ledgers.map(l=>`<tr data-ledger-detail="${l.id}" style="cursor:pointer;"><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">None</td></tr>`;
+
+  return `
+    ${masthead('Reports','Trial Balance · Income Statement · Ratio Analysis · Balance Sheet · Cash Flow')}
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn secondary small" id="exportExcelBtn" type="button">⬇ Export All (Excel)</button>
+    </div>
+
+    <div class="section-title">Trial Balance</div>
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      <table>
+        <tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th></tr>
+        ${tb.map(r=>`<tr><td>${r.l.name}</td><td class="num">${r.b>0?fmt(r.b):''}</td><td class="num">${r.b<0?fmt(r.b):''}</td></tr>`).join('')}
+        <tr style="font-weight:600;border-top:2px solid var(--ink);"><td>Total</td><td class="num">₹${fmt(tbDr)}</td><td class="num">₹${fmt(tbCr)}</td></tr>
+      </table>
+    </div></div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 7px;">
+      <div class="section-title" style="margin:0;border:none;padding:0;">Income Statement (IFRS) — Statement of Profit or Loss</div>
+      <button class="btn secondary small" id="exportPLBtn" type="button">⬇ Export (Excel)</button>
+    </div>
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      <table>
+        <tr data-is-detail="revenue" style="cursor:pointer;"><td>Revenue</td><td class="num">₹${fmt(is.revenue)}</td></tr>
+        <tr data-is-detail="costOfSales" style="cursor:pointer;"><td>Cost of Sales</td><td class="num dr">(₹${fmt(is.costOfSales)})</td></tr>
+        ${row2('Gross Profit', `₹${fmt(is.grossProfit)}`, {bold:true})}
+        <tr data-is-detail="otherIncome" style="cursor:pointer;"><td>Other Income</td><td class="num">₹${fmt(is.otherIncome)}</td></tr>
+        <tr data-is-detail="distribution" style="cursor:pointer;"><td>Distribution Costs</td><td class="num dr">(₹${fmt(is.distributionCosts)})</td></tr>
+        <tr data-is-detail="admin" style="cursor:pointer;"><td>Administrative Expenses</td><td class="num dr">(₹${fmt(is.adminExpenses)})</td></tr>
+        ${row2('Operating Profit', `₹${fmt(is.operatingProfit)}`, {bold:true})}
+        <tr data-is-detail="finance" style="cursor:pointer;"><td>Finance Costs</td><td class="num dr">(₹${fmt(is.financeCosts)})</td></tr>
+        ${row2('Profit Before Tax', `₹${fmt(is.profitBeforeTax)}`, {bold:true})}
+        ${row2('Income Tax Expense', `(₹${fmt(is.taxExpense)})`, {cls:'dr'})}
+        ${row2('Profit for the Period', `₹${fmt(is.profitForPeriod)}`, {bold:true, cls: is.profitForPeriod>=0?'cr':'dr'})}
+      </table>
+    </div></div>
+    <p class="muted" style="font-size:11px;">Click any line above to see the individual ledger accounts behind it. Distribution Costs = Direct Expenses group · Administrative Expenses = Indirect Expenses excluding interest/bank charges · Finance Costs = Interest/Bank Charges ledgers detected by name · Income Tax not separately tracked in this system (GST is reported separately in the GST tab).</p>
+
+    <div class="section-title" style="margin-top:22px;">Ratio Analysis (Detailed)</div>
+    <div class="row" style="align-items:flex-start;">
+      <div style="flex:1;">
+        <div class="panel">
+          <div class="panel-head"><h2>Liquidity</h2></div>
+          <div class="panel-body" style="padding:0;">
+            <table>
+              ${row2('Current Ratio', fmtRatio(ratios.currentRatio))}
+              ${row2('Quick Ratio', fmtRatio(ratios.quickRatio))}
+              ${row2('Cash Ratio', fmtRatio(ratios.cashRatio))}
+              ${row2('Working Capital', `₹${fmt(ratios.workingCapital)}`)}
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Solvency / Leverage</h2></div>
+          <div class="panel-body" style="padding:0;">
+            <table>
+              ${row2('Debt-to-Equity Ratio', fmtRatio(ratios.debtToEquity))}
+              ${row2('Debt Ratio', fmtRatio(ratios.debtRatio))}
+              ${row2('Equity Ratio', fmtRatio(ratios.equityRatio))}
+            </table>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;">
+        <div class="panel">
+          <div class="panel-head"><h2>Profitability</h2></div>
+          <div class="panel-body" style="padding:0;">
+            <table>
+              ${row2('Gross Profit Margin', fmtPct(ratios.grossMargin))}
+              ${row2('Operating Profit Margin', fmtPct(ratios.operatingMargin))}
+              ${row2('Net Profit Margin', fmtPct(ratios.netMargin))}
+              ${row2('Return on Assets (ROA)', fmtPct(ratios.roa))}
+              ${row2('Return on Equity (ROE)', fmtPct(ratios.roe))}
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Efficiency</h2></div>
+          <div class="panel-body" style="padding:0;">
+            <table>
+              ${row2('Asset Turnover', fmtRatio(ratios.assetTurnover))}
+              ${row2('Trade Receivables Turnover', fmtRatio(ratios.receivablesTurnover))}
+              ${row2('Days Sales Outstanding (DSO)', fmtDays(ratios.dso))}
+              ${row2('Trade Payables Turnover', fmtRatio(ratios.payablesTurnover))}
+              ${row2('Days Payable Outstanding (DPO)', fmtDays(ratios.dpo))}
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+      <button class="btn secondary small" id="exportRatiosBtn" type="button">⬇ Export Ratio Analysis (Excel)</button>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 7px;">
+      <div class="section-title" style="margin:0;border:none;padding:0;">Balance Sheet (IFRS) — Statement of Financial Position</div>
+      <button class="btn secondary small" id="exportBSBtn" type="button">⬇ Export (Excel)</button>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Assets</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th colspan="2">Non-current Assets</th></tr>
+          ${ledgerRows(bs.nonCurrentAssets, 1)}
+          ${row2('Total Non-current Assets', `₹${fmt(bs.nonCurrentAssetsTotal)}`, {bold:true})}
+          <tr><th colspan="2">Current Assets</th></tr>
+          ${ledgerRows(bs.currentAssets, 1)}
+          ${row2('Total Current Assets', `₹${fmt(bs.currentAssetsTotal)}`, {bold:true})}
+          ${row2('TOTAL ASSETS', `₹${fmt(bs.totalAssets)}`, {bold:true})}
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Equity and Liabilities</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th colspan="2">Equity</th></tr>
+          ${ledgerRows(bs.equityLedgers, -1)}
+          ${row2('&nbsp;&nbsp;Retained Earnings (Profit for the Period)', `₹${fmt(bs.totalEquity-bs.equityBase)}`)}
+          ${row2('Total Equity', `₹${fmt(bs.totalEquity)}`, {bold:true})}
+          <tr><th colspan="2">Non-current Liabilities</th></tr>
+          ${ledgerRows(bs.nonCurrentLiabilities, -1)}
+          ${row2('Total Non-current Liabilities', `₹${fmt(bs.nonCurrentLiabTotal)}`, {bold:true})}
+          <tr><th colspan="2">Current Liabilities</th></tr>
+          ${ledgerRows(bs.currentLiabilities, -1)}
+          ${row2('Total Current Liabilities', `₹${fmt(bs.currentLiabTotal)}`, {bold:true})}
+          ${row2('TOTAL EQUITY AND LIABILITIES', `₹${fmt(bs.totalEquityAndLiab)}`, {bold:true})}
+        </table>
+      </div>
+    </div>
+    <p class="muted" style="font-size:11.5px;">Total Assets ${Math.abs(bs.totalAssets-bs.totalEquityAndLiab)<0.01?'matches':'does NOT match'} Total Equity and Liabilities (₹${fmt(bs.totalAssets)} vs ₹${fmt(bs.totalEquityAndLiab)}). A mismatch usually means an opening balance or entry was recorded on the wrong side.</p>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:22px 0 7px;">
+      <div class="section-title" style="margin:0;border:none;padding:0;">Cash Flow Statement (Detailed, Direct Method)</div>
+      <button class="btn secondary small" id="exportCFBtn" type="button">⬇ Export (Excel)</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Operating Activities</h2><span class="pill ${cf.operating>=0?'cr':'dr'}">₹${fmt(cf.operating)}</span></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
+          ${cf.detail.operating.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
+          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Operating Activities</td><td class="num">₹${fmt(cf.operating)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Investing Activities</h2><span class="pill ${cf.investing>=0?'cr':'dr'}">₹${fmt(cf.investing)}</span></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
+          ${cf.detail.investing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
+          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Investing Activities</td><td class="num">₹${fmt(cf.investing)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Financing Activities</h2><span class="pill ${cf.financing>=0?'cr':'dr'}">₹${fmt(cf.financing)}</span></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
+          ${cf.detail.financing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
+          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Financing Activities</td><td class="num">₹${fmt(cf.financing)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Reconciliation</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          ${row2('Net Increase / (Decrease) in Cash', `₹${fmt(cf.netChange)}`, {bold:true})}
+          ${row2('Cash and Cash Equivalents — Opening', `₹${fmt(cf.openingCash)}`)}
+          ${row2('Cash and Cash Equivalents — Closing', `₹${fmt(cf.closingCash)}`, {bold:true})}
+        </table>
+      </div>
+    </div>
+    <p class="muted" style="font-size:11.5px;">${cashMatches ? '✓ Closing cash matches actual Cash + Bank ledger balances.' : `⚠ Closing cash (₹${fmt(cf.closingCash)}) does not match actual Cash + Bank balances (₹${fmt(cf.actualCash)}) — check for unusual voucher entries.`} Contra vouchers between Cash and Bank are excluded since they don't change the combined cash position. Classification: Fixed Asset lines → Investing; Capital/Loan lines → Financing; everything else → Operating.</p>
+  `;
+}
+
+function viewGST(){
+  const netGST = gstOutputTotal() - gstInputTotal();
+  const outward = state.vouchers.filter(v=>v.type==='Sales').map(v=>({v, g:gstBreakdownForVoucher(v)})).filter(r=>r.g.totalTax>0);
+  const inward = state.vouchers.filter(v=>v.type==='Purchase').map(v=>({v, g:gstBreakdownForVoucher(v)})).filter(r=>r.g.totalTax>0);
+
+  return `
+    ${masthead('GST','Output tax, input credit, and filing-ready statements')}
+
+    <div class="panel">
+      <div class="panel-head"><h2>GST Summary</h2><button class="btn secondary small" id="downloadGSTBtn" type="button">⬇ Download GST Statement</button></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Tax Head</th><th class="num">Output (Payable)</th><th class="num">Input (Credit)</th></tr>
+          <tr><td>CGST</td><td class="num">₹${fmt(-ledgerBalance('l_ocgst'))}</td><td class="num">₹${fmt(ledgerBalance('l_icgst'))}</td></tr>
+          <tr><td>SGST</td><td class="num">₹${fmt(-ledgerBalance('l_osgst'))}</td><td class="num">₹${fmt(ledgerBalance('l_isgst'))}</td></tr>
+          <tr><td>IGST</td><td class="num">₹${fmt(-ledgerBalance('l_oigst'))}</td><td class="num">₹${fmt(ledgerBalance('l_iigst'))}</td></tr>
+          <tr style="font-weight:600;border-top:2px solid var(--ink);"><td>Total</td><td class="num">₹${fmt(gstOutputTotal())}</td><td class="num">₹${fmt(gstInputTotal())}</td></tr>
+        </table>
+        <div style="padding:12px 16px;border-top:1px solid var(--rule);display:flex;justify-content:flex-end;gap:10px;align-items:center;">
+          <span class="muted" style="font-size:12.5px;">Net GST ${netGST>=0?'Payable':'Refundable / Carried Forward'}</span>
+          <span class="pill ${netGST>=0?'dr':'cr'}" style="font-size:13px;">₹${fmt(netGST)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">Outward Supplies (Sales)</div>
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      ${outward.length ? `<table>
+        <tr><th>Date</th><th>Narration</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Invoice Total</th></tr>
+        ${outward.map(({v,g})=>{
+          const invoice = voucherAmount(v);
+          const taxable = invoice - g.totalTax;
+          return `<tr><td class="muted">${v.date}</td><td>${v.narration||'—'}</td><td class="num">₹${fmt(taxable)}</td><td class="num">₹${fmt(g.cgst)}</td><td class="num">₹${fmt(g.sgst)}</td><td class="num">₹${fmt(g.igst)}</td><td class="num">₹${fmt(invoice)}</td></tr>`;
+        }).join('')}
+      </table>` : `<div class="empty">No GST sales vouchers recorded yet.</div>`}
+    </div></div>
+
+    <div class="section-title">Inward Supplies (Purchase)</div>
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      ${inward.length ? `<table>
+        <tr><th>Date</th><th>Narration</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Invoice Total</th></tr>
+        ${inward.map(({v,g})=>{
+          const invoice = voucherAmount(v);
+          const taxable = invoice - g.totalTax;
+          return `<tr><td class="muted">${v.date}</td><td>${v.narration||'—'}</td><td class="num">₹${fmt(taxable)}</td><td class="num">₹${fmt(g.cgst)}</td><td class="num">₹${fmt(g.sgst)}</td><td class="num">₹${fmt(g.igst)}</td><td class="num">₹${fmt(invoice)}</td></tr>`;
+        }).join('')}
+      </table>` : `<div class="empty">No GST purchase vouchers recorded yet.</div>`}
+    </div></div>
+    <p class="muted" style="font-size:11.5px;">Note: only Sales/Purchase vouchers where GST was applied via the GST Calculator appear here. Use the Voucher tab to record a taxable sale or purchase.</p>
+  `;
+}
+
+/* ---------------- event handling ---------------- */
+function attachHandlers(){
+  document.querySelectorAll('.navtab').forEach(b=>{
+    b.addEventListener('click',()=>{ view = b.dataset.tab; render(); });
+  });
+
+  document.querySelectorAll('[data-delete-voucher]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const id = b.dataset.deleteVoucher;
+      const v = state.vouchers.find(x=>x.id===id);
+      if(!v) return;
+      const ok = window.confirm(`Delete this ${v.type} voucher dated ${v.date} for ₹${fmt(voucherAmount(v))}?\n\nThis cannot be undone.`);
+      if(!ok) return;
+      state.vouchers = state.vouchers.filter(x=>x.id!==id);
+      await saveVouchers();
+      toast('Voucher deleted');
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-edit-voucher]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const id = b.dataset.editVoucher;
+      const v = state.vouchers.find(x=>x.id===id);
+      if(!v) return;
+      vform = {
+        id: v.id,
+        type: v.type,
+        date: v.date,
+        narration: v.narration,
+        entries: v.entries.map(e=>({...e})),
+        gst: {party:'', taxableLedger:'', amount:'', rate:18, supply:'intra', items: (v.items||[]).map(it=>({...it}))}
+      };
+      modal = null;
+      view = 'voucher';
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-open-pie]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      pieChartLedgerId = el.dataset.openPie;
+      modal = 'pieChart';
+      render();
+    });
+  });
+
+  if(view==='dashboard'){
+    document.getElementById('openRecentVouchersBtn')?.addEventListener('click', ()=>{
+      modal = 'recentVouchers';
+      render();
+    });
+    document.querySelectorAll('[data-open-visual]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const kind = el.dataset.openVisual;
+        modal = kind==='balanceSheet' ? 'balanceSheetDetail' : 'incomeStatementDetail';
+        render();
+      });
+    });
+    renderDashboardCharts();
+  }
+
+  if(view==='voucher'){
+    document.querySelectorAll('[data-vtype]').forEach(b=>{
+      b.addEventListener('click',()=>{ vform.type = b.dataset.vtype; render(); });
+    });
+    document.getElementById('vdate').addEventListener('input', e=> vform.date = e.target.value);
+    document.getElementById('vnarr').addEventListener('input', e=> vform.narration = e.target.value);
+    document.querySelectorAll('[data-mode]').forEach(b=>{
+      b.addEventListener('click', ()=>{ vform.mode = b.dataset.mode; render(); });
+    });
+    document.getElementById('singleA')?.addEventListener('change', e=>{ vform.single.ledgerA = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('singleB')?.addEventListener('change', e=>{ vform.single.ledgerB = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('singleAmount')?.addEventListener('input', e=>{ vform.single.amount = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('addRow')?.addEventListener('click',()=>{
+      vform.entries.push({ledgerId:'',dr:0,cr:0});
+      render();
+    });
+    document.getElementById('resetVoucher').addEventListener('click',()=>{
+      vform = null; render();
+    });
+    document.getElementById('printBillBtn')?.addEventListener('click', ()=>{ generateAndPrintBill(); });
+    document.querySelectorAll('.e-ledger').forEach(s=>{
+      s.addEventListener('change', e=>{ vform.entries[+e.target.dataset.i].ledgerId = e.target.value; });
+    });
+    document.querySelectorAll('.e-dr').forEach(s=>{
+      s.addEventListener('input', e=>{
+        const i = +e.target.dataset.i;
+        vform.entries[i].dr = Number(e.target.value)||0;
+        if(vform.entries[i].dr) vform.entries[i].cr = 0;
+        renderTotalsOnly();
+      });
+    });
+    document.querySelectorAll('.e-cr').forEach(s=>{
+      s.addEventListener('input', e=>{
+        const i = +e.target.dataset.i;
+        vform.entries[i].cr = Number(e.target.value)||0;
+        if(vform.entries[i].cr) vform.entries[i].dr = 0;
+        renderTotalsOnly();
+      });
+    });
+    document.querySelectorAll('[data-rm]').forEach(b=>{
+      b.addEventListener('click', e=>{
+        const i = +e.target.dataset.rm;
+        if(vform.entries.length>2) vform.entries.splice(i,1);
+        render();
+      });
+    });
+    document.getElementById('gstParty')?.addEventListener('change', e=>{ vform.gst.party = e.target.value; });
+    document.getElementById('gstTaxable')?.addEventListener('change', e=>{
+      vform.gst.taxableLedger = e.target.value;
+      const l = ledgerOf(e.target.value);
+      if(l && l.gstRate!=null) vform.gst.rate = l.gstRate;
+      render();
+    });
+    document.getElementById('addItemRow')?.addEventListener('click', ()=>{
+      vform.gst.items = vform.gst.items || [];
+      vform.gst.items.push({itemId:'__custom__', name:'', qty:1, rate:0});
+      render();
+    });
+    document.querySelectorAll('.item-select').forEach(el=>{
+      el.addEventListener('change', e=>{
+        const i = +e.target.dataset.i;
+        const val = e.target.value;
+        vform.gst.items[i].itemId = val;
+        if(val!=='__custom__'){
+          const m = state.items.find(x=>x.id===val);
+          if(m){
+            vform.gst.items[i].name = m.name;
+            if(m.rate!=null) vform.gst.items[i].rate = m.rate;
+          }
+        } else {
+          vform.gst.items[i].name = '';
+        }
+        render();
+      });
+    });
+    document.querySelectorAll('.item-name').forEach(el=>{
+      el.addEventListener('input', e=>{ vform.gst.items[+e.target.dataset.i].name = e.target.value; });
+    });
+    document.querySelectorAll('.item-qty').forEach(el=>{
+      el.addEventListener('input', e=>{ vform.gst.items[+e.target.dataset.i].qty = e.target.value; updateItemsTotals(); });
+    });
+    document.querySelectorAll('.item-rate').forEach(el=>{
+      el.addEventListener('input', e=>{ vform.gst.items[+e.target.dataset.i].rate = e.target.value; updateItemsTotals(); });
+    });
+    document.querySelectorAll('[data-item-rm]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        vform.gst.items.splice(+el.dataset.itemRm,1);
+        render();
+      });
+    });
+    document.getElementById('gstRate')?.addEventListener('change', e=>{ vform.gst.rate = e.target.value; updateGSTPreview(); });
+    document.getElementById('gstSupply')?.addEventListener('change', e=>{ vform.gst.supply = e.target.value; updateGSTPreview(); });
+    document.getElementById('applyGST')?.addEventListener('click', ()=>{
+      const g = vform.gst;
+      const amt = itemsSubtotal(g.items);
+      const rate = Number(g.rate)||0;
+      if(!g.party || !g.taxableLedger || !amt){ toast('Fill party, ledger, and at least one item with qty & rate'); return; }
+      const taxVal = amt*rate/100;
+      const total = amt+taxVal;
+      vform.entries = vform.entries.filter(e=> e.ledgerId || e.dr || e.cr);
+      if(vform.type==='Sales'){
+        vform.entries.push({ledgerId:g.party, dr:total, cr:0});
+        vform.entries.push({ledgerId:g.taxableLedger, dr:0, cr:amt});
+        if(g.supply==='intra' && taxVal>0){
+          vform.entries.push({ledgerId:'l_ocgst', dr:0, cr:taxVal/2});
+          vform.entries.push({ledgerId:'l_osgst', dr:0, cr:taxVal/2});
+        } else if(taxVal>0){
+          vform.entries.push({ledgerId:'l_oigst', dr:0, cr:taxVal});
+        }
+      } else if(vform.type==='Credit Note'){
+        // Reverses a Sales entry — sales return
+        vform.entries.push({ledgerId:g.taxableLedger, dr:amt, cr:0});
+        if(g.supply==='intra' && taxVal>0){
+          vform.entries.push({ledgerId:'l_ocgst', dr:taxVal/2, cr:0});
+          vform.entries.push({ledgerId:'l_osgst', dr:taxVal/2, cr:0});
+        } else if(taxVal>0){
+          vform.entries.push({ledgerId:'l_oigst', dr:taxVal, cr:0});
+        }
+        vform.entries.push({ledgerId:g.party, dr:0, cr:total});
+      } else if(vform.type==='Debit Note'){
+        // Reverses a Purchase entry — purchase return
+        vform.entries.push({ledgerId:g.party, dr:total, cr:0});
+        vform.entries.push({ledgerId:g.taxableLedger, dr:0, cr:amt});
+        if(g.supply==='intra' && taxVal>0){
+          vform.entries.push({ledgerId:'l_icgst', dr:0, cr:taxVal/2});
+          vform.entries.push({ledgerId:'l_isgst', dr:0, cr:taxVal/2});
+        } else if(taxVal>0){
+          vform.entries.push({ledgerId:'l_iigst', dr:0, cr:taxVal});
+        }
+      } else {
+        // Purchase
+        vform.entries.push({ledgerId:g.taxableLedger, dr:amt, cr:0});
+        if(g.supply==='intra' && taxVal>0){
+          vform.entries.push({ledgerId:'l_icgst', dr:taxVal/2, cr:0});
+          vform.entries.push({ledgerId:'l_isgst', dr:taxVal/2, cr:0});
+        } else if(taxVal>0){
+          vform.entries.push({ledgerId:'l_iigst', dr:taxVal, cr:0});
+        }
+        vform.entries.push({ledgerId:g.party, dr:0, cr:total});
+      }
+      if(vform.entries.length<2) vform.entries.push({ledgerId:'',dr:0,cr:0},{ledgerId:'',dr:0,cr:0});
+      vform.appliedItems = (g.items||[]).filter(it=>it.name && (Number(it.qty)||0)>0).map(it=>({itemId: (it.itemId && it.itemId!=='__custom__') ? it.itemId : null, name:it.name, qty:Number(it.qty)||0, rate:Number(it.rate)||0}));
+      toast('GST entries added — review below and Save');
+      render();
+    });
+    const saveBtn = document.getElementById('saveVoucher');
+    if(saveBtn) saveBtn.addEventListener('click', async ()=>{
+      const singleEligible = ['Payment','Receipt','Contra'].includes(vform.type);
+      const effectiveMode = singleEligible ? vform.mode : 'double';
+      let entries;
+      if(effectiveMode==='single'){
+        const s = vform.single;
+        const amt = Number(s.amount)||0;
+        if(!s.ledgerA || !s.ledgerB || !amt){ toast('Fill both ledgers and an amount'); return; }
+        if(s.ledgerA===s.ledgerB){ toast('The two ledgers must be different'); return; }
+        if(vform.type==='Payment') entries = [{ledgerId:s.ledgerB,dr:amt,cr:0},{ledgerId:s.ledgerA,dr:0,cr:amt}];
+        else if(vform.type==='Receipt') entries = [{ledgerId:s.ledgerA,dr:amt,cr:0},{ledgerId:s.ledgerB,dr:0,cr:amt}];
+        else entries = [{ledgerId:s.ledgerB,dr:amt,cr:0},{ledgerId:s.ledgerA,dr:0,cr:amt}];
+      } else {
+        entries = vform.entries.filter(e=>e.ledgerId && (e.dr||e.cr));
+        if(entries.length<2){ toast('Add at least two ledger entries'); return; }
+      }
+      if(vform.id){
+        const idx = state.vouchers.findIndex(v=>v.id===vform.id);
+        if(idx>-1){
+          const createdAt = state.vouchers[idx].createdAt || new Date().toISOString();
+          state.vouchers[idx] = { id: vform.id, date: vform.date, type: vform.type, narration: vform.narration, entries, createdAt, updatedAt: new Date().toISOString() };
+          if(vform.appliedItems && vform.appliedItems.length) state.vouchers[idx].items = vform.appliedItems;
+        }
+        await saveVouchers();
+        toast('Voucher updated');
+      } else {
+        const now = new Date().toISOString();
+        const v = { id: uid('v'), date: vform.date, type: vform.type, narration: vform.narration, entries, createdAt: now };
+        if(vform.appliedItems && vform.appliedItems.length) v.items = vform.appliedItems;
+        state.vouchers.push(v);
+        await saveVouchers();
+        toast('Voucher saved');
+      }
+      vform = null;
+      view = 'daybook';
+      render();
+    });
+  }
+
+  if(view==='ledgers'){
+    document.querySelectorAll('[data-select-ledger]').forEach(el=>{
+      el.addEventListener('click',()=>{ window._selectedLedger = el.dataset.selectLedger; render(); });
+    });
+  }
+
+  if(view==='calendar'){
+    document.getElementById('calPrev')?.addEventListener('click', ()=>{
+      calState.month--;
+      if(calState.month<0){ calState.month=11; calState.year--; }
+      render();
+    });
+    document.getElementById('calNext')?.addEventListener('click', ()=>{
+      calState.month++;
+      if(calState.month>11){ calState.month=0; calState.year++; }
+      render();
+    });
+    document.getElementById('calToday')?.addEventListener('click', ()=>{
+      const t = new Date();
+      calState.year = t.getFullYear();
+      calState.month = t.getMonth();
+      calState.selected = t.toISOString().slice(0,10);
+      render();
+    });
+    document.querySelectorAll('[data-cal-day]').forEach(el=>{
+      el.addEventListener('click', ()=>{ calState.selected = el.dataset.calDay; render(); });
+    });
+    document.getElementById('calNewVoucher')?.addEventListener('click', ()=>{
+      vform = { type:'Payment', date: calState.selected, narration:'', entries:[{ledgerId:'',dr:0,cr:0},{ledgerId:'',dr:0,cr:0}], gst:{party:'', taxableLedger:'', amount:'', rate:18, supply:'intra', items:[]} };
+      view = 'voucher';
+      render();
+    });
+  }
+
+  if(view==='coa'){
+    const addBtn = document.getElementById('addLedgerBtn');
+    if(addBtn) addBtn.addEventListener('click', async ()=>{
+      const name = document.getElementById('newLedgerName').value.trim();
+      const group = document.getElementById('newLedgerGroup').value;
+      const openingRaw = Number(document.getElementById('newLedgerOpening').value)||0;
+      const sign = Number(document.getElementById('newLedgerType').value);
+      const gstRaw = document.getElementById('newLedgerGST').value;
+      if(!name){ toast('Enter a ledger name'); return; }
+      const ledger = { id: uid('l'), name, group, opening: openingRaw*sign };
+      if(gstRaw !== '') ledger.gstRate = Number(gstRaw);
+      state.ledgers.push(ledger);
+      await saveLedgers();
+      toast('Ledger added');
+      render();
+    });
+    attachStockItemFormHandlers();
+    document.querySelectorAll('[data-delete-item]').forEach(b=>{
+      b.addEventListener('click', async ()=>{
+        const id = b.dataset.deleteItem;
+        const it = state.items.find(x=>x.id===id);
+        if(!it) return;
+        const ok = window.confirm(`Delete item "${it.name}"?\n\nThis won't affect items already used on saved vouchers.`);
+        if(!ok) return;
+        state.items = state.items.filter(x=>x.id!==id);
+        await saveItems();
+        toast('Item deleted');
+        render();
+      });
+    });
+  }
+
+  if(view==='inventory'){
+    attachStockItemFormHandlers();
+    document.querySelectorAll('[data-stock-detail]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        stockDetailItemId = el.dataset.stockDetail;
+        modal = 'stockDetail';
+        render();
+      });
+    });
+    document.querySelectorAll('[data-stock-adjust]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        stockAdjustItemId = el.dataset.stockAdjust;
+        modal = 'stockAdjust';
+        render();
+      });
+    });
+  }
+  if(modal==='stockAdjust'){
+    document.getElementById('saveStockAdjBtn')?.addEventListener('click', async ()=>{
+      const qtyRaw = document.getElementById('stockAdjQty').value;
+      const reason = document.getElementById('stockAdjReason').value.trim();
+      const qty = Number(qtyRaw);
+      if(!qtyRaw || qty===0 || isNaN(qty)){ toast('Enter a non-zero adjustment quantity'); return; }
+      state.stockAdjustments.push({
+        id: uid('adj'),
+        itemId: stockAdjustItemId,
+        date: new Date().toISOString().slice(0,10),
+        qty,
+        reason,
+        createdAt: new Date().toISOString(),
+      });
+      await saveStockAdjustments();
+      toast('Stock adjustment saved');
+      modal = null;
+      render();
+    });
+  }
+
+  if(view==='reports'){
+    document.getElementById('exportExcelBtn')?.addEventListener('click', exportReportsToExcel);
+    document.getElementById('exportPLBtn')?.addEventListener('click', exportPLToExcel);
+    document.getElementById('exportBSBtn')?.addEventListener('click', exportBalanceSheetToExcel);
+    document.getElementById('exportRatiosBtn')?.addEventListener('click', exportRatiosToExcel);
+    document.getElementById('exportCFBtn')?.addEventListener('click', exportCashFlowToExcel);
+    document.querySelectorAll('[data-is-detail]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        isDetailCategory = el.dataset.isDetail;
+        modal = 'isDetail';
+        render();
+      });
+    });
+    document.querySelectorAll('[data-ledger-detail]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        ledgerDetailId = el.dataset.ledgerDetail;
+        modal = 'ledgerDetail';
+        render();
+      });
+    });
+  }
+
+  if(view==='gst'){
+    document.getElementById('downloadGSTBtn')?.addEventListener('click', downloadGSTStatement);
+  }
+}
+
+function updateGSTPreview(){
+  const el = document.getElementById('gstPreviewBox');
+  if(el) el.outerHTML = gstPreview(vform.gst);
+}
+function updateItemsTotals(){
+  document.querySelectorAll('#gstItemRows .item-amount').forEach((el,i)=>{
+    const it = vform.gst.items[i];
+    if(it) el.value = '₹'+fmt((Number(it.qty)||0)*(Number(it.rate)||0));
+  });
+  const totalEl = document.getElementById('gstItemsTotal');
+  if(totalEl) totalEl.textContent = '₹'+fmt(itemsSubtotal(vform.gst.items));
+  updateGSTPreview();
+}
+
+// Re-render just the totals line without losing input focus while typing amounts
+function updateSingleEntryPreview(){
+  const el = document.getElementById('singlePreview');
+  if(el) el.textContent = singleEntryPreviewText();
+  const s = vform.single;
+  const amt = Number(s.amount)||0;
+  const ok = !!(s.ledgerA && s.ledgerB && amt>0 && s.ledgerA!==s.ledgerB);
+  const saveBtn = document.getElementById('saveVoucher');
+  if(saveBtn) saveBtn.disabled = !ok;
+}
+
+function renderTotalsOnly(){
+  const dr = vform.entries.reduce((s,e)=>s+(Number(e.dr)||0),0);
+  const cr = vform.entries.reduce((s,e)=>s+(Number(e.cr)||0),0);
+  const balanced = Math.abs(dr-cr) < 0.005 && dr > 0;
+  const el = document.querySelector('.totals-line');
+  if(el){
+    el.className = 'totals-line ' + (balanced?'balanced':'unbalanced');
+    el.innerHTML = `<span>Dr ₹${fmt(dr)}</span><span>Cr ₹${fmt(cr)}</span><span>${balanced?'Balanced ✓':'Not balanced'}</span>`;
+  }
+  const saveBtn = document.getElementById('saveVoucher');
+  if(saveBtn) saveBtn.disabled = !balanced;
+}
+
+/* ---------------- init ---------------- */
+(async function init(){
+  await loadCompanies();
+  await migrateLegacyData();
+  await ensureDemoCompany();
+  screen = 'gateway';
+  renderGateway();
+})();
+</script>
+</body>
+</html>
