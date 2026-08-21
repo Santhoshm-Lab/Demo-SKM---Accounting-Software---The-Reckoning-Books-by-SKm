@@ -48,14 +48,18 @@
   .menubar span:hover{background:var(--surface-strong);color:var(--ink);}
   .menubar span.menu-danger:hover{background:var(--debit-bg);color:var(--debit);}
 
-  /* Tab strip → pill segmented control */
-  .tabstrip{display:flex;gap:6px;padding:14px 20px 4px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;}
-  .navtab{font-family:inherit;font-size:12.5px;font-weight:700;padding:8px 16px;background:#fff;border:1px solid var(--border);border-radius:999px;cursor:pointer;color:var(--ink-soft);transition:all .15s;display:inline-flex;align-items:center;gap:7px;}
-  .navtab:hover:not(.active){background:var(--surface-strong);color:var(--ink);border-color:var(--border-strong);}
+  /* Body shell → left sidebar nav + main content, side by side */
+  .body-shell{display:flex;flex:1;min-height:0;}
+
+  /* Tab strip → vertical sidebar nav */
+  .tabstrip{display:flex;flex-direction:column;gap:3px;padding:16px 12px;background:var(--surface);border-right:1px solid var(--border);width:196px;flex-shrink:0;overflow-y:auto;}
+  .navtab{font-family:inherit;font-size:12.5px;font-weight:700;padding:10px 14px;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);cursor:pointer;color:var(--ink-soft);transition:all .15s;display:flex;align-items:center;gap:10px;width:100%;text-align:left;}
+  .navtab:hover:not(.active){background:var(--surface-strong);color:var(--ink);}
   .navtab.active{background:var(--accent1);color:#fff;border-color:var(--accent1);box-shadow:0 3px 10px rgba(44,160,28,0.28);}
+  .navtab b{font-weight:900;text-decoration:underline;text-underline-offset:2px;}
   .tab-icon{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
 
-  .main{flex:1;min-width:0;padding:20px 24px 50px;overflow-x:auto;}
+  .main{flex:1;min-width:0;padding:20px 24px 50px;overflow:auto;}
 
   /* Status bar */
   .statusbar{display:flex;justify-content:space-between;background:var(--surface);border-top:1px solid var(--border);padding:0;font-size:11px;color:var(--ink-faint);}
@@ -68,6 +72,8 @@
 
   .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px;}
   .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:0 1px 2px rgba(20,30,25,0.04);}
+  .stat[data-open-kpi]{cursor:pointer;transition:box-shadow .15s, transform .15s, border-color .15s;}
+  .stat[data-open-kpi]:hover{box-shadow:0 6px 18px rgba(20,30,25,0.10);transform:translateY(-1px);border-color:var(--border-strong);}
   .stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:8px;font-weight:700;}
   .stat .val{font-family:inherit;font-variant-numeric:tabular-nums;font-size:21px;font-weight:800;letter-spacing:-.01em;color:var(--ink);}
   .stat .val.dr{color:var(--debit);}
@@ -212,7 +218,11 @@
     .main{padding:14px;}
     .entry-row{grid-template-columns:1fr;}
     .row{flex-direction:column;}
-    .tabstrip{flex-wrap:wrap;}
+    /* Below tablet width, drop the sidebar back to a horizontal, wrapping strip along the top —
+       a vertical column of 9 items eats too much width on a phone screen. */
+    .body-shell{flex-direction:column;}
+    .tabstrip{flex-direction:row;flex-wrap:wrap;width:auto;gap:6px;padding:12px 14px 8px;border-right:none;border-bottom:1px solid var(--border);overflow-y:visible;}
+    .navtab{width:auto;border-radius:999px;}
   }
 </style>
 </head>
@@ -1102,18 +1112,20 @@ function render(){
       <span id="menuHelp">Help</span>
       <span id="menuDeleteCompany" class="menu-danger">Delete Company</span>
     </div>
-    <div class="tabstrip">
-      ${tab('dashboard','Dashboard')}
-      ${tab('voucher','Voucher')}
-      ${tab('daybook','Day Book')}
-      ${tab('calendar','Calendar')}
-      ${tab('ledgers','Ledgers')}
-      ${tab('coa','Accounts')}
-      ${tab('inventory','Inventory')}
-      ${tab('reports','Reports')}
-      ${tab('gst','GST')}
+    <div class="body-shell">
+      <div class="tabstrip">
+        ${tab('dashboard','Dashboard','D')}
+        ${tab('voucher','Voucher','V')}
+        ${tab('daybook','Day Book','B')}
+        ${tab('calendar','Calendar','C')}
+        ${tab('ledgers','Ledgers','L')}
+        ${tab('coa','Accounts','A')}
+        ${tab('inventory','Inventory','I')}
+        ${tab('reports','Reports','R')}
+        ${tab('gst','GST','G')}
+      </div>
+      <div class="main">${renderView()}</div>
     </div>
-    <div class="main">${renderView()}</div>
     <div class="statusbar">
       <span>Ready</span>
       <span>Ledgers: ${state.ledgers.length}</span>
@@ -1131,6 +1143,9 @@ function render(){
     ${modal==='import' ? importModal() : ''}
     ${modal==='balanceSheetDetail' ? balanceSheetDetailModal() : ''}
     ${modal==='incomeStatementDetail' ? incomeStatementDetailModal() : ''}
+    ${modal==='cashBankDetail' ? cashBankDetailModal() : ''}
+    ${modal==='totalAssetsDetail' ? totalAssetsDetailModal() : ''}
+    ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
   `;
   attachHandlers();
 
@@ -1266,9 +1281,34 @@ function tabIcon(id){
   };
   return `<svg class="tab-icon" viewBox="0 0 24 24">${icons[id]||''}</svg>`;
 }
-function tab(id,label){
-  return `<button class="navtab ${view===id?'active':''}" data-tab="${id}">${tabIcon(id)}<span>${label}</span></button>`;
+function tab(id,label,shortcutLetter){
+  const idx = shortcutLetter ? label.toLowerCase().indexOf(shortcutLetter.toLowerCase()) : -1;
+  const labelHtml = idx>=0
+    ? `${escapeHtml(label.slice(0,idx))}<b>${escapeHtml(label[idx])}</b>${escapeHtml(label.slice(idx+1))}`
+    : escapeHtml(label);
+  return `<button class="navtab ${view===id?'active':''}" data-tab="${id}" title="Shortcut: ${shortcutLetter||''}">${tabIcon(id)}<span>${labelHtml}</span></button>`;
 }
+/* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
+   the bold letter in each sidebar label. Only active once a company is open, when focus isn't
+   inside a text field/dropdown, and no modal is covering the tabs. */
+const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst' };
+function goToTab(id){
+  if(!id || view===id) return;
+  view = id;
+  if(view==='reports') reportsSelected = null;
+  render();
+}
+document.addEventListener('keydown', (e)=>{
+  if(screen!=='app' || modal) return;
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  const tag = t && t.tagName;
+  if(tag==='INPUT' || tag==='SELECT' || tag==='TEXTAREA' || (t && t.isContentEditable)) return;
+  const id = TAB_SHORTCUTS[e.key.toLowerCase()];
+  if(!id) return;
+  e.preventDefault();
+  goToTab(id);
+});
 function viewDropdown(){
   const tabs = [
     ['dashboard','Dashboard'],['voucher','Voucher'],['daybook','Day Book'],['calendar','Calendar'],
@@ -1486,6 +1526,77 @@ function stockAdjustModal(){
           <div class="field"><label>Adjustment Quantity (+ to add, − to remove)</label><input type="number" id="stockAdjQty" step="0.01" placeholder="e.g. -5 or 10"></div>
           <div class="field"><label>Reason</label><input type="text" id="stockAdjReason" placeholder="e.g. Physical count correction, damage"></div>
           <button class="btn" id="saveStockAdjBtn" type="button" style="width:100%;">Save Adjustment</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+/* Dashboard KPI card details — each of the four "grid" stat cards opens a focused breakdown
+   of exactly the figure it shows, rather than the full Balance Sheet / Income Statement. */
+function cashBankDetailModal(){
+  const ledgers = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank');
+  const total = ledgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const rows = ledgers.map(l=>`<tr><td>${l.name}</td><td class="num">₹${fmt(ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">No cash or bank ledgers yet</td></tr>`;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:440px;">
+        <div class="panel-head"><h2>Cash &amp; Bank — Breakdown</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th>Ledger</th><th class="num">Balance</th></tr>
+            ${rows}
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>TOTAL CASH &amp; BANK</td><td class="num">₹${fmt(total)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function totalAssetsDetailModal(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const rows = (ledgers, sign) => ledgers.map(l=>`<tr><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">None</td></tr>`;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:460px;">
+        <div class="panel-head"><h2>Total Assets — Breakdown</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th colspan="2">Non-current Assets</th></tr>
+            ${rows(bs.nonCurrentAssets,1)}
+            <tr style="font-weight:700;"><td>Total Non-current Assets</td><td class="num">₹${fmt(bs.nonCurrentAssetsTotal)}</td></tr>
+            <tr><th colspan="2">Current Assets</th></tr>
+            ${rows(bs.currentAssets,1)}
+            <tr style="font-weight:700;"><td>Total Current Assets</td><td class="num">₹${fmt(bs.currentAssetsTotal)}</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>TOTAL ASSETS</td><td class="num">₹${fmt(bs.totalAssets)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function liabCapitalDetailModal(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const rows = (ledgers, sign) => ledgers.map(l=>`<tr><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">None</td></tr>`;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:460px;">
+        <div class="panel-head"><h2>Liabilities + Capital — Breakdown</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th colspan="2">Equity / Capital</th></tr>
+            ${rows(bs.equityLedgers,-1)}
+            <tr><td>&nbsp;&nbsp;Retained Earnings (Profit for the Period)</td><td class="num">₹${fmt(bs.totalEquity-bs.equityBase)}</td></tr>
+            <tr style="font-weight:700;"><td>Total Equity</td><td class="num">₹${fmt(bs.totalEquity)}</td></tr>
+            <tr><th colspan="2">Non-current Liabilities</th></tr>
+            ${rows(bs.nonCurrentLiabilities,-1)}
+            <tr style="font-weight:700;"><td>Total Non-current Liabilities</td><td class="num">₹${fmt(bs.nonCurrentLiabTotal)}</td></tr>
+            <tr><th colspan="2">Current Liabilities</th></tr>
+            ${rows(bs.currentLiabilities,-1)}
+            <tr style="font-weight:700;"><td>Total Current Liabilities</td><td class="num">₹${fmt(bs.currentLiabTotal)}</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>TOTAL LIABILITIES + CAPITAL</td><td class="num">₹${fmt(bs.totalEquityAndLiab)}</td></tr>
+          </table>
         </div>
       </div>
     </div>
@@ -1909,10 +2020,10 @@ function viewDashboard(){
   return `
     ${masthead('Dashboard','Overview of the books')}
     <div class="grid">
-      <div class="stat"><div class="label">Cash &amp; Bank</div><div class="val ${cash>=0?'dr':'cr'}">₹${fmt(cash)}</div></div>
-      <div class="stat"><div class="label">Total Assets</div><div class="val dr">₹${fmt(assets)}</div></div>
-      <div class="stat"><div class="label">Liabilities + Capital</div><div class="val cr">₹${fmt(liab)}</div></div>
-      <div class="stat"><div class="label">${profit>=0?'Net Profit':'Net Loss'}</div><div class="val ${profit>=0?'cr':'dr'}">₹${fmt(profit)}</div></div>
+      <div class="stat" data-open-kpi="cash"><div class="label">Cash &amp; Bank</div><div class="val ${cash>=0?'dr':'cr'}">₹${fmt(cash)}</div></div>
+      <div class="stat" data-open-kpi="assets"><div class="label">Total Assets</div><div class="val dr">₹${fmt(assets)}</div></div>
+      <div class="stat" data-open-kpi="liab"><div class="label">Liabilities + Capital</div><div class="val cr">₹${fmt(liab)}</div></div>
+      <div class="stat" data-open-kpi="profit"><div class="label">${profit>=0?'Net Profit':'Net Loss'}</div><div class="val ${profit>=0?'cr':'dr'}">₹${fmt(profit)}</div></div>
     </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
@@ -1940,7 +2051,7 @@ function balanceSheetVisualCard(){
   const liabilities = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
   return `
     <div class="panel" data-open-visual="balanceSheet" style="cursor:pointer;">
-      <div class="panel-head"><h2>Balance Sheet</h2><span class="muted" style="font-size:11px;">Click for details</span></div>
+      <div class="panel-head"><h2>Balance Sheet</h2></div>
       <div class="panel-body">
         <canvas id="bsChart3D" width="360" height="220" style="width:100%;height:220px;display:block;"></canvas>
         <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;">
@@ -1957,7 +2068,7 @@ function incomeStatementVisualCard(){
   const totalExpenses = is.costOfSales + is.distributionCosts + is.adminExpenses + is.financeCosts;
   return `
     <div class="panel" data-open-visual="incomeStatement" style="cursor:pointer;">
-      <div class="panel-head"><h2>Income Statement</h2><span class="muted" style="font-size:11px;">Click for details</span></div>
+      <div class="panel-head"><h2>Income Statement</h2></div>
       <div class="panel-body">
         <canvas id="isChart3D" width="360" height="220" style="width:100%;height:220px;display:block;"></canvas>
         <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;">
@@ -3547,11 +3658,7 @@ function viewGST(){
 /* ---------------- event handling ---------------- */
 function attachHandlers(){
   document.querySelectorAll('.navtab').forEach(b=>{
-    b.addEventListener('click',()=>{
-      view = b.dataset.tab;
-      if(view==='reports') reportsSelected = null;
-      render();
-    });
+    b.addEventListener('click',()=>{ goToTab(b.dataset.tab); });
   });
 
   document.querySelectorAll('[data-delete-voucher]').forEach(b=>{
@@ -3618,6 +3725,13 @@ function attachHandlers(){
       el.addEventListener('click', ()=>{
         const kind = el.dataset.openVisual;
         modal = kind==='balanceSheet' ? 'balanceSheetDetail' : 'incomeStatementDetail';
+        render();
+      });
+    });
+    const KPI_MODALS = { cash:'cashBankDetail', assets:'totalAssetsDetail', liab:'liabCapitalDetail', profit:'incomeStatementDetail' };
+    document.querySelectorAll('[data-open-kpi]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        modal = KPI_MODALS[el.dataset.openKpi];
         render();
       });
     });
