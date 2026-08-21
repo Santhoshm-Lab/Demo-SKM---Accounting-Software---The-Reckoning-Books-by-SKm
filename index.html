@@ -373,6 +373,7 @@ let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
 let viewMenuOpen = false;  // View menu dropdown toggle
 let editCoDraft = null;    // draft for the Edit Company modal
 let fileMenuOpen = false;  // Gateway File menu dropdown toggle
+let servicesMenuOpen = false; // Gateway Services menu dropdown toggle (admin login only)
 let isDetailCategory = null; // which Income Statement line was clicked, for the detail modal
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let pieChartLedgerId = null; // which ledger's pie chart to show
@@ -2033,6 +2034,7 @@ function renderGateway(){
       <span id="gwMenuFile" style="position:relative;">File${fileMenuOpen?fileDropdown():''}</span>
       <span id="gwMenuCompany">Company</span>
       <span id="gwMenuHelp">Help</span>
+      ${currentUser && currentUser.isAdmin ? `<span id="gwMenuServices" style="position:relative;">Services${servicesMenuOpen?servicesDropdown():''}</span>` : ''}
     </div>
     ${currentUser ? `<div class="rb-greeting">Welcome, <strong>${escapeHtml(currentUser.name)}</strong></div>` : ''}
     <div class="gateway-shell">
@@ -2143,6 +2145,7 @@ function renderGateway(){
     </div>
     <div class="rb-credit">Created by <strong>SKm</strong></div>
     ${modal==='help' ? helpModal() : ''}
+    ${modal==='publicLogins' ? publicLoginsModal() : ''}
       </div>
     </div>
   `;
@@ -2226,17 +2229,34 @@ function renderGateway(){
   document.getElementById('gwMenuFile').addEventListener('click', (e)=>{
     e.stopPropagation();
     fileMenuOpen = !fileMenuOpen;
+    servicesMenuOpen = false;
     renderGateway();
   });
   document.getElementById('gwMenuCompany').addEventListener('click', ()=>{
     fileMenuOpen = false;
+    servicesMenuOpen = false;
     renderGateway();
   });
   document.getElementById('gwMenuHelp').addEventListener('click', ()=>{
     fileMenuOpen = false;
+    servicesMenuOpen = false;
     modal = 'help';
     renderGateway();
   });
+  document.getElementById('gwMenuServices')?.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    servicesMenuOpen = !servicesMenuOpen;
+    fileMenuOpen = false;
+    renderGateway();
+  });
+  if(servicesMenuOpen){
+    document.getElementById('gwLoginPublicLink')?.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      servicesMenuOpen = false;
+      modal = 'publicLogins';
+      renderGateway();
+    });
+  }
   if(fileMenuOpen){
     document.getElementById('gwNewCompanyLink')?.addEventListener('click', (e)=>{
       e.stopPropagation();
@@ -2262,7 +2282,7 @@ function renderGateway(){
       pushHistory();
     });
   }
-  if(modal==='help'){
+  if(modal==='help' || modal==='publicLogins'){
     document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
       if(e.target.id==='modalOverlayBg'){ modal = null; renderGateway(); }
     });
@@ -2271,6 +2291,27 @@ function renderGateway(){
 }
 function fileDropdown(){
   return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
+}
+function servicesDropdown(){
+  return `<div class="menu-dropdown"><a id="gwLoginPublicLink">Login - Public</a></div>`;
+}
+function publicLoginsModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:460px;">
+        <div class="panel-head"><h2>Login - Public</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created on this device — the admin login itself isn't one of these.</p>
+          ${users.length ? `
+          <table>
+            <tr><th>#</th><th>Account Name</th><th>Username</th><th class="num">Companies</th></tr>
+            ${users.map((u,i)=>`<tr><td class="muted">${i+1}</td><td>${escapeHtml(u.name)}</td><td class="muted">${escapeHtml(u.username)}</td><td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td></tr>`).join('')}
+          </table>
+          ` : `<div class="empty">No public accounts have been created yet.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderView(){
