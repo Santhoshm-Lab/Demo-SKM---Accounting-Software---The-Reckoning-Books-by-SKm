@@ -107,9 +107,10 @@
   .btn.small{padding:6px 13px;font-size:11.5px;}
   .btn:disabled{opacity:.4;cursor:not-allowed;box-shadow:none;}
 
-  select, input[type=text], input[type=date], input[type=number]{
+  select, input[type=text], input[type=date], input[type=number], input[type=password]{
     font-family:inherit;font-size:12.5px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--field);color:var(--ink);width:100%;transition:border-color .15s, box-shadow .15s;
   }
+  .pw-field-wrap input{padding-right:56px;}
   select:focus, input:focus{outline:none;border-color:var(--accent1);box-shadow:0 0 0 3px rgba(44,160,28,0.16);}
   input[type=number]{font-variant-numeric:tabular-nums;font-weight:600;text-align:right;}
   label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);margin-bottom:6px;font-weight:700;}
@@ -197,6 +198,16 @@
   .login-card .login-by{margin:2px 0 18px;font-size:11px;color:var(--ink-faint);font-weight:700;letter-spacing:.08em;text-transform:uppercase;}
   .login-tagline{margin:0 0 20px;font-size:12.5px;color:var(--ink-soft);line-height:1.5;}
   .login-card label{text-align:left;}
+  .pw-field-wrap{position:relative;}
+  .pw-toggle{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;}
+  .pw-toggle:hover{color:var(--accent1);}
+  .auth-error{color:var(--debit);font-size:12px;margin:12px 0 0;font-weight:600;text-align:left;}
+  .auth-toggle-line{margin:14px 0 0;font-size:12px;color:var(--ink-soft);text-align:center;}
+  .auth-toggle-line a{color:var(--accent1);font-weight:700;cursor:pointer;text-decoration:underline;}
+  .auth-users-block{margin-top:14px;padding-top:14px;border-top:1px solid var(--border);}
+  .auth-users-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;margin:0 0 8px;text-align:center;}
+  .user-pick-pill{display:inline-block;padding:5px 12px;border-radius:999px;font-size:11.5px;font-weight:700;background:var(--surface-strong);color:var(--ink-soft);cursor:pointer;transition:all .15s;border:1px solid var(--border);}
+  .user-pick-pill:hover{background:var(--accent1);color:#fff;border-color:var(--accent1);}
   @media (max-width:900px){
     .rb-letter-r{top:-4%;}
     .rb-letter-b{bottom:-6%;}
@@ -342,11 +353,21 @@ let state = {
 };
 let view = 'dashboard';
 let vform = null; // active voucher form draft
+let quickLedgerFocus = null; // remembers which ledger field to fill after creating a ledger from within the voucher form: {type:'entry', index} | {type:'single', which:'A'|'B'}
 let calState = { year: new Date().getFullYear(), month: new Date().getMonth(), selected: new Date().toISOString().slice(0,10) };
 let companies = [];
 let currentCompany = null;
 let screen = 'loading'; // 'login' | 'gateway' | 'app'
-let loginName = '';     // name entered on the welcome/login screen
+let users = [];          // local accounts: [{id, name, username, salt, hash}]
+let currentUser = null;  // the account currently logged in
+let authMode = 'login';  // 'login' | 'signup' — which form the login screen shows
+let authError = '';      // inline validation/error message on the login screen
+let authShowPassword = false; // show/hide toggle for the password field(s)
+let lastUsername = '';   // last-used username, remembered only to prefill the username field
+let authDraft = { name:'', username:'' }; // keeps name/username typed so a validation error doesn't force retyping them
+const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
+let adminDialogOpen = false;   // whether the Admin Login password dialog is showing on the login screen
+let adminLoginError = '';      // inline error message inside the admin dialog
 let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
 let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
 let viewMenuOpen = false;  // View menu dropdown toggle
@@ -391,6 +412,47 @@ function toast(msg){
   t.classList.add('show');
   clearTimeout(toast._h);
   toast._h = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ---------------- local accounts (login / sign up) ----------------
+   There is no server here — everything lives in this browser's storage. Passwords are never
+   kept in plain text: each account gets a random salt and only a SHA-256 hash of salt+password
+   is stored (falling back to a simple string hash on the rare browser without Web Crypto). This
+   is still just a local access gate, not real multi-device security, but it keeps a casual look
+   at storage from reading anyone's password back out. */
+async function loadUsers(){
+  try{
+    const u = await window.storage.get('users');
+    users = u ? JSON.parse(u.value) : [];
+  }catch(e){ users = []; }
+}
+async function saveUsers(){
+  try{ await window.storage.set('users', JSON.stringify(users)); }
+  catch(e){ toast('Could not save accounts'); }
+}
+function randomSalt(){
+  try{
+    const arr = new Uint8Array(16);
+    crypto.getRandomValues(arr);
+    return Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+}
+async function hashPassword(password, salt){
+  try{
+    if(window.crypto && window.crypto.subtle){
+      const enc = new TextEncoder().encode(salt+':'+password);
+      const buf = await crypto.subtle.digest('SHA-256', enc);
+      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+  }catch(e){}
+  // Fallback for a browser without Web Crypto — not cryptographically strong, but this is a
+  // local-only access gate to begin with, so a simple string hash is an acceptable fallback.
+  let h = 0;
+  const s = salt+':'+password;
+  for(let i=0;i<s.length;i++){ h = (Math.imul(31,h) + s.charCodeAt(i))|0; }
+  return 'fnv'+(h>>>0).toString(16);
 }
 
 /* ---------------- persistence ---------------- */
@@ -1146,6 +1208,7 @@ function render(){
     ${modal==='cashBankDetail' ? cashBankDetailModal() : ''}
     ${modal==='totalAssetsDetail' ? totalAssetsDetailModal() : ''}
     ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
+    ${modal==='quickAddLedger' ? quickAddLedgerModal() : ''}
   `;
   attachHandlers();
 
@@ -1702,6 +1765,8 @@ function helpModal(){
 /* ---------------- Login — welcome screen shown before Company Info ---------------- */
 function renderLogin(){
   const app = document.getElementById('app');
+  const isSignup = authMode==='signup';
+  const pwType = authShowPassword ? 'text' : 'password';
   app.innerHTML = `
     <div class="rb-bg">
       <span class="rb-letter rb-letter-r">R</span>
@@ -1716,29 +1781,166 @@ function renderLogin(){
             <div class="login-logo">RB</div>
             <h1>The Reckoning Books</h1>
             <div class="login-by">by SKm</div>
-            <p class="login-tagline">Welcome — tell us who's keeping the books today.</p>
-            <label>Your Name</label>
-            <input type="text" id="loginNameInput" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(loginName)}" autocomplete="name">
-            <button class="btn" id="loginContinueBtn" type="button" style="width:100%;margin-top:14px;">Continue →</button>
+            <p class="login-tagline">${isSignup ? 'Create your account to start keeping the books.' : 'Log in to continue.'}</p>
+
+            ${isSignup ? `
+            <label>Full Name</label>
+            <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name">
+            <label style="margin-top:12px;">Username</label>
+            <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username">
+            ` : `
+            <label>Username</label>
+            <input type="text" id="authUsername" placeholder="Your username" value="${escapeAttr(authDraft.username || lastUsername)}" autocomplete="username">
+            `}
+
+            <label style="margin-top:12px;">Password</label>
+            <div class="pw-field-wrap">
+              <input type="${pwType}" id="authPassword" placeholder="${isSignup?'Create a password':'Your password'}" autocomplete="${isSignup?'new-password':'current-password'}">
+              <button type="button" class="pw-toggle" id="authTogglePw">${authShowPassword?'Hide':'Show'}</button>
+            </div>
+
+            ${isSignup ? `
+            <label style="margin-top:12px;">Confirm Password</label>
+            <input type="${pwType}" id="authConfirmPassword" placeholder="Re-enter password" autocomplete="new-password">
+            ` : ''}
+
+            ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
+
+            <button class="btn" id="authSubmitBtn" type="button" style="width:100%;margin-top:16px;">${isSignup?'Create Account':'Log In'} →</button>
+
+            <button class="btn secondary" id="adminLoginBtn" type="button" style="width:100%;margin-top:10px;">Admin Login</button>
+
+            ${users.length ? `<p class="auth-toggle-line">${isSignup ? 'Already have an account?' : 'New here?'} <a id="authToggleModeLink">${isSignup?'Log in':'Create one'}</a></p>` : ''}
+
+            ${!isSignup && users.length ? `
+            <div class="auth-users-block">
+              <p class="auth-users-label">Accounts on this device</p>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">
+                ${users.map(u=>`<span class="user-pick-pill" data-pick-user="${escapeAttr(u.username)}">${escapeHtml(u.name)}</span>`).join('')}
+              </div>
+            </div>
+            ` : ''}
           </div>
           <div class="login-footer">Built by <strong>Santhosh Kumar M</strong> — <em>Accounting at the speed of business</em></div>
         </div>
       </div>
+      ${adminDialogOpen ? `
+      <div class="modal-overlay" id="adminOverlayBg">
+        <div class="modal-card" style="width:360px;">
+          <div class="panel-head"><h2>Admin Login</h2><button class="btn secondary small" id="adminDialogClose" type="button">✕</button></div>
+          <div class="panel-body">
+            <p class="muted" style="font-size:12.5px;margin-top:0;">Enter the admin password to continue.</p>
+            <label>Password</label>
+            <input type="password" id="adminPasswordInput" placeholder="Admin password" autocomplete="off">
+            ${adminLoginError ? `<p class="auth-error">${escapeHtml(adminLoginError)}</p>` : ''}
+            <button class="btn" id="adminLoginSubmit" type="button" style="width:100%;margin-top:14px;">Log In as Admin →</button>
+          </div>
+        </div>
+      </div>
+      ` : ''}
     </div>
   `;
-  const nameInput = document.getElementById('loginNameInput');
-  const goContinue = async ()=>{
-    const name = (nameInput.value||'').trim();
-    if(!name){ nameInput.focus(); return; }
-    loginName = name;
-    try{ await window.storage.set('lastUserName', loginName); }catch(e){}
-    screen = 'gateway';
-    renderGateway();
+
+  const submitAuth = async ()=>{
+    authError = '';
+    const password = document.getElementById('authPassword').value || '';
+    if(isSignup){
+      const name = (document.getElementById('authName').value||'').trim();
+      const username = (document.getElementById('authUsername').value||'').trim();
+      const confirm = document.getElementById('authConfirmPassword').value || '';
+      authDraft.name = name; authDraft.username = username;
+      if(!name || !username || !password){ authError = 'Please fill in your name, username, and password.'; renderLogin(); return; }
+      if(users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ authError = 'That username is already taken.'; renderLogin(); return; }
+      if(password.length<4){ authError = 'Password must be at least 4 characters.'; renderLogin(); return; }
+      if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); return; }
+      const salt = randomSalt();
+      const hash = await hashPassword(password, salt);
+      const user = { id: uid('u'), name, username, salt, hash };
+      users.push(user);
+      await saveUsers();
+      currentUser = user;
+      lastUsername = username;
+      authDraft = { name:'', username:'' };
+      try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+      toast(`Welcome, ${name}!`);
+      screen = 'gateway';
+      renderGateway();
+    }else{
+      const username = (document.getElementById('authUsername').value||'').trim();
+      authDraft.username = username;
+      if(!username || !password){ authError = 'Enter your username and password.'; renderLogin(); return; }
+      const user = users.find(u=>u.username.toLowerCase()===username.toLowerCase());
+      if(!user){ authError = 'No account found with that username.'; renderLogin(); return; }
+      const hash = await hashPassword(password, user.salt);
+      if(hash!==user.hash){ authError = 'Incorrect password.'; renderLogin(); return; }
+      currentUser = user;
+      lastUsername = username;
+      authDraft = { name:'', username:'' };
+      try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+      screen = 'gateway';
+      renderGateway();
+    }
   };
-  document.getElementById('loginContinueBtn').addEventListener('click', goContinue);
-  nameInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') goContinue(); });
-  nameInput.focus();
-  nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);
+
+  document.getElementById('authSubmitBtn').addEventListener('click', submitAuth);
+  ['authName','authUsername','authPassword','authConfirmPassword'].forEach(id=>{
+    document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAuth(); });
+  });
+  document.getElementById('authToggleModeLink')?.addEventListener('click', ()=>{
+    authMode = isSignup ? 'login' : 'signup';
+    authError = '';
+    renderLogin();
+  });
+  document.getElementById('authTogglePw')?.addEventListener('click', ()=>{
+    authShowPassword = !authShowPassword;
+    renderLogin();
+  });
+  document.querySelectorAll('[data-pick-user]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const uInput = document.getElementById('authUsername');
+      uInput.value = el.dataset.pickUser;
+      document.getElementById('authPassword').focus();
+    });
+  });
+
+  document.getElementById('adminLoginBtn')?.addEventListener('click', ()=>{
+    adminDialogOpen = true;
+    adminLoginError = '';
+    renderLogin();
+  });
+
+  const submitAdminLogin = ()=>{
+    const pw = document.getElementById('adminPasswordInput').value || '';
+    if(pw === ADMIN_MASTER_PASSWORD){
+      currentUser = { id:'admin', name:'Administrator', username:'admin', isAdmin:true };
+      adminDialogOpen = false;
+      adminLoginError = '';
+      screen = 'gateway';
+      renderGateway();
+    }else{
+      adminLoginError = 'Incorrect admin password.';
+      renderLogin();
+    }
+  };
+  document.getElementById('adminLoginSubmit')?.addEventListener('click', submitAdminLogin);
+  document.getElementById('adminPasswordInput')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAdminLogin(); });
+  document.getElementById('adminDialogClose')?.addEventListener('click', ()=>{
+    adminDialogOpen = false;
+    adminLoginError = '';
+    renderLogin();
+  });
+  document.getElementById('adminOverlayBg')?.addEventListener('click', (e)=>{
+    if(e.target.id==='adminOverlayBg'){ adminDialogOpen = false; adminLoginError = ''; renderLogin(); }
+  });
+
+  if(adminDialogOpen){
+    document.getElementById('adminPasswordInput')?.focus();
+  }else{
+    const firstField = isSignup
+      ? document.getElementById('authName')
+      : (lastUsername ? document.getElementById('authPassword') : document.getElementById('authUsername'));
+    firstField?.focus();
+  }
 }
 
 /* ---------------- Gateway of Tally — company selection ---------------- */
@@ -1758,7 +1960,7 @@ function renderGateway(){
       <span id="gwMenuCompany">Company</span>
       <span id="gwMenuHelp">Help</span>
     </div>
-    ${loginName ? `<div class="rb-greeting">Welcome, <strong>${escapeHtml(loginName)}</strong></div>` : ''}
+    ${currentUser ? `<div class="rb-greeting">Welcome, <strong>${escapeHtml(currentUser.name)}</strong></div>` : ''}
     <div class="gateway-shell">
       <div class="gateway-box">
         <div class="gw-title">Main Window — Select Company</div>
@@ -1969,9 +2171,15 @@ function renderGateway(){
         el?.focus();
       }, 0);
     });
-    document.getElementById('gwSwitchUserLink')?.addEventListener('click', (e)=>{
+    document.getElementById('gwLogOutLink')?.addEventListener('click', (e)=>{
       e.stopPropagation();
       fileMenuOpen = false;
+      currentUser = null;
+      authMode = 'login';
+      authError = '';
+      authDraft = { name:'', username:'' };
+      adminDialogOpen = false;
+      adminLoginError = '';
       screen = 'login';
       renderLogin();
     });
@@ -1984,7 +2192,7 @@ function renderGateway(){
   }
 }
 function fileDropdown(){
-  return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwSwitchUserLink">Switch User</a></div>`;
+  return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
 }
 
 function renderView(){
@@ -2634,7 +2842,10 @@ function viewVoucher(){
         <div id="entryRows">
           ${vform.entries.map((e,i)=>entryRow(e,i)).join('')}
         </div>
-        <button class="btn secondary small" id="addRow" type="button">+ Add row</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn secondary small" id="addRow" type="button">+ Add row</button>
+          <button class="btn secondary small" id="quickAddLedgerBtn" type="button">+ New Ledger</button>
+        </div>
         <div class="totals-line ${balanced?'balanced':'unbalanced'}">
           <span>Dr ₹${fmt(dr)}</span><span>Cr ₹${fmt(cr)}</span>
           <span>${balanced?'Balanced ✓':'Not balanced'}</span>
@@ -2674,6 +2885,7 @@ function singleEntryFields(){
       </div>
     </div>
     <div class="field" style="max-width:220px;"><label>Amount</label><input type="number" id="singleAmount" value="${s.amount}" step="0.01" placeholder="0.00"></div>
+    <button class="btn secondary small" id="quickAddLedgerBtn" type="button">+ New Ledger</button>
     <p class="muted" style="font-size:12.5px;" id="singlePreview">${singleEntryPreviewText()}</p>
   `;
 }
@@ -2697,6 +2909,39 @@ function entryRow(e,i){
     <input type="number" class="e-cr" data-i="${i}" placeholder="Credit" value="${e.cr||''}" min="0" step="0.01">
     <button class="rm" data-rm="${i}" title="Remove row">✕</button>
   </div>`;
+}
+function quickAddLedgerModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:520px;">
+        <div class="panel-head"><h2>New Ledger</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;margin-top:0;">Create a ledger without leaving this voucher — it'll be picked automatically for the field you came from.</p>
+          <div class="field"><label>Ledger Name</label><input type="text" id="quickLedgerName" placeholder="e.g. Electricity Expense"></div>
+          <div class="row">
+            <div class="field"><label>Under Group</label>
+              <select id="quickLedgerGroup">${GROUPS.map(g=>`<option value="${g.id}">${g.name} (${g.cat})</option>`).join('')}</select>
+            </div>
+            <div class="field" style="max-width:160px;"><label>Opening Balance</label><input type="number" id="quickLedgerOpening" value="0" step="0.01"></div>
+            <div class="field" style="max-width:120px;"><label>Type</label>
+              <select id="quickLedgerType"><option value="1">Dr</option><option value="-1">Cr</option></select>
+            </div>
+          </div>
+          <div class="field" style="max-width:160px;"><label>GST Rate</label>
+            <select id="quickLedgerGST">
+              <option value="">— None —</option>
+              <option value="0">0%</option>
+              <option value="5">5%</option>
+              <option value="12">12%</option>
+              <option value="18">18%</option>
+              <option value="28">28%</option>
+            </select>
+          </div>
+          <button class="btn" id="quickAddLedgerSubmit" type="button" style="margin-top:6px;">Create Ledger</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -3749,7 +3994,25 @@ function attachHandlers(){
     });
     document.getElementById('singleA')?.addEventListener('change', e=>{ vform.single.ledgerA = e.target.value; updateSingleEntryPreview(); });
     document.getElementById('singleB')?.addEventListener('change', e=>{ vform.single.ledgerB = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('singleA')?.addEventListener('focus', ()=>{ quickLedgerFocus = {type:'single', which:'A'}; });
+    document.getElementById('singleB')?.addEventListener('focus', ()=>{ quickLedgerFocus = {type:'single', which:'B'}; });
     document.getElementById('singleAmount')?.addEventListener('input', e=>{ vform.single.amount = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('quickAddLedgerBtn')?.addEventListener('click', ()=>{
+      const inSingleMode = !!document.getElementById('singleA');
+      if(inSingleMode){
+        if(!quickLedgerFocus || quickLedgerFocus.type!=='single'){
+          quickLedgerFocus = { type:'single', which: vform.single.ledgerA ? 'B' : 'A' };
+        }
+      } else {
+        if(!quickLedgerFocus || quickLedgerFocus.type!=='entry' || vform.entries[quickLedgerFocus.index]===undefined){
+          let idx = vform.entries.findIndex(e=>!e.ledgerId);
+          if(idx===-1){ vform.entries.push({ledgerId:'',dr:0,cr:0}); idx = vform.entries.length-1; }
+          quickLedgerFocus = { type:'entry', index: idx };
+        }
+      }
+      modal = 'quickAddLedger';
+      render();
+    });
     document.getElementById('addRow')?.addEventListener('click',()=>{
       vform.entries.push({ledgerId:'',dr:0,cr:0});
       render();
@@ -3760,6 +4023,7 @@ function attachHandlers(){
     document.getElementById('printBillBtn')?.addEventListener('click', ()=>{ generateAndPrintBill(); });
     document.querySelectorAll('.e-ledger').forEach(s=>{
       s.addEventListener('change', e=>{ vform.entries[+e.target.dataset.i].ledgerId = e.target.value; });
+      s.addEventListener('focus', e=>{ quickLedgerFocus = { type:'entry', index: +e.target.dataset.i }; });
     });
     document.querySelectorAll('.e-dr').forEach(s=>{
       s.addEventListener('input', e=>{
@@ -3953,6 +4217,33 @@ function attachHandlers(){
     document.getElementById('calNewVoucher')?.addEventListener('click', ()=>{
       vform = { type:'Payment', date: calState.selected, narration:'', entries:[{ledgerId:'',dr:0,cr:0},{ledgerId:'',dr:0,cr:0}], gst:{party:'', taxableLedger:'', amount:'', rate:18, supply:'intra', items:[]} };
       view = 'voucher';
+      render();
+    });
+  }
+
+  if(modal==='quickAddLedger'){
+    document.getElementById('quickAddLedgerSubmit')?.addEventListener('click', async ()=>{
+      const name = document.getElementById('quickLedgerName').value.trim();
+      const group = document.getElementById('quickLedgerGroup').value;
+      const openingRaw = Number(document.getElementById('quickLedgerOpening').value)||0;
+      const sign = Number(document.getElementById('quickLedgerType').value);
+      const gstRaw = document.getElementById('quickLedgerGST').value;
+      if(!name){ toast('Enter a ledger name'); return; }
+      const ledger = { id: uid('l'), name, group, opening: openingRaw*sign };
+      if(gstRaw !== '') ledger.gstRate = Number(gstRaw);
+      state.ledgers.push(ledger);
+      await saveLedgers();
+      if(vform && quickLedgerFocus){
+        if(quickLedgerFocus.type==='entry' && vform.entries[quickLedgerFocus.index]){
+          vform.entries[quickLedgerFocus.index].ledgerId = ledger.id;
+        } else if(quickLedgerFocus.type==='single'){
+          if(quickLedgerFocus.which==='A') vform.single.ledgerA = ledger.id;
+          else vform.single.ledgerB = ledger.id;
+        }
+      }
+      quickLedgerFocus = null;
+      modal = null;
+      toast('Ledger added');
       render();
     });
   }
@@ -4181,7 +4472,9 @@ function renderTotalsOnly(){
   await loadCompanies();
   await migrateLegacyData();
   await ensureDemoCompany();
-  try{ const n = await window.storage.get('lastUserName'); loginName = n ? n.value : ''; }catch(e){ loginName = ''; }
+  await loadUsers();
+  try{ const n = await window.storage.get('lastUsername'); lastUsername = n ? n.value : ''; }catch(e){ lastUsername = ''; }
+  authMode = users.length ? 'login' : 'signup';
   screen = 'login';
   renderLogin();
 })();
