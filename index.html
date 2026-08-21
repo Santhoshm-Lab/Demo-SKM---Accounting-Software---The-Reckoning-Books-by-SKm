@@ -414,6 +414,62 @@ function toast(msg){
   toast._h = setTimeout(()=>t.classList.remove('show'), 2200);
 }
 
+/* ---------------- browser Back/Forward support ----------------
+   This is a single page — there's no second page to go "back" to — so without help the browser's
+   Back button just leaves it (or does nothing) instead of stepping back through the app the way a
+   user expects. Every meaningful navigation (login → gateway → an open company → whichever tab
+   you're on) is recorded as a history entry, so Back/Forward moves between those screens instead
+   of exiting. The very first entry is marked isRoot: pressing Back once more from there would
+   normally carry the browser away from this page entirely, so the popstate handler immediately
+   re-plants that same entry, meaning Back can always be pressed again without ever leaving. */
+function historySnapshot(){
+  return {
+    isRoot: false,
+    screen,
+    view: screen==='app' ? view : null,
+    authMode: screen==='login' ? authMode : null,
+    companyId: currentCompany ? currentCompany.id : null
+  };
+}
+function pushHistory(){
+  try{ history.pushState(historySnapshot(), '', location.href); }catch(e){}
+}
+async function restoreHistorySnapshot(snap){
+  if(!snap){ pushHistory(); return; }
+  if(snap.isRoot){
+    // We've been pushed back to the very first screen — re-plant it so Back always has room to press again.
+    try{ history.pushState(snap, '', location.href); }catch(e){}
+  }
+  if(snap.screen==='app' && snap.companyId){
+    if(!currentCompany || currentCompany.id!==snap.companyId){
+      const c = companies.find(x=>x.id===snap.companyId);
+      if(!c || !canAccessCompany(c)){
+        // The company this history entry pointed to isn't this login's to open (e.g. a different
+        // user has since logged in) — land on the gateway instead of loading someone else's books.
+        screen = 'gateway';
+        modal = null;
+        renderGateway();
+        return;
+      }
+      currentCompany = c; await loadState();
+    }
+    screen = 'app';
+    view = snap.view || 'dashboard';
+    modal = null;
+    render();
+  } else if(snap.screen==='gateway'){
+    screen = 'gateway';
+    modal = null;
+    renderGateway();
+  } else {
+    screen = 'login';
+    authMode = snap.authMode || (users.length ? 'login' : 'signup');
+    authError = '';
+    renderLogin();
+  }
+}
+window.addEventListener('popstate', (e)=>{ restoreHistorySnapshot(e.state); });
+
 /* ---------------- local accounts (login / sign up) ----------------
    There is no server here — everything lives in this browser's storage. Passwords are never
    kept in plain text: each account gets a random salt and only a SHA-256 hash of salt+password
@@ -456,6 +512,18 @@ async function hashPassword(password, salt){
 }
 
 /* ---------------- persistence ---------------- */
+/* Companies created by a specific login belong to that login only — Demo Company, and any older
+   company created before this per-login ownership existed (no ownerId on it), stay visible to
+   everyone so nothing that used to be visible quietly disappears. */
+function canAccessCompany(c){
+  if(!c) return false;
+  if(c.id===DEMO_COMPANY_ID) return true;
+  if(!c.ownerId) return true;
+  return !!(currentUser && c.ownerId===currentUser.id);
+}
+function visibleCompanies(){
+  return companies.filter(canAccessCompany);
+}
 async function loadCompanies(){
   try{
     const c = await window.storage.get('companies');
@@ -1215,6 +1283,7 @@ function render(){
   document.getElementById('menuCompany').addEventListener('click', ()=>{
     screen = 'gateway';
     renderGateway();
+    pushHistory();
   });
   document.getElementById('menuEdit').addEventListener('click', ()=>{
     editCoDraft = {
@@ -1256,6 +1325,7 @@ function render(){
     if(deleted){
       screen = 'gateway';
       renderGateway();
+      pushHistory();
     }
   });
 
@@ -1360,6 +1430,7 @@ function goToTab(id){
   view = id;
   if(view==='reports') reportsSelected = null;
   render();
+  pushHistory();
 }
 document.addEventListener('keydown', (e)=>{
   if(screen!=='app' || modal) return;
@@ -1865,6 +1936,7 @@ function renderLogin(){
       toast(`Welcome, ${name}!`);
       screen = 'gateway';
       renderGateway();
+      pushHistory();
     }else{
       const username = (document.getElementById('authUsername').value||'').trim();
       authDraft.username = username;
@@ -1879,6 +1951,7 @@ function renderLogin(){
       try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
       screen = 'gateway';
       renderGateway();
+      pushHistory();
     }
   };
 
@@ -1917,6 +1990,7 @@ function renderLogin(){
       adminLoginError = '';
       screen = 'gateway';
       renderGateway();
+      pushHistory();
     }else{
       adminLoginError = 'Incorrect admin password.';
       renderLogin();
@@ -1964,9 +2038,9 @@ function renderGateway(){
     <div class="gateway-shell">
       <div class="gateway-box">
         <div class="gw-title">Main Window — Select Company</div>
-        ${companies.length ? `<ul class="gateway-list">
-          ${companies.map((c,i)=>`<li data-select-co="${c.id}"><span><span class="num">${i+1}.</span>${c.name}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:6px;">Sample</span>':''}</span></li>`).join('')}
-        </ul>` : `<div class="gateway-empty">No companies yet. Create one to begin →</div>`}
+        ${(()=>{ const myCompanies = visibleCompanies(); return myCompanies.length ? `<ul class="gateway-list">
+          ${myCompanies.map((c,i)=>`<li data-select-co="${c.id}"><span><span class="num">${i+1}.</span>${c.name}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:6px;">Sample</span>':''}</span></li>`).join('')}
+        </ul>` : `<div class="gateway-empty">No companies yet. Create one to begin →</div>`; })()}
         <div class="gateway-hint">Select a company to load its books, or create a new one.</div>
       </div>
       <div class="gateway-box gateway-form" style="width:520px;">
@@ -2076,12 +2150,13 @@ function renderGateway(){
     el.addEventListener('click', async (e)=>{
       const id = el.dataset.selectCo;
       const c = companies.find(x=>x.id===id);
-      if(!c) return;
+      if(!c || !canAccessCompany(c)) return;
       currentCompany = c;
       await loadState();
       screen = 'app';
       view = 'dashboard';
       render();
+      pushHistory();
     });
   });
   document.getElementById('coName').addEventListener('input', e=>{
@@ -2135,6 +2210,7 @@ function renderGateway(){
       decimalPlaces: Number(document.getElementById('coDecimalPlaces').value),
       fractionUnit: document.getElementById('coFractionUnit').value.trim() || 'Paisa',
       suffixSymbol: document.getElementById('coSuffixSymbol').checked,
+      ownerId: currentUser ? currentUser.id : null,
     };
     companies.push(company);
     await saveCompanies();
@@ -2144,6 +2220,7 @@ function renderGateway(){
     screen = 'app';
     view = 'dashboard';
     render();
+    pushHistory();
   });
 
   document.getElementById('gwMenuFile').addEventListener('click', (e)=>{
@@ -2182,6 +2259,7 @@ function renderGateway(){
       adminLoginError = '';
       screen = 'login';
       renderLogin();
+      pushHistory();
     });
   }
   if(modal==='help'){
@@ -4477,6 +4555,11 @@ function renderTotalsOnly(){
   authMode = users.length ? 'login' : 'signup';
   screen = 'login';
   renderLogin();
+  try{
+    const rootSnap = { isRoot:true, screen:'login', view:null, authMode, companyId:null };
+    history.replaceState(rootSnap, '', location.href);
+    history.pushState(rootSnap, '', location.href);
+  }catch(e){}
 })();
 </script>
 </body>
