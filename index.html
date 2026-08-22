@@ -245,6 +245,9 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script>
 /* ---------------------------------------------------------------
    STORAGE SHIM
@@ -294,6 +297,50 @@
     }
   };
 })();
+
+/* ---------------------------------------------------------------
+   FIREBASE — shared backend for accounts & company data
+   Real accounts (Firebase Authentication) and real shared storage
+   (Cloud Firestore) so a person's login and the companies/books
+   they create are the same on any device, instead of being stuck
+   in one browser's local storage. Firebase Auth wants an email
+   address, but the app's UX is username/password — so a username
+   is wrapped in a fixed, invisible synthetic domain to make a
+   valid "email" Firebase can use, and the user never sees it.
+--------------------------------------------------------------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC7_svOCApXDaB9b2HTHPqbvY7o-oTGFh4",
+  authDomain: "reckoning-books.firebaseapp.com",
+  projectId: "reckoning-books",
+  storageBucket: "reckoning-books.firebasestorage.app",
+  messagingSenderId: "800981527148",
+  appId: "1:800981527148:web:acb90f7a2bad2a460c4649",
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const fbAuth = firebase.auth();
+const db = firebase.firestore();
+const EMAIL_DOMAIN = '@reckoningbooks.local'; // admin's fixed synthetic email only — regular accounts now use the real email they sign up with
+function usernameToEmail(username){
+  return username.trim().toLowerCase() + EMAIL_DOMAIN;
+}
+function isValidUsername(username){
+  return /^[a-zA-Z0-9._-]+$/.test(username);
+}
+function isValidEmail(email){
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+function authErrorMessage(err, isSignup){
+  const code = (err && err.code) || '';
+  if(code==='auth/email-already-in-use') return isSignup ? 'That email is already registered to another account.' : 'That username is already taken.';
+  if(code==='auth/weak-password') return 'Password must be at least 6 characters.';
+  if(code==='auth/invalid-email') return isSignup ? 'Please enter a valid email address.' : 'Username can only contain letters, numbers, dots, dashes and underscores.';
+  if(code==='auth/user-not-found') return 'No account found with that username.';
+  if(code==='auth/wrong-password') return 'Incorrect password.';
+  if(code==='auth/invalid-credential') return isSignup ? 'Could not create that account.' : 'Incorrect username or password.';
+  if(code==='auth/too-many-requests') return 'Too many attempts — please wait a moment and try again.';
+  if(code==='auth/network-request-failed') return 'Could not reach the server — check your internet connection.';
+  return (err && err.message) || 'Something went wrong. Please try again.';
+}
 
 /* ---------------------------------------------------------------
    DATA MODEL
@@ -358,16 +405,19 @@ let calState = { year: new Date().getFullYear(), month: new Date().getMonth(), s
 let companies = [];
 let currentCompany = null;
 let screen = 'loading'; // 'login' | 'gateway' | 'app'
-let users = [];          // local accounts: [{id, name, username, salt, hash}]
+let users = [];          // cache of public account profiles, populated only when admin opens Services → Login - Public
 let currentUser = null;  // the account currently logged in
 let authMode = 'login';  // 'login' | 'signup' — which form the login screen shows
 let authError = '';      // inline validation/error message on the login screen
 let authShowPassword = false; // show/hide toggle for the password field(s)
 let lastUsername = '';   // last-used username, remembered only to prefill the username field
-let authDraft = { name:'', username:'' }; // keeps name/username typed so a validation error doesn't force retyping them
+let authDraft = { name:'', username:'', email:'' }; // keeps name/username/email typed so a validation error doesn't force retyping them
 const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
 let adminDialogOpen = false;   // whether the Admin Login password dialog is showing on the login screen
 let adminLoginError = '';      // inline error message inside the admin dialog
+let forgotPasswordOpen = false;  // whether the "Forgot password?" dialog is showing on the login screen
+let forgotPasswordError = '';    // inline error message inside that dialog
+let forgotPasswordSent = false;  // whether the dialog is now showing its "check your email" confirmation
 let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
 let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
 let viewMenuOpen = false;  // View menu dropdown toggle
@@ -464,107 +514,72 @@ async function restoreHistorySnapshot(snap){
     renderGateway();
   } else {
     screen = 'login';
-    authMode = snap.authMode || (users.length ? 'login' : 'signup');
+    authMode = snap.authMode || 'login';
     authError = '';
     renderLogin();
   }
 }
 window.addEventListener('popstate', (e)=>{ restoreHistorySnapshot(e.state); });
 
-/* ---------------- local accounts (login / sign up) ----------------
-   There is no server here — everything lives in this browser's storage. Passwords are never
-   kept in plain text: each account gets a random salt and only a SHA-256 hash of salt+password
-   is stored (falling back to a simple string hash on the rare browser without Web Crypto). This
-   is still just a local access gate, not real multi-device security, but it keeps a casual look
-   at storage from reading anyone's password back out. */
-async function loadUsers(){
-  try{
-    const u = await window.storage.get('users');
-    users = u ? JSON.parse(u.value) : [];
-  }catch(e){ users = []; }
-}
-async function saveUsers(){
-  try{ await window.storage.set('users', JSON.stringify(users)); }
-  catch(e){ toast('Could not save accounts'); }
-}
-function randomSalt(){
-  try{
-    const arr = new Uint8Array(16);
-    crypto.getRandomValues(arr);
-    return Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
-  }catch(e){
-    return Math.random().toString(36).slice(2) + Date.now().toString(36);
-  }
-}
-async function hashPassword(password, salt){
-  try{
-    if(window.crypto && window.crypto.subtle){
-      const enc = new TextEncoder().encode(salt+':'+password);
-      const buf = await crypto.subtle.digest('SHA-256', enc);
-      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    }
-  }catch(e){}
-  // Fallback for a browser without Web Crypto — not cryptographically strong, but this is a
-  // local-only access gate to begin with, so a simple string hash is an acceptable fallback.
-  let h = 0;
-  const s = salt+':'+password;
-  for(let i=0;i<s.length;i++){ h = (Math.imul(31,h) + s.charCodeAt(i))|0; }
-  return 'fnv'+(h>>>0).toString(16);
-}
+/* ---------------- accounts (login / sign up) ----------------
+   Real accounts, backed by Firebase Authentication — see submitAuth() / submitAdminLogin()
+   further down for where sign-up, login and the admin bypass actually happen. */
 
 /* ---------------- persistence ---------------- */
-/* Companies created by a specific login belong to that login only — Demo Company, and any older
-   company created before this per-login ownership existed (no ownerId on it), stay visible to
-   everyone so nothing that used to be visible quietly disappears. */
+/* Companies created by a specific login belong to that login only — Demo Company stays visible
+   to everyone, and an admin can see every company (for the Services → Login - Public overview).
+   loadCompanies() only ever pulls in companies this login is allowed to see (enforced again,
+   independently, by the Firestore security rules), so simply checking membership in the local
+   `companies` array is enough to know whether a given company is accessible. */
 function canAccessCompany(c){
   if(!c) return false;
-  if(c.id===DEMO_COMPANY_ID) return true;
-  if(!c.ownerId) return true;
-  return !!(currentUser && c.ownerId===currentUser.id);
+  return companies.some(x=>x.id===c.id);
 }
 function visibleCompanies(){
-  return companies.filter(canAccessCompany);
+  return companies;
 }
 async function loadCompanies(){
+  if(!currentUser){ companies = []; return; }
   try{
-    const c = await window.storage.get('companies');
-    companies = c ? JSON.parse(c.value) : [];
-  }catch(e){ companies = []; }
+    if(currentUser.isAdmin){
+      const snap = await db.collection('companies').get();
+      companies = snap.docs.map(d=>d.data());
+    }else{
+      const [mineSnap, demoDoc] = await Promise.all([
+        db.collection('companies').where('ownerId','==',currentUser.id).get(),
+        db.collection('companies').doc(DEMO_COMPANY_ID).get()
+      ]);
+      const mine = mineSnap.docs.map(d=>d.data());
+      companies = demoDoc.exists ? [demoDoc.data(), ...mine.filter(c=>c.id!==DEMO_COMPANY_ID)] : mine;
+    }
+  }catch(e){
+    console.error(e);
+    companies = [];
+    toast('Could not load companies');
+  }
 }
-async function saveCompanies(){
-  try{ await window.storage.set('companies', JSON.stringify(companies)); }
-  catch(e){ toast('Could not save companies'); }
+/* Saves company metadata (name, address, GSTIN, etc.) without touching that company's stored
+   ledgers/vouchers/items/stock adjustments, which live as separate fields on the same Firestore
+   document and are written independently by saveLedgers()/saveVouchers()/saveItems()/
+   saveStockAdjustments(). Used when a company is created and when its details are edited. */
+async function saveCompanyMeta(company){
+  try{ await db.collection('companies').doc(company.id).set(company, {merge:true}); }
+  catch(e){ toast('Could not save company'); }
 }
-/* Deletes a company and all of its stored books (ledgers, vouchers, items, stock adjustments).
-   Shared by the "Delete" link on the company-selection screen and the "Delete Company" menu
-   item inside an open company, so both paths clean up storage the same way. Returns true if
-   the company was deleted, false if the user cancelled the confirmation. */
+/* Deletes a company and all of its stored books (ledgers, vouchers, items, stock adjustments —
+   all embedded on the same Firestore document, so one delete removes everything). Shared by the
+   "Delete" link on the company-selection screen and the "Delete Company" menu item inside an
+   open company. Returns true if the company was deleted, false if the user cancelled. */
 async function deleteCompanyById(id){
   const c = companies.find(x=>x.id===id);
   if(!c) return false;
   const ok = window.confirm(`Delete company "${c.name}" and all its ledgers and vouchers?\n\nThis cannot be undone.`);
   if(!ok) return false;
+  try{ await db.collection('companies').doc(id).delete(); }
+  catch(e){ toast('Could not delete company'); return false; }
   companies = companies.filter(x=>x.id!==id);
-  await saveCompanies();
-  try{ await window.storage.delete('ledgers:'+id); }catch(err){}
-  try{ await window.storage.delete('vouchers:'+id); }catch(err){}
-  try{ await window.storage.delete('items:'+id); }catch(err){}
-  try{ await window.storage.delete('stockadj:'+id); }catch(err){}
   toast('Company deleted');
   return true;
-}
-async function migrateLegacyData(){
-  if(companies.length) return;
-  let legacyLedgers = null, legacyVouchers = null;
-  try{ const l = await window.storage.get('ledgers'); legacyLedgers = l ? JSON.parse(l.value) : null; }catch(e){}
-  try{ const v = await window.storage.get('vouchers'); legacyVouchers = v ? JSON.parse(v.value) : null; }catch(e){}
-  if(legacyLedgers || legacyVouchers){
-    const company = { id: uid('co'), name:'My Business', fyStart: defaultFYStart(), gstin:'' };
-    companies.push(company);
-    await saveCompanies();
-    try{ await window.storage.set('ledgers:'+company.id, JSON.stringify(legacyLedgers||DEFAULT_LEDGERS.slice())); }catch(e){}
-    try{ await window.storage.set('vouchers:'+company.id, JSON.stringify(legacyVouchers||[])); }catch(e){}
-  }
 }
 
 /* ---------------- Demo company (sample data) ---------------- */
@@ -697,44 +712,48 @@ function demoItems(){
     {id:'i_packaging', name:'Packaging Material', group:'Packaging Materials', unit:'BOX', hsn:'4819', rate:120, gstRate:18, openingQty:100, openingRate:65, reorderLevel:50},
   ];
 }
+/* Called right after any successful login (regular or admin) — creates the shared Demo Company
+   document in Firestore the first time ever anyone signs in, and reseeds its sample data if the
+   built-in demo dataset has since been updated (demoVersion bump). Idempotent, so it's safe to
+   call on every login. Firestore requires a signed-in user for this, which is why it can't run
+   until after login rather than at page load. */
 async function ensureDemoCompany(){
-  const existing = companies.find(c=>c.id===DEMO_COMPANY_ID);
-  if(!existing){
-    const company = { id: DEMO_COMPANY_ID, name:'Demo Company (Sample Data)', fyStart:'2026-04-01', gstin:'29ABCDE1234F1Z5', demoVersion: DEMO_DATA_VERSION };
-    companies.unshift(company);
-    await saveCompanies();
-    try{ await window.storage.set('ledgers:'+DEMO_COMPANY_ID, JSON.stringify(demoLedgers())); }catch(e){}
-    try{ await window.storage.set('vouchers:'+DEMO_COMPANY_ID, JSON.stringify(demoVouchers())); }catch(e){}
-    try{ await window.storage.set('items:'+DEMO_COMPANY_ID, JSON.stringify(demoItems())); }catch(e){}
-    return;
-  }
-  if(existing.demoVersion !== DEMO_DATA_VERSION){
-    existing.demoVersion = DEMO_DATA_VERSION;
-    await saveCompanies();
-    try{ await window.storage.set('ledgers:'+DEMO_COMPANY_ID, JSON.stringify(demoLedgers())); }catch(e){}
-    try{ await window.storage.set('vouchers:'+DEMO_COMPANY_ID, JSON.stringify(demoVouchers())); }catch(e){}
-    try{ await window.storage.set('items:'+DEMO_COMPANY_ID, JSON.stringify(demoItems())); }catch(e){}
-  }
+  try{
+    const ref = db.collection('companies').doc(DEMO_COMPANY_ID);
+    const doc = await ref.get();
+    if(!doc.exists){
+      const company = {
+        id: DEMO_COMPANY_ID, name:'Demo Company (Sample Data)', fyStart:'2026-04-01',
+        gstin:'29ABCDE1234F1Z5', demoVersion: DEMO_DATA_VERSION, ownerId: null,
+        ledgers: demoLedgers(), vouchers: demoVouchers(), items: demoItems(), stockAdjustments: [],
+      };
+      await ref.set(company);
+      return;
+    }
+    const data = doc.data();
+    if(data.demoVersion !== DEMO_DATA_VERSION){
+      await ref.set({ demoVersion: DEMO_DATA_VERSION, ledgers: demoLedgers(), vouchers: demoVouchers(), items: demoItems() }, {merge:true});
+    }
+  }catch(e){ console.error(e); /* not fatal — the app still works without a fresh demo reseed */ }
 }
 
 async function loadState(){
   const cid = currentCompany.id;
   try{
-    const l = await window.storage.get('ledgers:'+cid);
-    state.ledgers = l ? JSON.parse(l.value) : DEFAULT_LEDGERS.slice();
-  }catch(e){ state.ledgers = DEFAULT_LEDGERS.slice(); }
-  try{
-    const v = await window.storage.get('vouchers:'+cid);
-    state.vouchers = v ? JSON.parse(v.value) : [];
-  }catch(e){ state.vouchers = []; }
-  try{
-    const it = await window.storage.get('items:'+cid);
-    state.items = it ? JSON.parse(it.value) : [];
-  }catch(e){ state.items = []; }
-  try{
-    const sa = await window.storage.get('stockadj:'+cid);
-    state.stockAdjustments = sa ? JSON.parse(sa.value) : [];
-  }catch(e){ state.stockAdjustments = []; }
+    const doc = await db.collection('companies').doc(cid).get();
+    const data = doc.exists ? doc.data() : {};
+    state.ledgers = Array.isArray(data.ledgers) && data.ledgers.length ? data.ledgers : DEFAULT_LEDGERS.slice();
+    state.vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
+    state.items = Array.isArray(data.items) ? data.items : [];
+    state.stockAdjustments = Array.isArray(data.stockAdjustments) ? data.stockAdjustments : [];
+  }catch(e){
+    console.error(e);
+    state.ledgers = DEFAULT_LEDGERS.slice();
+    state.vouchers = [];
+    state.items = [];
+    state.stockAdjustments = [];
+    toast('Could not load company data');
+  }
   // Safety net: if this is the Demo Company but its sample vouchers are missing (e.g. an
   // older/partial seed from a previous version), reseed the full demo dataset on the spot —
   // regardless of the stored demoVersion flag — so "Demo Company" never opens empty.
@@ -757,19 +776,19 @@ function ensureCoreLedgers(){
   return changed;
 }
 async function saveLedgers(){
-  try{ await window.storage.set('ledgers:'+currentCompany.id, JSON.stringify(state.ledgers)); }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ ledgers: state.ledgers }, {merge:true}); }
   catch(e){ toast('Could not save ledgers'); }
 }
 async function saveVouchers(){
-  try{ await window.storage.set('vouchers:'+currentCompany.id, JSON.stringify(state.vouchers)); }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ vouchers: state.vouchers }, {merge:true}); }
   catch(e){ toast('Could not save vouchers'); }
 }
 async function saveItems(){
-  try{ await window.storage.set('items:'+currentCompany.id, JSON.stringify(state.items)); }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ items: state.items }, {merge:true}); }
   catch(e){ toast('Could not save items'); }
 }
 async function saveStockAdjustments(){
-  try{ await window.storage.set('stockadj:'+currentCompany.id, JSON.stringify(state.stockAdjustments)); }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ stockAdjustments: state.stockAdjustments }, {merge:true}); }
   catch(e){ toast('Could not save stock adjustments'); }
 }
 
@@ -1394,7 +1413,7 @@ function render(){
       });
       const idx = companies.findIndex(c=>c.id===currentCompany.id);
       if(idx>-1) companies[idx] = currentCompany;
-      await saveCompanies();
+      await saveCompanyMeta(currentCompany);
       toast('Company details updated');
       modal = null;
       render();
@@ -1860,6 +1879,8 @@ function renderLogin(){
             <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name">
             <label style="margin-top:12px;">Username</label>
             <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username">
+            <label style="margin-top:12px;">Email</label>
+            <input type="email" id="authEmail" placeholder="you@example.com" value="${escapeAttr(authDraft.email)}" autocomplete="email">
             ` : `
             <label>Username</label>
             <input type="text" id="authUsername" placeholder="Your username" value="${escapeAttr(authDraft.username || lastUsername)}" autocomplete="username">
@@ -1874,7 +1895,9 @@ function renderLogin(){
             ${isSignup ? `
             <label style="margin-top:12px;">Confirm Password</label>
             <input type="${pwType}" id="authConfirmPassword" placeholder="Re-enter password" autocomplete="new-password">
-            ` : ''}
+            ` : `
+            <p style="text-align:right;margin:6px 0 0;"><a id="forgotPasswordLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Forgot password?</a></p>
+            `}
 
             ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
 
@@ -1882,16 +1905,7 @@ function renderLogin(){
 
             <button class="btn secondary" id="adminLoginBtn" type="button" style="width:100%;margin-top:10px;">Admin Login</button>
 
-            ${users.length ? `<p class="auth-toggle-line">${isSignup ? 'Already have an account?' : 'New here?'} <a id="authToggleModeLink">${isSignup?'Log in':'Create one'}</a></p>` : ''}
-
-            ${!isSignup && users.length ? `
-            <div class="auth-users-block">
-              <p class="auth-users-label">Accounts on this device</p>
-              <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">
-                ${users.map(u=>`<span class="user-pick-pill" data-pick-user="${escapeAttr(u.username)}">${escapeHtml(u.name)}</span>`).join('')}
-              </div>
-            </div>
-            ` : ''}
+            <p class="auth-toggle-line">${isSignup ? 'Already have an account?' : 'New here?'} <a id="authToggleModeLink">${isSignup?'Log in':'Create one'}</a></p>
           </div>
           <div class="login-footer">Built by <strong>Santhosh Kumar M</strong> — <em>Accounting at the speed of business</em></div>
         </div>
@@ -1910,54 +1924,96 @@ function renderLogin(){
         </div>
       </div>
       ` : ''}
+      ${forgotPasswordOpen ? `
+      <div class="modal-overlay" id="forgotOverlayBg">
+        <div class="modal-card" style="width:360px;">
+          <div class="panel-head"><h2>Reset Password</h2><button class="btn secondary small" id="forgotDialogClose" type="button">✕</button></div>
+          <div class="panel-body">
+            ${forgotPasswordSent ? `
+            <p class="muted" style="font-size:12.5px;margin-top:0;">If an account exists with that username, a password reset link has been sent to its registered email. Check your inbox (and spam folder).</p>
+            <button class="btn" id="forgotDialogDone" type="button" style="width:100%;margin-top:6px;">Done</button>
+            ` : `
+            <p class="muted" style="font-size:12.5px;margin-top:0;">Enter your username and we'll email a reset link to the address on that account.</p>
+            <label>Username</label>
+            <input type="text" id="forgotUsernameInput" placeholder="Your username" autocomplete="username">
+            ${forgotPasswordError ? `<p class="auth-error">${escapeHtml(forgotPasswordError)}</p>` : ''}
+            <button class="btn" id="forgotPasswordSubmit" type="button" style="width:100%;margin-top:14px;">Send Reset Link →</button>
+            `}
+          </div>
+        </div>
+      </div>
+      ` : ''}
     </div>
   `;
 
   const submitAuth = async ()=>{
     authError = '';
     const password = document.getElementById('authPassword').value || '';
+    const submitBtn = document.getElementById('authSubmitBtn');
     if(isSignup){
       const name = (document.getElementById('authName').value||'').trim();
       const username = (document.getElementById('authUsername').value||'').trim();
+      const email = (document.getElementById('authEmail').value||'').trim();
       const confirm = document.getElementById('authConfirmPassword').value || '';
-      authDraft.name = name; authDraft.username = username;
-      if(!name || !username || !password){ authError = 'Please fill in your name, username, and password.'; renderLogin(); return; }
-      if(users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ authError = 'That username is already taken.'; renderLogin(); return; }
-      if(password.length<4){ authError = 'Password must be at least 4 characters.'; renderLogin(); return; }
+      authDraft.name = name; authDraft.username = username; authDraft.email = email;
+      if(!name || !username || !email || !password){ authError = 'Please fill in your name, username, email, and password.'; renderLogin(); return; }
+      if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
+      if(!isValidEmail(email)){ authError = 'Please enter a valid email address.'; renderLogin(); return; }
+      if(password.length<6){ authError = 'Password must be at least 6 characters.'; renderLogin(); return; }
       if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); return; }
-      const salt = randomSalt();
-      const hash = await hashPassword(password, salt);
-      const user = { id: uid('u'), name, username, salt, hash };
-      users.push(user);
-      await saveUsers();
-      currentUser = user;
-      lastUsername = username;
-      authDraft = { name:'', username:'' };
-      try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
-      toast(`Welcome, ${name}!`);
-      screen = 'gateway';
-      renderGateway();
-      pushHistory();
+      submitBtn.disabled = true;
+      const usernameKey = username.toLowerCase();
+      try{
+        const takenDoc = await db.collection('usernames').doc(usernameKey).get();
+        if(takenDoc.exists){ authError = 'That username is already taken.'; submitBtn.disabled = false; renderLogin(); return; }
+        const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
+        const profile = { id: cred.user.uid, name, username, usernameLower: usernameKey, email, role:'user', createdAt: new Date().toISOString() };
+        await db.collection('users').doc(cred.user.uid).set(profile);
+        await db.collection('usernames').doc(usernameKey).set({ email });
+        currentUser = { id: cred.user.uid, name, username, isAdmin:false };
+        lastUsername = username;
+        authDraft = { name:'', username:'', email:'' };
+        try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+        toast(`Welcome, ${name}!`);
+        await ensureDemoCompany();
+        await loadCompanies();
+        screen = 'gateway';
+        renderGateway();
+        pushHistory();
+      }catch(err){
+        authError = authErrorMessage(err, true);
+        renderLogin();
+      }
     }else{
       const username = (document.getElementById('authUsername').value||'').trim();
       authDraft.username = username;
       if(!username || !password){ authError = 'Enter your username and password.'; renderLogin(); return; }
-      const user = users.find(u=>u.username.toLowerCase()===username.toLowerCase());
-      if(!user){ authError = 'No account found with that username.'; renderLogin(); return; }
-      const hash = await hashPassword(password, user.salt);
-      if(hash!==user.hash){ authError = 'Incorrect password.'; renderLogin(); return; }
-      currentUser = user;
-      lastUsername = username;
-      authDraft = { name:'', username:'' };
-      try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
-      screen = 'gateway';
-      renderGateway();
-      pushHistory();
+      submitBtn.disabled = true;
+      try{
+        const lookupDoc = await db.collection('usernames').doc(username.toLowerCase()).get();
+        if(!lookupDoc.exists){ authError = 'No account found with that username.'; submitBtn.disabled = false; renderLogin(); return; }
+        const { email } = lookupDoc.data();
+        const cred = await fbAuth.signInWithEmailAndPassword(email, password);
+        const profDoc = await db.collection('users').doc(cred.user.uid).get();
+        const profile = profDoc.exists ? profDoc.data() : { name: username, username, role:'user' };
+        currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: profile.role==='admin' };
+        lastUsername = username;
+        authDraft = { name:'', username:'', email:'' };
+        try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+        await ensureDemoCompany();
+        await loadCompanies();
+        screen = 'gateway';
+        renderGateway();
+        pushHistory();
+      }catch(err){
+        authError = authErrorMessage(err, false);
+        renderLogin();
+      }
     }
   };
 
   document.getElementById('authSubmitBtn').addEventListener('click', submitAuth);
-  ['authName','authUsername','authPassword','authConfirmPassword'].forEach(id=>{
+  ['authName','authUsername','authEmail','authPassword','authConfirmPassword'].forEach(id=>{
     document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAuth(); });
   });
   document.getElementById('authToggleModeLink')?.addEventListener('click', ()=>{
@@ -1969,13 +2025,6 @@ function renderLogin(){
     authShowPassword = !authShowPassword;
     renderLogin();
   });
-  document.querySelectorAll('[data-pick-user]').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      const uInput = document.getElementById('authUsername');
-      uInput.value = el.dataset.pickUser;
-      document.getElementById('authPassword').focus();
-    });
-  });
 
   document.getElementById('adminLoginBtn')?.addEventListener('click', ()=>{
     adminDialogOpen = true;
@@ -1983,17 +2032,38 @@ function renderLogin(){
     renderLogin();
   });
 
-  const submitAdminLogin = ()=>{
+  const submitAdminLogin = async ()=>{
     const pw = document.getElementById('adminPasswordInput').value || '';
-    if(pw === ADMIN_MASTER_PASSWORD){
-      currentUser = { id:'admin', name:'Administrator', username:'admin', isAdmin:true };
+    if(pw !== ADMIN_MASTER_PASSWORD){
+      adminLoginError = 'Incorrect admin password.';
+      renderLogin();
+      return;
+    }
+    const submitBtn = document.getElementById('adminLoginSubmit');
+    submitBtn.disabled = true;
+    const adminEmail = usernameToEmail('admin');
+    try{
+      let cred;
+      try{
+        cred = await fbAuth.signInWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
+      }catch(err){
+        if(err.code==='auth/user-not-found' || err.code==='auth/invalid-credential'){
+          cred = await fbAuth.createUserWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
+        }else{
+          throw err;
+        }
+      }
+      await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString() }, {merge:true});
+      currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true };
       adminDialogOpen = false;
       adminLoginError = '';
+      await ensureDemoCompany();
+      await loadCompanies();
       screen = 'gateway';
       renderGateway();
       pushHistory();
-    }else{
-      adminLoginError = 'Incorrect admin password.';
+    }catch(err){
+      adminLoginError = authErrorMessage(err, false);
       renderLogin();
     }
   };
@@ -2008,8 +2078,50 @@ function renderLogin(){
     if(e.target.id==='adminOverlayBg'){ adminDialogOpen = false; adminLoginError = ''; renderLogin(); }
   });
 
+  document.getElementById('forgotPasswordLink')?.addEventListener('click', ()=>{
+    forgotPasswordOpen = true;
+    forgotPasswordError = '';
+    forgotPasswordSent = false;
+    renderLogin();
+  });
+  const closeForgotDialog = ()=>{
+    forgotPasswordOpen = false;
+    forgotPasswordError = '';
+    forgotPasswordSent = false;
+    renderLogin();
+  };
+  document.getElementById('forgotDialogClose')?.addEventListener('click', closeForgotDialog);
+  document.getElementById('forgotDialogDone')?.addEventListener('click', closeForgotDialog);
+  document.getElementById('forgotOverlayBg')?.addEventListener('click', (e)=>{
+    if(e.target.id==='forgotOverlayBg') closeForgotDialog();
+  });
+  const submitForgotPassword = async ()=>{
+    const username = (document.getElementById('forgotUsernameInput').value||'').trim();
+    if(!username){ forgotPasswordError = 'Enter your username.'; renderLogin(); return; }
+    const submitBtn = document.getElementById('forgotPasswordSubmit');
+    submitBtn.disabled = true;
+    try{
+      const doc = await db.collection('usernames').doc(username.toLowerCase()).get();
+      if(doc.exists){
+        try{ await fbAuth.sendPasswordResetEmail(doc.data().email); }catch(e){}
+      }
+      // Same message whether or not the username exists, so this can't be used to check
+      // which usernames are registered.
+      forgotPasswordSent = true;
+      forgotPasswordError = '';
+      renderLogin();
+    }catch(err){
+      forgotPasswordError = 'Could not send the reset email. Please try again.';
+      renderLogin();
+    }
+  };
+  document.getElementById('forgotPasswordSubmit')?.addEventListener('click', submitForgotPassword);
+  document.getElementById('forgotUsernameInput')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitForgotPassword(); });
+
   if(adminDialogOpen){
     document.getElementById('adminPasswordInput')?.focus();
+  }else if(forgotPasswordOpen){
+    document.getElementById('forgotUsernameInput')?.focus();
   }else{
     const firstField = isSignup
       ? document.getElementById('authName')
@@ -2216,7 +2328,7 @@ function renderGateway(){
       ownerId: currentUser ? currentUser.id : null,
     };
     companies.push(company);
-    await saveCompanies();
+    await saveCompanyMeta(company);
     coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
     currentCompany = company;
     await loadState();
@@ -2250,9 +2362,13 @@ function renderGateway(){
     renderGateway();
   });
   if(servicesMenuOpen){
-    document.getElementById('gwLoginPublicLink')?.addEventListener('click', (e)=>{
+    document.getElementById('gwLoginPublicLink')?.addEventListener('click', async (e)=>{
       e.stopPropagation();
       servicesMenuOpen = false;
+      try{
+        const snap = await db.collection('users').where('role','==','user').get();
+        users = snap.docs.map(d=>d.data());
+      }catch(err){ users = []; toast('Could not load accounts'); }
       modal = 'publicLogins';
       renderGateway();
     });
@@ -2268,13 +2384,16 @@ function renderGateway(){
         el?.focus();
       }, 0);
     });
-    document.getElementById('gwLogOutLink')?.addEventListener('click', (e)=>{
+    document.getElementById('gwLogOutLink')?.addEventListener('click', async (e)=>{
       e.stopPropagation();
       fileMenuOpen = false;
+      try{ await fbAuth.signOut(); }catch(err){}
       currentUser = null;
+      companies = [];
+      users = [];
       authMode = 'login';
       authError = '';
-      authDraft = { name:'', username:'' };
+      authDraft = { name:'', username:'', email:'' };
       adminDialogOpen = false;
       adminLoginError = '';
       screen = 'login';
@@ -2301,7 +2420,7 @@ function publicLoginsModal(){
       <div class="modal-card" style="width:460px;">
         <div class="panel-head"><h2>Login - Public</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
         <div class="panel-body">
-          <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created on this device — the admin login itself isn't one of these.</p>
+          <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created, from any device — the admin login itself isn't one of these.</p>
           ${users.length ? `
           <table>
             <tr><th>#</th><th>Account Name</th><th>Username</th><th class="num">Companies</th></tr>
@@ -4586,14 +4705,14 @@ function renderTotalsOnly(){
   if(saveBtn) saveBtn.disabled = !balanced;
 }
 
-/* ---------------- init ---------------- */
+/* ---------------- init ----------------
+   Companies and accounts now live in Firestore, which requires a signed-in user — so nothing is
+   fetched here. The app always starts at the login screen (matching how it always worked, even
+   before real accounts existed); ensureDemoCompany()/loadCompanies() run right after a successful
+   login or admin login instead, once there's a Firebase Auth session to read/write with. */
 (async function init(){
-  await loadCompanies();
-  await migrateLegacyData();
-  await ensureDemoCompany();
-  await loadUsers();
   try{ const n = await window.storage.get('lastUsername'); lastUsername = n ? n.value : ''; }catch(e){ lastUsername = ''; }
-  authMode = users.length ? 'login' : 'signup';
+  authMode = 'login';
   screen = 'login';
   renderLogin();
   try{
