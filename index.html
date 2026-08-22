@@ -248,6 +248,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script>
 /* ---------------------------------------------------------------
    STORAGE SHIM
@@ -328,6 +329,30 @@ function isValidUsername(username){
 }
 function isValidEmail(email){
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+function isValidMobile(mobile){
+  return /^[0-9]{10}$/.test(mobile);
+}
+
+/* ---------------------------------------------------------------
+   EMAILJS — sends the numeric sign-up verification code.
+   Firebase's own client SDK can only send its fixed verification
+   LINK, not a custom code, so a small client-side email service
+   (EmailJS) is used instead to actually deliver the OTP. Fill in
+   the three IDs below from your EmailJS account (Account → API
+   Keys for the public key; Email Services and Email Templates for
+   the other two). The template must accept {{to_email}}, {{to_name}}
+   and {{otp_code}}, and its "To Email" setting must be {{to_email}}.
+--------------------------------------------------------------- */
+const EMAILJS_PUBLIC_KEY = 'YOUR_EMAILJS_PUBLIC_KEY';
+const EMAILJS_SERVICE_ID = 'YOUR_EMAILJS_SERVICE_ID';
+const EMAILJS_OTP_TEMPLATE_ID = 'YOUR_EMAILJS_TEMPLATE_ID';
+try{ if(window.emailjs) emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY }); }catch(e){}
+function generateOtp(){
+  return String(Math.floor(100000 + Math.random()*900000));
+}
+async function sendOtpEmail(email, name, otp){
+  await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_OTP_TEMPLATE_ID, { to_email: email, to_name: name, otp_code: otp });
 }
 function authErrorMessage(err, isSignup){
   const code = (err && err.code) || '';
@@ -411,16 +436,20 @@ let authMode = 'login';  // 'login' | 'signup' — which form the login screen s
 let authError = '';      // inline validation/error message on the login screen
 let authShowPassword = false; // show/hide toggle for the password field(s)
 let lastUsername = '';   // last-used username, remembered only to prefill the username field
-let authDraft = { name:'', username:'', email:'' }; // keeps name/username/email typed so a validation error doesn't force retyping them
+let authDraft = { name:'', username:'', mobile:'', email:'' }; // keeps name/username/mobile/email typed so a validation error doesn't force retyping them
 const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
 let adminDialogOpen = false;   // whether the Admin Login password dialog is showing on the login screen
 let adminLoginError = '';      // inline error message inside the admin dialog
 let forgotPasswordOpen = false;  // whether the "Forgot password?" dialog is showing on the login screen
 let forgotPasswordError = '';    // inline error message inside that dialog
 let forgotPasswordSent = false;  // whether the dialog is now showing its "check your email" confirmation
-let pendingVerifyUser = null;    // Firebase Auth user object of an unverified account currently shown the "verify your email" screen
-let verifyEmailNotice = '';      // inline status message on the "verify your email" screen (e.g. "resent")
-let verifyResendCooldownUntil = 0; // Date.now() timestamp before which the Resend button stays disabled
+let pendingSignupData = null;    // {name, username, mobile, email, password} captured on the signup form, held only in memory until the OTP is verified
+let pendingSignupOtp = '';       // the 6-digit code most recently emailed to the person signing up
+let otpExpiresAt = 0;            // Date.now() timestamp after which the code is no longer accepted
+let otpResendCooldownUntil = 0;  // Date.now() timestamp before which the Resend button stays disabled
+let otpAttempts = 0;             // wrong-code attempts against the current OTP, to stop endless guessing
+let otpError = '';               // inline error message on the "enter your code" screen
+let otpNotice = '';              // inline status message on that screen (e.g. "code resent")
 let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
 let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
 let viewMenuOpen = false;  // View menu dropdown toggle
@@ -1858,10 +1887,10 @@ function helpModal(){
 
 /* ---------------- "Verify your email" screen — shown after signup, and if an unverified
    account tries to log in, until Firebase's verification link has actually been clicked. */
-function renderVerifyEmailScreen(){
+function renderVerifyOtpScreen(){
   const app = document.getElementById('app');
-  const email = (pendingVerifyUser && pendingVerifyUser.email) || '';
-  const cooldownActive = Date.now() < verifyResendCooldownUntil;
+  const email = (pendingSignupData && pendingSignupData.email) || '';
+  const cooldownActive = Date.now() < otpResendCooldownUntil;
   app.innerHTML = `
     <div class="rb-bg">
       <span class="rb-letter rb-letter-r">R</span>
@@ -1878,42 +1907,115 @@ function renderVerifyEmailScreen(){
             <div class="login-by">by SKm</div>
             <p class="login-tagline">Verify your email to continue.</p>
             <p style="font-size:12.5px;color:var(--ink-soft);margin:16px 0;line-height:1.5;">
-              We've sent a verification link to <strong>${escapeHtml(email)}</strong>. Click the link in
-              that email, then come back here and log in.
+              We've sent a 6-digit verification code to <strong>${escapeHtml(email)}</strong>. Enter it
+              below to finish creating your account.
             </p>
-            ${verifyEmailNotice ? `<p class="auth-error" style="color:var(--accent1);">${escapeHtml(verifyEmailNotice)}</p>` : ''}
-            <button class="btn" id="resendVerifyBtn" type="button" style="width:100%;margin-top:6px;" ${cooldownActive?'disabled':''}>Resend Verification Email</button>
-            <button class="btn secondary" id="backToLoginFromVerifyBtn" type="button" style="width:100%;margin-top:10px;">Back to Log In</button>
+            <label>Verification Code</label>
+            <input type="text" id="otpCodeInput" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+            ${otpError ? `<p class="auth-error">${escapeHtml(otpError)}</p>` : ''}
+            ${otpNotice ? `<p class="auth-error" style="color:var(--accent1);">${escapeHtml(otpNotice)}</p>` : ''}
+            <button class="btn" id="verifyOtpBtn" type="button" style="width:100%;margin-top:14px;">Verify &amp; Create Account →</button>
+            <button class="btn secondary" id="resendOtpBtn" type="button" style="width:100%;margin-top:10px;" ${cooldownActive?'disabled':''}>Resend Code</button>
+            <button class="btn secondary" id="backToSignupFromOtpBtn" type="button" style="width:100%;margin-top:10px;">Start Over</button>
           </div>
           <div class="login-footer">Built by <strong>Santhosh Kumar M</strong> — <em>Accounting at the speed of business</em></div>
         </div>
       </div>
     </div>
   `;
-  document.getElementById('resendVerifyBtn')?.addEventListener('click', async ()=>{
-    if(!pendingVerifyUser) return;
+  document.getElementById('otpCodeInput')?.addEventListener('input', (e)=>{
+    e.target.value = e.target.value.replace(/\D/g,'').slice(0,6);
+  });
+  document.getElementById('otpCodeInput')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') verifySignupOtp(); });
+  document.getElementById('verifyOtpBtn')?.addEventListener('click', verifySignupOtp);
+  document.getElementById('resendOtpBtn')?.addEventListener('click', async ()=>{
+    if(!pendingSignupData || Date.now() < otpResendCooldownUntil) return;
+    const btn = document.getElementById('resendOtpBtn');
+    btn.disabled = true;
     try{
-      await pendingVerifyUser.sendEmailVerification();
-      verifyEmailNotice = 'Verification email resent — check your inbox (and spam folder).';
-      verifyResendCooldownUntil = Date.now() + 30000;
+      pendingSignupOtp = generateOtp();
+      otpExpiresAt = Date.now() + 10*60*1000;
+      otpAttempts = 0;
+      await sendOtpEmail(pendingSignupData.email, pendingSignupData.name, pendingSignupOtp);
+      otpNotice = 'A new code has been sent — check your inbox (and spam folder).';
+      otpError = '';
+      otpResendCooldownUntil = Date.now() + 30000;
     }catch(e){
-      verifyEmailNotice = 'Could not resend right now. Please try again shortly.';
+      otpNotice = '';
+      otpError = 'Could not resend the code right now. Please try again shortly.';
     }
     renderLogin();
   });
-  document.getElementById('backToLoginFromVerifyBtn')?.addEventListener('click', async ()=>{
-    try{ await fbAuth.signOut(); }catch(e){}
-    pendingVerifyUser = null;
-    verifyEmailNotice = '';
-    authMode = 'login';
+  document.getElementById('backToSignupFromOtpBtn')?.addEventListener('click', ()=>{
+    pendingSignupData = null;
+    pendingSignupOtp = '';
+    otpAttempts = 0;
+    otpError = '';
+    otpNotice = '';
+    authMode = 'signup';
     renderLogin();
   });
+}
+async function verifySignupOtp(){
+  if(!pendingSignupData) return;
+  const entered = (document.getElementById('otpCodeInput').value || '').trim();
+  otpNotice = '';
+  if(!entered){ otpError = 'Enter the 6-digit code sent to your email.'; renderLogin(); return; }
+  if(Date.now() > otpExpiresAt){ otpError = 'This code has expired. Please request a new one.'; renderLogin(); return; }
+  if(entered !== pendingSignupOtp){
+    otpAttempts += 1;
+    otpError = otpAttempts>=5
+      ? 'Too many incorrect attempts. Please request a new code.'
+      : 'Incorrect code. Please try again.';
+    if(otpAttempts>=5) otpExpiresAt = 0;
+    renderLogin();
+    return;
+  }
+  const btn = document.getElementById('verifyOtpBtn');
+  btn.disabled = true;
+  const { name, username, mobile, email, password } = pendingSignupData;
+  const usernameKey = username.toLowerCase();
+  try{
+    const takenDoc = await db.collection('usernames').doc(usernameKey).get();
+    if(takenDoc.exists){
+      otpError = '';
+      authError = 'That username was just taken by someone else — please choose another.';
+      authDraft = { name, username:'', mobile, email };
+      pendingSignupData = null;
+      pendingSignupOtp = '';
+      authMode = 'signup';
+      renderLogin();
+      return;
+    }
+    const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
+    const profile = { id: cred.user.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', createdAt: new Date().toISOString() };
+    await db.collection('users').doc(cred.user.uid).set(profile);
+    await db.collection('usernames').doc(usernameKey).set({ email });
+    lastUsername = username;
+    authDraft = { name:'', username:'', mobile:'', email:'' };
+    try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+    pendingSignupData = null;
+    pendingSignupOtp = '';
+    otpAttempts = 0;
+    otpError = '';
+    otpNotice = '';
+    currentUser = { id: cred.user.uid, name, username, isAdmin:false };
+    await ensureDemoCompany();
+    await loadCompanies();
+    screen = 'gateway';
+    renderGateway();
+    pushHistory();
+  }catch(err){
+    otpError = authErrorMessage(err, true);
+    btn.disabled = false;
+    renderLogin();
+  }
 }
 
 /* ---------------- Login — welcome screen shown before Company Info ---------------- */
 function renderLogin(){
   const app = document.getElementById('app');
-  if(authMode==='verifyEmail'){ renderVerifyEmailScreen(); return; }
+  if(authMode==='verifyOtp'){ renderVerifyOtpScreen(); return; }
   const isSignup = authMode==='signup';
   const pwType = authShowPassword ? 'text' : 'password';
   app.innerHTML = `
@@ -1937,6 +2039,8 @@ function renderLogin(){
             <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name">
             <label style="margin-top:12px;">Username</label>
             <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username">
+            <label style="margin-top:12px;">Mobile Number</label>
+            <input type="tel" id="authMobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric" value="${escapeAttr(authDraft.mobile)}" autocomplete="tel">
             <label style="margin-top:12px;">Email</label>
             <input type="email" id="authEmail" placeholder="you@example.com" value="${escapeAttr(authDraft.email)}" autocomplete="email">
             ` : `
@@ -2011,11 +2115,13 @@ function renderLogin(){
     if(isSignup){
       const name = (document.getElementById('authName').value||'').trim();
       const username = (document.getElementById('authUsername').value||'').trim();
+      const mobile = (document.getElementById('authMobile').value||'').trim();
       const email = (document.getElementById('authEmail').value||'').trim();
       const confirm = document.getElementById('authConfirmPassword').value || '';
-      authDraft.name = name; authDraft.username = username; authDraft.email = email;
-      if(!name || !username || !email || !password){ authError = 'Please fill in your name, username, email, and password.'; renderLogin(); return; }
+      authDraft.name = name; authDraft.username = username; authDraft.mobile = mobile; authDraft.email = email;
+      if(!name || !username || !mobile || !email || !password){ authError = 'Please fill in your name, username, mobile number, email, and password.'; renderLogin(); return; }
       if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
+      if(!isValidMobile(mobile)){ authError = 'Mobile number must be exactly 10 digits.'; renderLogin(); return; }
       if(!isValidEmail(email)){ authError = 'Please enter a valid email address.'; renderLogin(); return; }
       if(password.length<6){ authError = 'Password must be at least 6 characters.'; renderLogin(); return; }
       if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); return; }
@@ -2024,21 +2130,21 @@ function renderLogin(){
       try{
         const takenDoc = await db.collection('usernames').doc(usernameKey).get();
         if(takenDoc.exists){ authError = 'That username is already taken.'; submitBtn.disabled = false; renderLogin(); return; }
-        const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
-        const profile = { id: cred.user.uid, name, username, usernameLower: usernameKey, email, role:'user', createdAt: new Date().toISOString() };
-        await db.collection('users').doc(cred.user.uid).set(profile);
-        await db.collection('usernames').doc(usernameKey).set({ email });
-        lastUsername = username;
-        authDraft = { name:'', username:'', email:'' };
-        try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
-        try{ await cred.user.sendEmailVerification(); }catch(e){}
-        pendingVerifyUser = cred.user;
-        verifyEmailNotice = '';
-        verifyResendCooldownUntil = Date.now() + 30000;
-        authMode = 'verifyEmail';
+        pendingSignupData = { name, username, mobile, email, password };
+        pendingSignupOtp = generateOtp();
+        otpExpiresAt = Date.now() + 10*60*1000;
+        otpResendCooldownUntil = Date.now() + 30000;
+        otpAttempts = 0;
+        otpError = '';
+        otpNotice = '';
+        await sendOtpEmail(email, name, pendingSignupOtp);
+        authMode = 'verifyOtp';
         renderLogin();
       }catch(err){
-        authError = authErrorMessage(err, true);
+        pendingSignupData = null;
+        pendingSignupOtp = '';
+        authError = 'Could not send the verification code. Please check the email address and try again.';
+        submitBtn.disabled = false;
         renderLogin();
       }
     }else{
@@ -2051,15 +2157,6 @@ function renderLogin(){
         if(!lookupDoc.exists){ authError = 'No account found with that username.'; submitBtn.disabled = false; renderLogin(); return; }
         const { email } = lookupDoc.data();
         const cred = await fbAuth.signInWithEmailAndPassword(email, password);
-        await cred.user.reload();
-        if(!cred.user.emailVerified){
-          pendingVerifyUser = cred.user;
-          verifyEmailNotice = '';
-          authDraft = { name:'', username:'', email:'' };
-          authMode = 'verifyEmail';
-          renderLogin();
-          return;
-        }
         const profDoc = await db.collection('users').doc(cred.user.uid).get();
         const profile = profDoc.exists ? profDoc.data() : { name: username, username, role:'user' };
         if(profile.blocked){
@@ -2071,7 +2168,7 @@ function renderLogin(){
         }
         currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: profile.role==='admin' };
         lastUsername = username;
-        authDraft = { name:'', username:'', email:'' };
+        authDraft = { name:'', username:'', mobile:'', email:'' };
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         await ensureDemoCompany();
         await loadCompanies();
@@ -2086,7 +2183,7 @@ function renderLogin(){
   };
 
   document.getElementById('authSubmitBtn').addEventListener('click', submitAuth);
-  ['authName','authUsername','authEmail','authPassword','authConfirmPassword'].forEach(id=>{
+  ['authName','authUsername','authMobile','authEmail','authPassword','authConfirmPassword'].forEach(id=>{
     document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAuth(); });
   });
   document.getElementById('authToggleModeLink')?.addEventListener('click', ()=>{
@@ -2097,6 +2194,9 @@ function renderLogin(){
   document.getElementById('authTogglePw')?.addEventListener('click', ()=>{
     authShowPassword = !authShowPassword;
     renderLogin();
+  });
+  document.getElementById('authMobile')?.addEventListener('input', (e)=>{
+    e.target.value = e.target.value.replace(/\D/g,'').slice(0,10);
   });
 
   document.getElementById('adminLoginBtn')?.addEventListener('click', ()=>{
@@ -2549,11 +2649,12 @@ function publicLoginsModal(){
           <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created, from any device — the admin login itself isn't one of these.</p>
           ${users.length ? `
           <table>
-            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th><th></th></tr>
+            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Mobile</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th><th></th></tr>
             ${users.map((u,i)=>`<tr>
               <td class="muted">${i+1}</td>
               <td>${escapeHtml(u.name)}</td>
               <td class="muted">${escapeHtml(u.username)}</td>
+              <td class="muted">${escapeHtml(u.mobile||'—')}</td>
               <td class="muted">${escapeHtml(u.email||'—')}</td>
               <td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td>
               <td>
