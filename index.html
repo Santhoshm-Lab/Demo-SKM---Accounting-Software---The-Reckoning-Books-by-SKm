@@ -2481,10 +2481,12 @@ function renderGateway(){
     document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; renderGateway(); });
   }
   if(modal==='publicLogins'){
-    document.querySelectorAll('[data-toggle-block]').forEach(el=>{
+    document.querySelectorAll('[data-update-status]').forEach(el=>{
       el.addEventListener('click', async ()=>{
-        const uid = el.dataset.toggleBlock;
-        const nextBlocked = el.dataset.blocked !== '1';
+        const uid = el.dataset.updateStatus;
+        const select = document.querySelector(`[data-status-select="${uid}"]`);
+        if(!select) return;
+        const nextBlocked = select.value === 'blocked';
         el.disabled = true;
         try{
           await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
@@ -2494,6 +2496,38 @@ function renderGateway(){
           renderGateway();
         }catch(err){
           toast('Could not update that account');
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-delete-account]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.deleteAccount;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        const ownedCompanies = companies.filter(c=>c.ownerId===uid);
+        const ok = window.confirm(
+          `Delete the account "${u.name}" (${u.username})?\n\n`+
+          `This permanently deletes their profile and frees up their username, along with `+
+          `${ownedCompanies.length} compan${ownedCompanies.length===1?'y':'ies'} they own and all its ledgers/vouchers.\n\n`+
+          `This cannot be undone.`
+        );
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          for(const c of ownedCompanies){
+            await db.collection('companies').doc(c.id).delete();
+          }
+          if(u.usernameLower){
+            try{ await db.collection('usernames').doc(u.usernameLower).delete(); }catch(e){}
+          }
+          await db.collection('users').doc(uid).delete();
+          users = users.filter(x=>x.id!==uid);
+          companies = companies.filter(c=>c.ownerId!==uid);
+          toast('Account deleted');
+          renderGateway();
+        }catch(err){
+          toast('Could not delete that account');
           el.disabled = false;
         }
       });
@@ -2509,14 +2543,28 @@ function servicesDropdown(){
 function publicLoginsModal(){
   return `
     <div class="modal-overlay" id="modalOverlayBg">
-      <div class="modal-card" style="width:560px;">
+      <div class="modal-card" style="width:96vw;max-width:1040px;max-height:88vh;display:flex;flex-direction:column;">
         <div class="panel-head"><h2>Login - Public</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
-        <div class="panel-body">
+        <div class="panel-body" style="overflow-y:auto;">
           <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created, from any device — the admin login itself isn't one of these.</p>
           ${users.length ? `
           <table>
-            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th></tr>
-            ${users.map((u,i)=>`<tr><td class="muted">${i+1}</td><td>${escapeHtml(u.name)}</td><td class="muted">${escapeHtml(u.username)}</td><td class="muted">${escapeHtml(u.email||'—')}</td><td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td><td>${u.blocked?'<span class="pill cr">Blocked</span>':'<span class="pill dr">Active</span>'}</td><td><button class="btn secondary small" data-toggle-block="${escapeAttr(u.id)}" data-blocked="${u.blocked?'1':'0'}" type="button">${u.blocked?'Unblock':'Block'}</button></td></tr>`).join('')}
+            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th><th></th></tr>
+            ${users.map((u,i)=>`<tr>
+              <td class="muted">${i+1}</td>
+              <td>${escapeHtml(u.name)}</td>
+              <td class="muted">${escapeHtml(u.username)}</td>
+              <td class="muted">${escapeHtml(u.email||'—')}</td>
+              <td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td>
+              <td>
+                <select data-status-select="${escapeAttr(u.id)}">
+                  <option value="active" ${!u.blocked?'selected':''}>Active</option>
+                  <option value="blocked" ${u.blocked?'selected':''}>Blocked</option>
+                </select>
+              </td>
+              <td><button class="btn secondary small" data-update-status="${escapeAttr(u.id)}" type="button">Update</button></td>
+              <td><button class="btn secondary small" data-delete-account="${escapeAttr(u.id)}" type="button" style="color:var(--debit);">Delete</button></td>
+            </tr>`).join('')}
           </table>
           ` : `<div class="empty">No public accounts have been created yet.</div>`}
         </div>
