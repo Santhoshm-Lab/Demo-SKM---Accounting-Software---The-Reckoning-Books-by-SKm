@@ -2062,6 +2062,13 @@ function renderLogin(){
         }
         const profDoc = await db.collection('users').doc(cred.user.uid).get();
         const profile = profDoc.exists ? profDoc.data() : { name: username, username, role:'user' };
+        if(profile.blocked){
+          await fbAuth.signOut();
+          authError = 'This account has been blocked. Please contact the administrator.';
+          submitBtn.disabled = false;
+          renderLogin();
+          return;
+        }
         currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: profile.role==='admin' };
         lastUsername = username;
         authDraft = { name:'', username:'', email:'' };
@@ -2473,6 +2480,25 @@ function renderGateway(){
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; renderGateway(); });
   }
+  if(modal==='publicLogins'){
+    document.querySelectorAll('[data-toggle-block]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.toggleBlock;
+        const nextBlocked = el.dataset.blocked !== '1';
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
+          const u = users.find(x=>x.id===uid);
+          if(u) u.blocked = nextBlocked;
+          toast(nextBlocked ? 'Account blocked' : 'Account unblocked');
+          renderGateway();
+        }catch(err){
+          toast('Could not update that account');
+          el.disabled = false;
+        }
+      });
+    });
+  }
 }
 function fileDropdown(){
   return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
@@ -2489,8 +2515,8 @@ function publicLoginsModal(){
           <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created, from any device — the admin login itself isn't one of these.</p>
           ${users.length ? `
           <table>
-            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Email</th><th class="num">Companies</th></tr>
-            ${users.map((u,i)=>`<tr><td class="muted">${i+1}</td><td>${escapeHtml(u.name)}</td><td class="muted">${escapeHtml(u.username)}</td><td class="muted">${escapeHtml(u.email||'—')}</td><td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td></tr>`).join('')}
+            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th></tr>
+            ${users.map((u,i)=>`<tr><td class="muted">${i+1}</td><td>${escapeHtml(u.name)}</td><td class="muted">${escapeHtml(u.username)}</td><td class="muted">${escapeHtml(u.email||'—')}</td><td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td><td>${u.blocked?'<span class="pill cr">Blocked</span>':'<span class="pill dr">Active</span>'}</td><td><button class="btn secondary small" data-toggle-block="${escapeAttr(u.id)}" data-blocked="${u.blocked?'1':'0'}" type="button">${u.blocked?'Unblock':'Block'}</button></td></tr>`).join('')}
           </table>
           ` : `<div class="empty">No public accounts have been created yet.</div>`}
         </div>
