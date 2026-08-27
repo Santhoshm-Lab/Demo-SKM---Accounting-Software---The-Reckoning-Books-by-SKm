@@ -107,9 +107,10 @@
   .btn.small{padding:6px 13px;font-size:11.5px;}
   .btn:disabled{opacity:.4;cursor:not-allowed;box-shadow:none;}
 
-  select, input[type=text], input[type=date], input[type=number], input[type=password], input[type=email], input[type=tel]{
+  select, input[type=text], input[type=date], input[type=number], input[type=password], input[type=email], input[type=tel], textarea{
     font-family:inherit;font-size:12.5px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--field);color:var(--ink);width:100%;transition:border-color .15s, box-shadow .15s;
   }
+  textarea{resize:vertical;}
   .pw-field-wrap input{padding-right:56px;}
   select:focus, input:focus{outline:none;border-color:var(--accent1);box-shadow:0 0 0 3px rgba(44,160,28,0.16);}
   input[type=number]{font-variant-numeric:tabular-nums;font-weight:600;text-align:right;}
@@ -437,6 +438,22 @@ let editCoDraft = null;    // draft for the Edit Company modal
 let fileMenuOpen = false;  // Gateway File menu dropdown toggle
 let servicesMenuOpen = false; // Gateway Services menu dropdown toggle (admin login only)
 let isDetailCategory = null; // which Income Statement line was clicked, for the detail modal
+
+/* ---------------- Admin Panel state ---------------- */
+let adminTab = 'overview';      // 'overview' | 'users' | 'companies' | 'auditLog' — which tab the Admin Panel modal shows
+let adminUserSearch = '';       // search box text on the Users tab (matches name/username/email/mobile)
+let adminUserSort = 'name';     // 'name' | 'created' | 'status' — Users tab sort key
+let adminUserSortDir = 'asc';   // 'asc' | 'desc'
+let editingUserId = null;       // uid of the row currently in inline-edit mode on the Users tab
+let editUserDraft = { name:'', mobile:'', email:'' }; // draft fields for that inline edit
+let editingPlanUserId = null;   // uid of the row whose plan/expiry is being edited
+let editPlanDraft = { plan:'free', planExpiry:'' };
+let reassigningCompanyId = null; // company id currently showing the "reassign owner" inline picker on the Companies tab
+let auditLog = [];              // cache of audit log entries, loaded when the Admin Panel opens
+let announcement = { message:'', active:false };      // last-saved announcement (settings/announcement doc)
+let announcementDraft = { message:'', active:false }; // editable draft on the Overview tab
+let announcementDismissed = false; // whether the banner was dismissed in THIS browser session (not persisted)
+let adminViewOnlyCompanyId = null; // set while an admin is "viewing" a user's company read-only — every save/delete function checks this first
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let pieChartLedgerId = null; // which ledger's pie chart to show
 let stockDetailItemId = null;  // which item's stock movement modal to show
@@ -468,6 +485,80 @@ function itemsSummary(v){
 }
 function groupOf(id){ return GROUPS.find(g=>g.id===id); }
 function ledgerOf(id){ return state.ledgers.find(l=>l.id===id); }
+
+/* ---------------- Admin Panel helpers ---------------- */
+/* Writes one entry to the auditLog collection. Best-effort: a logging failure never blocks the
+   action it's recording (matches how the rest of this app treats Firestore writes). */
+async function logAudit(action, detail, targetUid, targetName){
+  try{
+    const id = 'a_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+    await db.collection('auditLog').doc(id).set({
+      action,
+      actorUid: currentUser ? currentUser.id : null,
+      actorName: currentUser ? currentUser.name : 'System',
+      targetUid: targetUid || null,
+      targetName: targetName || null,
+      detail: detail || '',
+      at: new Date().toISOString(),
+    });
+  }catch(e){ console.error('Audit log write failed:', e); }
+}
+function isPlanExpired(u){
+  if(!u || u.plan!=='paid' || !u.planExpiry) return false;
+  return new Date(u.planExpiry).getTime() < Date.now();
+}
+function planLabel(u){
+  if(!u) return 'Free';
+  if(u.plan==='lifetime') return 'Lifetime';
+  if(u.plan==='paid') return isPlanExpired(u) ? 'Expired' : 'Paid';
+  return 'Free';
+}
+function computeAdminStats(){
+  const realUsers = users.filter(u=>u.role!=='admin');
+  const totalCompanies = companies.filter(c=>c.id!==DEMO_COMPANY_ID).length;
+  const blocked = realUsers.filter(u=>u.blocked).length;
+  const weekAgo = Date.now() - 7*24*60*60*1000;
+  const newThisWeek = realUsers.filter(u=>u.createdAt && new Date(u.createdAt).getTime()>=weekAgo).length;
+  return { totalUsers: realUsers.length, totalCompanies, blocked, newThisWeek };
+}
+function findOrphanedCompanies(){
+  const userIds = new Set(users.map(u=>u.id));
+  return companies.filter(c=>c.id!==DEMO_COMPANY_ID && c.ownerId && !userIds.has(c.ownerId));
+}
+function ownerLabelFor(company){
+  if(company.id===DEMO_COMPANY_ID) return 'Shared demo (no owner)';
+  if(!company.ownerId) return '—';
+  const owner = users.find(u=>u.id===company.ownerId);
+  return owner ? `${owner.name} (${owner.username})` : 'Orphaned — owner account no longer exists';
+}
+async function loadAnnouncementForUser(){
+  try{
+    const doc = await db.collection('settings').doc('announcement').get();
+    announcement = doc.exists ? { message: doc.data().message||'', active: !!doc.data().active } : { message:'', active:false };
+  }catch(e){ /* best-effort — the banner just won't show if this fails */ }
+}
+async function refreshAuditLog(){
+  try{
+    const logSnap = await db.collection('auditLog').get();
+    auditLog = logSnap.docs.map(d=>d.data()).sort((a,b)=> (b.at||'').localeCompare(a.at||'')).slice(0,200);
+  }catch(err){ auditLog = []; }
+}
+async function loadAdminPanelData(){
+  try{
+    const snap = await db.collection('users').get();
+    users = snap.docs.map(d=>d.data());
+  }catch(err){ users = []; toast('Could not load accounts'); }
+  try{
+    const coSnap = await db.collection('companies').get();
+    companies = coSnap.docs.map(d=>d.data());
+  }catch(err){ /* keep whatever was already loaded */ }
+  await refreshAuditLog();
+  try{
+    const annDoc = await db.collection('settings').doc('announcement').get();
+    announcement = annDoc.exists ? { message: annDoc.data().message||'', active: !!annDoc.data().active } : { message:'', active:false };
+    announcementDraft = { ...announcement };
+  }catch(err){ announcement = { message:'', active:false }; announcementDraft = { ...announcement }; }
+}
 
 function toast(msg){
   const t = document.getElementById('toast');
@@ -576,6 +667,7 @@ async function loadCompanies(){
    document and are written independently by saveLedgers()/saveVouchers()/saveItems()/
    saveStockAdjustments(). Used when a company is created and when its details are edited. */
 async function saveCompanyMeta(company){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
   try{ await db.collection('companies').doc(company.id).set(company, {merge:true}); }
   catch(e){ toast('Could not save company'); }
 }
@@ -586,6 +678,7 @@ async function saveCompanyMeta(company){
 async function deleteCompanyById(id){
   const c = companies.find(x=>x.id===id);
   if(!c) return false;
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — nothing is deleted."); return false; }
   const ok = window.confirm(`Delete company "${c.name}" and all its ledgers and vouchers?\n\nThis cannot be undone.`);
   if(!ok) return false;
   try{ await db.collection('companies').doc(id).delete(); }
@@ -789,18 +882,22 @@ function ensureCoreLedgers(){
   return changed;
 }
 async function saveLedgers(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ ledgers: state.ledgers }, {merge:true}); }
   catch(e){ toast('Could not save ledgers'); }
 }
 async function saveVouchers(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ vouchers: state.vouchers }, {merge:true}); }
   catch(e){ toast('Could not save vouchers'); }
 }
 async function saveItems(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ items: state.items }, {merge:true}); }
   catch(e){ toast('Could not save items'); }
 }
 async function saveStockAdjustments(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ stockAdjustments: state.stockAdjustments }, {merge:true}); }
   catch(e){ toast('Could not save stock adjustments'); }
 }
@@ -1275,6 +1372,12 @@ function render(){
       <span id="menuHelp">Help</span>
       <span id="menuDeleteCompany" class="menu-danger">Delete Company</span>
     </div>
+    ${adminViewOnlyCompanyId===currentCompany.id ? `
+    <div style="background:#F2A900;color:#2a2200;padding:8px 18px;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
+      <span>👁 Viewing "${escapeHtml(currentCompany.name)}" as Administrator — read-only, nothing you do here is saved.</span>
+      <button class="btn secondary small" id="exitAdminViewBtn" type="button" style="background:#fff;">Exit to Admin Panel</button>
+    </div>
+    ` : ''}
     <div class="body-shell">
       <div class="tabstrip">
         ${tab('dashboard','Dashboard','D')}
@@ -1314,6 +1417,21 @@ function render(){
   attachHandlers();
 
   document.getElementById('menuCompany').addEventListener('click', ()=>{
+    if(adminViewOnlyCompanyId){
+      adminViewOnlyCompanyId = null;
+      currentCompany = null;
+      modal = 'adminPanel';
+      adminTab = 'companies';
+    }
+    screen = 'gateway';
+    renderGateway();
+    pushHistory();
+  });
+  document.getElementById('exitAdminViewBtn')?.addEventListener('click', ()=>{
+    adminViewOnlyCompanyId = null;
+    currentCompany = null;
+    modal = 'adminPanel';
+    adminTab = 'companies';
     screen = 'gateway';
     renderGateway();
     pushHistory();
@@ -1984,7 +2102,7 @@ function renderLogin(){
         }
         const takenDoc = await db.collection('usernames').doc(usernameKey).get();
         if(takenDoc.exists){ authError = 'That username is already taken — please choose another (your email is already verified, so just fix the username and click Create Account again).'; submitBtn.disabled = false; renderLogin(); return; }
-        const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', createdAt: new Date().toISOString() };
+        const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString() };
         await db.collection('users').doc(pendingVerifyUser.uid).set(profile);
         await db.collection('usernames').doc(usernameKey).set({ email });
         lastUsername = username;
@@ -1995,6 +2113,8 @@ function renderLogin(){
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         await ensureDemoCompany();
         await loadCompanies();
+        await loadAnnouncementForUser();
+        logAudit('account_created', `New account @${username}`, currentUser.id, name);
         screen = 'gateway';
         renderGateway();
         pushHistory();
@@ -2028,6 +2148,7 @@ function renderLogin(){
           authDraft = { name:'', username:'', mobile:'', email:'' };
           await ensureDemoCompany();
           await loadCompanies();
+          logAudit('admin_login', 'Logged in via the admin backdoor', cred.user.uid, 'Administrator');
           screen = 'gateway';
           renderGateway();
           pushHistory();
@@ -2058,6 +2179,8 @@ function renderLogin(){
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         await ensureDemoCompany();
         await loadCompanies();
+        await loadAnnouncementForUser();
+        logAudit('login', '', cred.user.uid, currentUser.name);
         screen = 'gateway';
         renderGateway();
         pushHistory();
@@ -2262,6 +2385,12 @@ function renderGateway(){
       <span id="gwMenuHelp">Help</span>
       ${currentUser && currentUser.isAdmin ? `<span id="gwMenuServices" style="position:relative;">Services${servicesMenuOpen?servicesDropdown():''}</span>` : ''}
     </div>
+    ${currentUser && !currentUser.isAdmin && announcement.active && announcement.message && !announcementDismissed ? `
+    <div style="background:#F2A900;color:#2a2200;padding:10px 20px;font-size:12.5px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;">
+      <span>📢 ${escapeHtml(announcement.message)}</span>
+      <button class="btn secondary small" id="dismissAnnouncementBtn" type="button" style="background:#fff;flex-shrink:0;">Dismiss</button>
+    </div>
+    ` : ''}
     ${currentUser ? `<div class="rb-greeting">Welcome, <strong>${escapeHtml(currentUser.name)}</strong></div>` : ''}
     <div class="gateway-shell">
       <div class="gateway-box">
@@ -2371,7 +2500,7 @@ function renderGateway(){
     </div>
     <div class="rb-credit">Created by <strong>SKm</strong></div>
     ${modal==='help' ? helpModal() : ''}
-    ${modal==='publicLogins' ? publicLoginsModal() : ''}
+    ${modal==='adminPanel' ? adminPanelModal() : ''}
       </div>
     </div>
   `;
@@ -2452,6 +2581,10 @@ function renderGateway(){
     pushHistory();
   });
 
+  document.getElementById('dismissAnnouncementBtn')?.addEventListener('click', ()=>{
+    announcementDismissed = true;
+    renderGateway();
+  });
   document.getElementById('gwMenuFile').addEventListener('click', (e)=>{
     e.stopPropagation();
     fileMenuOpen = !fileMenuOpen;
@@ -2476,14 +2609,12 @@ function renderGateway(){
     renderGateway();
   });
   if(servicesMenuOpen){
-    document.getElementById('gwLoginPublicLink')?.addEventListener('click', async (e)=>{
+    document.getElementById('gwAdminPanelLink')?.addEventListener('click', async (e)=>{
       e.stopPropagation();
       servicesMenuOpen = false;
-      try{
-        const snap = await db.collection('users').where('role','==','user').get();
-        users = snap.docs.map(d=>d.data());
-      }catch(err){ users = []; toast('Could not load accounts'); }
-      modal = 'publicLogins';
+      await loadAdminPanelData();
+      adminTab = 'overview';
+      modal = 'adminPanel';
       renderGateway();
     });
   }
@@ -2510,18 +2641,220 @@ function renderGateway(){
       authDraft = { name:'', username:'', mobile:'', email:'' };
       pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
       verifyLinkNotice = ''; verifyLinkError = '';
+      announcement = { message:'', active:false }; announcementDismissed = false;
       screen = 'login';
       renderLogin();
       pushHistory();
     });
   }
-  if(modal==='help' || modal==='publicLogins'){
+  if(modal==='help' || modal==='adminPanel'){
     document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
-      if(e.target.id==='modalOverlayBg'){ modal = null; renderGateway(); }
+      if(e.target.id==='modalOverlayBg'){
+        modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+        renderGateway();
+      }
     });
-    document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; renderGateway(); });
+    document.getElementById('modalClose')?.addEventListener('click', ()=>{
+      modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+      renderGateway();
+    });
   }
-  if(modal==='publicLogins'){
+  if(modal==='adminPanel'){
+    document.querySelectorAll('[data-admin-tab]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        adminTab = el.dataset.adminTab;
+        editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+        if(adminTab==='auditLog') await refreshAuditLog();
+        renderGateway();
+      });
+    });
+  }
+  if(modal==='adminPanel' && adminTab==='overview'){
+    document.querySelectorAll('[data-delete-orphan]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const cid = el.dataset.deleteOrphan;
+        const c = companies.find(x=>x.id===cid);
+        const ok = await deleteCompanyById(cid);
+        if(ok){ logAudit('orphan_deleted', `Deleted orphaned company "${c?c.name:cid}"`, cid, c?c.name:cid); renderGateway(); }
+      });
+    });
+    document.getElementById('saveAnnouncementBtn')?.addEventListener('click', async ()=>{
+      const message = (document.getElementById('announcementMessage').value||'').trim();
+      const active = document.getElementById('announcementActive').checked;
+      const btn = document.getElementById('saveAnnouncementBtn');
+      btn.disabled = true;
+      try{
+        await db.collection('settings').doc('announcement').set({ message, active, updatedAt: new Date().toISOString() }, {merge:true});
+        announcement = { message, active };
+        announcementDraft = { message, active };
+        announcementDismissed = false;
+        await logAudit('announcement_updated', active ? `Set banner: "${message}"` : 'Turned banner off');
+        toast('Announcement saved');
+        renderGateway();
+      }catch(err){
+        console.error('Save announcement failed:', err);
+        toast('Could not save the announcement — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+      }
+    });
+  }
+  if(modal==='adminPanel' && adminTab==='users'){
+    document.getElementById('adminUserSearchInput')?.addEventListener('input', (e)=>{
+      adminUserSearch = e.target.value;
+      const caret = e.target.selectionStart;
+      renderGateway();
+      const el = document.getElementById('adminUserSearchInput');
+      if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
+    document.querySelectorAll('[data-admin-sort]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const key = el.dataset.adminSort;
+        if(adminUserSort===key){ adminUserSortDir = adminUserSortDir==='asc' ? 'desc' : 'asc'; }
+        else { adminUserSort = key; adminUserSortDir = 'asc'; }
+        renderGateway();
+      });
+    });
+    document.querySelectorAll('[data-edit-user]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const uid = el.dataset.editUser;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        editUserDraft = { name: u.name||'', mobile: u.mobile||'', email: u.email||'' };
+        editingUserId = uid;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelEditUserBtn')?.addEventListener('click', ()=>{
+      editingUserId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-save-user]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.saveUser;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        const name = (document.querySelector(`[data-edit-name="${uid}"]`).value||'').trim();
+        const mobile = (document.querySelector(`[data-edit-mobile="${uid}"]`).value||'').trim();
+        const email = (document.querySelector(`[data-edit-email="${uid}"]`).value||'').trim();
+        if(!name || !mobile || !email){ toast('Name, mobile and email are all required'); return; }
+        if(!isValidMobile(mobile)){ toast('Mobile number must be exactly 10 digits'); return; }
+        if(!isValidEmail(email)){ toast('Please enter a valid email address'); return; }
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ name, mobile, email }, {merge:true});
+          u.name = name; u.mobile = mobile; u.email = email;
+          editingUserId = null;
+          await logAudit('profile_edited', `Updated profile details`, uid, name);
+          toast('Profile updated');
+          renderGateway();
+        }catch(err){
+          console.error('Save profile failed:', err);
+          toast('Could not save that profile — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-reset-password]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.resetPassword;
+        const u = users.find(x=>x.id===uid);
+        if(!u || !u.email) return;
+        el.disabled = true;
+        try{
+          await fbAuth.sendPasswordResetEmail(u.email);
+          await logAudit('password_reset_sent', `Sent a password reset email to ${u.email}`, uid, u.name);
+          toast('Password reset email sent to ' + u.email);
+        }catch(err){
+          console.error('Send reset email failed:', err);
+          toast('Could not send the reset email — ' + (err && (err.code || err.message) || 'unknown error'));
+        }
+        el.disabled = false;
+      });
+    });
+    document.querySelectorAll('[data-make-admin]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.makeAdmin;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        const ok = window.confirm(`Give "${u.name}" (@${u.username}) full Administrator access?`);
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ role: 'admin' }, {merge:true});
+          u.role = 'admin';
+          await logAudit('promoted_to_admin', `Promoted @${u.username} to Administrator`, uid, u.name);
+          toast(u.name + ' is now an Administrator');
+          renderGateway();
+        }catch(err){
+          console.error('Promote to admin failed:', err);
+          toast('Could not update that account — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-revoke-admin]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.revokeAdmin;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ role: 'user' }, {merge:true});
+          u.role = 'user';
+          await logAudit('admin_revoked', `Revoked Administrator access from @${u.username}`, uid, u.name);
+          toast('Administrator access revoked for ' + u.name);
+          renderGateway();
+        }catch(err){
+          console.error('Revoke admin failed:', err);
+          toast('Could not update that account — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-edit-plan]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const uid = el.dataset.editPlan;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        editPlanDraft = { plan: u.plan||'free', planExpiry: u.planExpiry||'' };
+        editingPlanUserId = uid;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelPlanBtn')?.addEventListener('click', ()=>{
+      editingPlanUserId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-plan-select]').forEach(el=>{
+      el.addEventListener('change', ()=>{
+        editPlanDraft.plan = el.value;
+        renderGateway();
+      });
+    });
+    document.querySelectorAll('[data-save-plan]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.savePlan;
+        const u = users.find(x=>x.id===uid);
+        if(!u) return;
+        const planSelect = document.querySelector(`[data-plan-select="${uid}"]`);
+        const plan = planSelect ? planSelect.value : 'free';
+        const expiryInput = document.querySelector(`[data-plan-expiry="${uid}"]`);
+        const planExpiry = plan==='paid' ? ((expiryInput && expiryInput.value) || null) : null;
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ plan, planExpiry }, {merge:true});
+          u.plan = plan; u.planExpiry = planExpiry;
+          editingPlanUserId = null;
+          await logAudit('plan_changed', `Set plan to ${plan}${planExpiry?` (until ${planExpiry})`:''}`, uid, u.name);
+          toast('Plan updated');
+          renderGateway();
+        }catch(err){
+          console.error('Save plan failed:', err);
+          toast('Could not save the plan — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
     document.querySelectorAll('[data-update-status]').forEach(el=>{
       el.addEventListener('click', async ()=>{
         const uid = el.dataset.updateStatus;
@@ -2533,6 +2866,7 @@ function renderGateway(){
           await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
           const u = users.find(x=>x.id===uid);
           if(u) u.blocked = nextBlocked;
+          await logAudit(nextBlocked?'account_blocked':'account_unblocked', '', uid, u?u.name:uid);
           toast(nextBlocked ? 'Account blocked' : 'Account unblocked');
           renderGateway();
         }catch(err){
@@ -2566,6 +2900,7 @@ function renderGateway(){
           await db.collection('users').doc(uid).delete();
           users = users.filter(x=>x.id!==uid);
           companies = companies.filter(c=>c.ownerId!==uid);
+          await logAudit('account_deleted', `Deleted account @${u.username} and ${ownedCompanies.length} compan${ownedCompanies.length===1?'y':'ies'}`, uid, u.name);
           toast('Account deleted');
           renderGateway();
         }catch(err){
@@ -2576,44 +2911,267 @@ function renderGateway(){
       });
     });
   }
+  if(modal==='adminPanel' && adminTab==='companies'){
+    document.querySelectorAll('[data-view-company]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const cid = el.dataset.viewCompany;
+        const c = companies.find(x=>x.id===cid);
+        if(!c) return;
+        adminViewOnlyCompanyId = cid;
+        currentCompany = c;
+        modal = null;
+        await loadState();
+        screen = 'app';
+        view = 'dashboard';
+        render();
+        pushHistory();
+      });
+    });
+    document.querySelectorAll('[data-reassign-company]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        reassigningCompanyId = el.dataset.reassignCompany;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelReassignBtn')?.addEventListener('click', ()=>{
+      reassigningCompanyId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-confirm-reassign]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const cid = el.dataset.confirmReassign;
+        const c = companies.find(x=>x.id===cid);
+        const select = document.querySelector(`[data-reassign-select="${cid}"]`);
+        if(!c || !select) return;
+        const newOwnerId = select.value;
+        const newOwner = users.find(x=>x.id===newOwnerId);
+        if(!newOwner) return;
+        const ok = window.confirm(`Reassign "${c.name}" to ${newOwner.name} (@${newOwner.username})?`);
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          await db.collection('companies').doc(cid).set({ ownerId: newOwnerId }, {merge:true});
+          c.ownerId = newOwnerId;
+          reassigningCompanyId = null;
+          await logAudit('company_reassigned', `Reassigned "${c.name}" to @${newOwner.username}`, cid, c.name);
+          toast('Company reassigned');
+          renderGateway();
+        }catch(err){
+          console.error('Reassign company failed:', err);
+          toast('Could not reassign that company — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+  }
 }
 function fileDropdown(){
   return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
 }
 function servicesDropdown(){
-  return `<div class="menu-dropdown"><a id="gwLoginPublicLink">Login - Public</a></div>`;
+  return `<div class="menu-dropdown"><a id="gwAdminPanelLink">Admin Panel</a></div>`;
 }
-function publicLoginsModal(){
+function adminTabBtn(id, label){
+  const active = adminTab===id;
+  return `<button class="btn ${active?'':'secondary'} small" data-admin-tab="${id}" type="button" style="border-radius:8px 8px 0 0;">${label}</button>`;
+}
+function adminPanelModal(){
   return `
     <div class="modal-overlay" id="modalOverlayBg">
-      <div class="modal-card" style="width:96vw;max-width:1040px;max-height:88vh;display:flex;flex-direction:column;">
-        <div class="panel-head"><h2>Login - Public</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
-        <div class="panel-body" style="overflow-y:auto;">
-          <p class="muted" style="font-size:12.5px;margin-top:0;">Every account the public has created, from any device — the admin login itself isn't one of these.</p>
-          ${users.length ? `
-          <table>
-            <tr><th>#</th><th>Account Name</th><th>Username</th><th>Mobile</th><th>Email</th><th class="num">Companies</th><th>Status</th><th></th><th></th></tr>
-            ${users.map((u,i)=>`<tr>
-              <td class="muted">${i+1}</td>
-              <td>${escapeHtml(u.name)}</td>
-              <td class="muted">${escapeHtml(u.username)}</td>
-              <td class="muted">${escapeHtml(u.mobile||'—')}</td>
-              <td class="muted">${escapeHtml(u.email||'—')}</td>
-              <td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td>
-              <td>
-                <select data-status-select="${escapeAttr(u.id)}">
-                  <option value="active" ${!u.blocked?'selected':''}>Active</option>
-                  <option value="blocked" ${u.blocked?'selected':''}>Blocked</option>
-                </select>
-              </td>
-              <td><button class="btn secondary small" data-update-status="${escapeAttr(u.id)}" type="button">Update</button></td>
-              <td><button class="btn secondary small" data-delete-account="${escapeAttr(u.id)}" type="button" style="color:var(--debit);">Delete</button></td>
-            </tr>`).join('')}
-          </table>
-          ` : `<div class="empty">No public accounts have been created yet.</div>`}
+      <div class="modal-card" style="width:96vw;max-width:1180px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="panel-head"><h2>Admin Panel</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div style="display:flex;gap:6px;padding:10px 18px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+          ${adminTabBtn('overview','Overview')}
+          ${adminTabBtn('users','Users')}
+          ${adminTabBtn('companies','Companies')}
+          ${adminTabBtn('auditLog','Audit Log')}
+        </div>
+        <div class="panel-body" style="overflow-y:auto;flex:1;">
+          ${adminTab==='overview' ? adminOverviewTab() : ''}
+          ${adminTab==='users' ? adminUsersTab() : ''}
+          ${adminTab==='companies' ? adminCompaniesTab() : ''}
+          ${adminTab==='auditLog' ? adminAuditLogTab() : ''}
         </div>
       </div>
     </div>
+  `;
+}
+function adminOverviewTab(){
+  const stats = computeAdminStats();
+  const orphans = findOrphanedCompanies();
+  return `
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat"><div class="label">Total Users</div><div class="val">${stats.totalUsers}</div></div>
+      <div class="stat"><div class="label">Total Companies</div><div class="val">${stats.totalCompanies}</div></div>
+      <div class="stat"><div class="label">Blocked Accounts</div><div class="val ${stats.blocked?'dr':''}">${stats.blocked}</div></div>
+      <div class="stat"><div class="label">New This Week</div><div class="val ${stats.newThisWeek?'cr':''}">${stats.newThisWeek}</div></div>
+    </div>
+
+    <div class="section-title" style="margin-top:6px;">Announcement Banner</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">Shown to every regular user on the Gateway screen while active.</p>
+    <textarea id="announcementMessage" rows="2" placeholder="e.g. Scheduled maintenance this Sunday, 2–4 AM.">${escapeHtml(announcementDraft.message)}</textarea>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
+      <input type="checkbox" id="announcementActive" style="width:auto;" ${announcementDraft.active?'checked':''}> Show this banner to users
+    </label>
+    <button class="btn secondary small" id="saveAnnouncementBtn" type="button" style="margin-top:8px;">Save Announcement</button>
+
+    <div class="section-title">Orphaned Companies</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">Companies whose owner account no longer exists.</p>
+    ${orphans.length ? `
+    <table>
+      <tr><th>Company</th><th></th></tr>
+      ${orphans.map(c=>`<tr><td>${escapeHtml(c.name)}</td><td><button class="btn secondary small" data-delete-orphan="${escapeAttr(c.id)}" type="button" style="color:var(--debit);">Delete</button></td></tr>`).join('')}
+    </table>
+    ` : `<div class="empty">None found — everything is tidy.</div>`}
+  `;
+}
+function adminFilteredSortedUsers(){
+  const q = adminUserSearch.trim().toLowerCase();
+  let list = users.slice();
+  if(q){
+    list = list.filter(u=>
+      (u.name||'').toLowerCase().includes(q) ||
+      (u.username||'').toLowerCase().includes(q) ||
+      (u.email||'').toLowerCase().includes(q) ||
+      (u.mobile||'').toLowerCase().includes(q)
+    );
+  }
+  const dir = adminUserSortDir==='asc' ? 1 : -1;
+  list.sort((a,b)=>{
+    if(adminUserSort==='created') return dir*((a.createdAt||'').localeCompare(b.createdAt||''));
+    if(adminUserSort==='status') return dir*((a.blocked?1:0)-(b.blocked?1:0));
+    return dir*((a.name||'').localeCompare(b.name||''));
+  });
+  return list;
+}
+function adminUsersTab(){
+  const list = adminFilteredSortedUsers();
+  const arrow = (key)=> adminUserSort===key ? (adminUserSortDir==='asc'?' ▲':' ▼') : '';
+  return `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="text" id="adminUserSearchInput" placeholder="Search name, username, email or mobile…" value="${escapeAttr(adminUserSearch)}" style="max-width:280px;">
+      <span class="muted" style="font-size:12px;">${list.length} of ${users.length} account${users.length===1?'':'s'}</span>
+    </div>
+    ${list.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr>
+        <th>#</th>
+        <th data-admin-sort="name" style="cursor:pointer;">Account${arrow('name')}</th>
+        <th>Mobile</th>
+        <th>Email</th>
+        <th data-admin-sort="created" style="cursor:pointer;">Signed Up${arrow('created')}</th>
+        <th>Plan</th>
+        <th class="num">Companies</th>
+        <th data-admin-sort="status" style="cursor:pointer;">Status${arrow('status')}</th>
+        <th>Actions</th>
+      </tr>
+      ${list.map((u,i)=>{
+        const isSelf = currentUser && u.id===currentUser.id;
+        const isEditing = editingUserId===u.id;
+        const isEditingPlan = editingPlanUserId===u.id;
+        return `<tr>
+          <td class="muted">${i+1}</td>
+          <td>
+            ${isEditing ? `<input type="text" data-edit-name="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.name)}" style="margin-bottom:4px;">` : escapeHtml(u.name)}
+            <div class="muted" style="font-size:10.5px;">@${escapeHtml(u.username)}${u.role==='admin'?' · <strong>Admin</strong>':''}</div>
+          </td>
+          <td class="muted">${isEditing ? `<input type="tel" data-edit-mobile="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.mobile)}" maxlength="10">` : escapeHtml(u.mobile||'—')}</td>
+          <td class="muted">${isEditing ? `<input type="email" data-edit-email="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.email)}">` : escapeHtml(u.email||'—')}</td>
+          <td class="muted" style="font-size:11px;">${fmtTimestamp(u.createdAt)}</td>
+          <td>
+            ${isEditingPlan ? `
+              <select data-plan-select="${escapeAttr(u.id)}">
+                <option value="free" ${editPlanDraft.plan==='free'?'selected':''}>Free</option>
+                <option value="paid" ${editPlanDraft.plan==='paid'?'selected':''}>Paid</option>
+                <option value="lifetime" ${editPlanDraft.plan==='lifetime'?'selected':''}>Lifetime</option>
+              </select>
+              ${editPlanDraft.plan==='paid' ? `<input type="date" data-plan-expiry="${escapeAttr(u.id)}" value="${escapeAttr(editPlanDraft.planExpiry)}" style="margin-top:4px;">` : ''}
+              <div style="margin-top:4px;display:flex;gap:4px;">
+                <button class="btn small" data-save-plan="${escapeAttr(u.id)}" type="button">Save</button>
+                <button class="btn secondary small" id="cancelPlanBtn" type="button">Cancel</button>
+              </div>
+            ` : `
+              <span class="pill ${u.plan==='lifetime'||u.plan==='paid'&&!isPlanExpired(u)?'cr':(isPlanExpired(u)?'dr':'')}">${planLabel(u)}</span>
+              ${u.plan==='paid' && u.planExpiry ? `<div class="muted" style="font-size:10px;margin-top:2px;">until ${escapeHtml(u.planExpiry)}</div>` : ''}
+              <div><button class="btn secondary small" data-edit-plan="${escapeAttr(u.id)}" type="button" style="margin-top:4px;">Change</button></div>
+            `}
+          </td>
+          <td class="num">${companies.filter(c=>c.ownerId===u.id).length}</td>
+          <td>
+            <select data-status-select="${escapeAttr(u.id)}" ${isSelf?'disabled':''}>
+              <option value="active" ${!u.blocked?'selected':''}>Active</option>
+              <option value="blocked" ${u.blocked?'selected':''}>Blocked</option>
+            </select>
+          </td>
+          <td style="min-width:170px;">
+            <div style="display:flex;flex-wrap:wrap;gap:4px;">
+              ${isEditing ? `
+                <button class="btn small" data-save-user="${escapeAttr(u.id)}" type="button">Save</button>
+                <button class="btn secondary small" id="cancelEditUserBtn" type="button">Cancel</button>
+              ` : `<button class="btn secondary small" data-edit-user="${escapeAttr(u.id)}" type="button">Edit</button>`}
+              <button class="btn secondary small" data-reset-password="${escapeAttr(u.id)}" type="button" ${u.email?'':'disabled'}>Reset Password</button>
+              ${u.role==='admin'
+                ? `<button class="btn secondary small" data-revoke-admin="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Revoke Admin</button>`
+                : `<button class="btn secondary small" data-make-admin="${escapeAttr(u.id)}" type="button">Make Admin</button>`}
+              <button class="btn secondary small" data-update-status="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Update Status</button>
+              <button class="btn secondary small" data-delete-account="${escapeAttr(u.id)}" type="button" style="color:var(--debit);" ${isSelf?'disabled':''}>Delete</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">${adminUserSearch ? 'No accounts match your search.' : 'No accounts have been created yet.'}</div>`}
+  `;
+}
+function adminCompaniesTab(){
+  return `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>#</th><th>Company</th><th>Owner</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Actions</th></tr>
+      ${companies.map((c,i)=>`<tr>
+        <td class="muted">${i+1}</td>
+        <td>${escapeHtml(c.name)}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:4px;">Sample</span>':''}</td>
+        <td class="muted">${escapeHtml(ownerLabelFor(c))}</td>
+        <td class="num">${(c.ledgers||[]).length}</td>
+        <td class="num">${(c.vouchers||[]).length}</td>
+        <td>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+            <button class="btn secondary small" data-view-company="${escapeAttr(c.id)}" type="button">View</button>
+            ${c.id!==DEMO_COMPANY_ID ? (
+              reassigningCompanyId===c.id ? `
+                <select data-reassign-select="${escapeAttr(c.id)}">
+                  ${users.filter(u=>u.role!=='admin').map(u=>`<option value="${escapeAttr(u.id)}" ${u.id===c.ownerId?'selected':''}>${escapeHtml(u.name)} (@${escapeHtml(u.username)})</option>`).join('')}
+                </select>
+                <button class="btn small" data-confirm-reassign="${escapeAttr(c.id)}" type="button">Confirm</button>
+                <button class="btn secondary small" id="cancelReassignBtn" type="button">Cancel</button>
+              ` : `<button class="btn secondary small" data-reassign-company="${escapeAttr(c.id)}" type="button">Reassign Owner</button>`
+            ) : ''}
+          </div>
+        </td>
+      </tr>`).join('')}
+    </table>
+    </div>
+  `;
+}
+function adminAuditLogTab(){
+  return `
+    <p class="muted" style="font-size:12px;margin-top:0;">Most recent ${auditLog.length===200?'200':auditLog.length} event${auditLog.length===1?'':'s'}, newest first.</p>
+    ${auditLog.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+      ${auditLog.map(e=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
+        <td>${escapeHtml(e.actorName||'—')}</td>
+        <td>${escapeHtml(e.action||'—')}</td>
+        <td class="muted">${escapeHtml(e.targetName||'—')}</td>
+        <td class="muted" style="font-size:11.5px;">${escapeHtml(e.detail||'')}</td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">No activity recorded yet.</div>`}
   `;
 }
 
