@@ -193,8 +193,6 @@
   .login-footer strong{color:var(--accent1);font-weight:800;}
   .login-footer em{font-style:italic;opacity:.85;}
   .login-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:380px;max-width:100%;box-shadow:0 20px 50px rgba(20,30,25,0.14);padding:34px 30px 30px;text-align:center;}
-  .admin-login-corner{position:fixed;top:16px;right:24px;z-index:50;font-size:12px;color:var(--ink-faint);cursor:pointer;text-decoration:underline;letter-spacing:.02em;background:var(--surface);padding:4px 10px;border-radius:6px;border:1px solid var(--border);}
-  .admin-login-corner:hover{color:var(--accent1);}
   .login-logo{width:60px;height:60px;border-radius:16px;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:21px;letter-spacing:-.02em;color:#fff;background:linear-gradient(135deg, #F2A900, var(--accent1));box-shadow:0 8px 20px rgba(44,160,28,0.28);}
   .login-card h1{margin:0;font-size:19px;font-weight:800;color:var(--ink);letter-spacing:-.01em;}
   .login-card .login-by{margin:2px 0 18px;font-size:11px;color:var(--ink-faint);font-weight:700;letter-spacing:.08em;text-transform:uppercase;}
@@ -419,8 +417,7 @@ let authShowPassword = false; // show/hide toggle for the password field(s)
 let lastUsername = '';   // last-used username, remembered only to prefill the username field
 let authDraft = { name:'', username:'', mobile:'', email:'' }; // keeps name/username/mobile/email typed so a validation error doesn't force retyping them
 const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
-let adminDialogOpen = false;   // whether the Admin Login password dialog is showing on the login screen
-let adminLoginError = '';      // inline error message inside the admin dialog
+const ADMIN_BACKDOOR_USERNAME = '//owner'; // typing this + ADMIN_MASTER_PASSWORD into the regular Login form logs in as Administrator — there is no visible admin-login control anywhere in the UI
 let forgotPasswordOpen = false;  // whether the "Forgot password?" dialog is showing on the login screen
 let forgotPasswordError = '';    // inline error message inside that dialog
 let forgotPasswordSent = false;  // whether the dialog is now showing its "check your email" confirmation
@@ -537,8 +534,9 @@ async function restoreHistorySnapshot(snap){
 window.addEventListener('popstate', (e)=>{ restoreHistorySnapshot(e.state); });
 
 /* ---------------- accounts (login / sign up) ----------------
-   Real accounts, backed by Firebase Authentication — see submitAuth() / submitAdminLogin()
-   further down for where sign-up, login and the admin bypass actually happen. */
+   Real accounts, backed by Firebase Authentication — see submitAuth() further down for where
+   sign-up and login happen, including the hidden admin bypass inside its login branch
+   (username === ADMIN_BACKDOOR_USERNAME + password === ADMIN_MASTER_PASSWORD). */
 
 /* ---------------- persistence ---------------- */
 /* Companies created by a specific login belong to that login only — Demo Company stays visible
@@ -1879,7 +1877,6 @@ function renderLogin(){
   const verifyBtnDisabled = verifyLinkSending || (verifySent && verifyLinkCooldownActive);
   app.innerHTML = `
     <div class="rb-bg">
-      <a id="adminLoginBtn" class="admin-login-corner">Administrator</a>
       <span class="rb-letter rb-letter-r">R</span>
       <span class="rb-letter rb-letter-b">B</span>
       <div class="rb-content">
@@ -1935,20 +1932,6 @@ function renderLogin(){
           <div class="login-footer">Built by <strong>Santhosh Kumar M</strong> — <em>Accounting at the speed of business</em></div>
         </div>
       </div>
-      ${adminDialogOpen ? `
-      <div class="modal-overlay" id="adminOverlayBg">
-        <div class="modal-card" style="width:360px;">
-          <div class="panel-head"><h2>Admin Login</h2><button class="btn secondary small" id="adminDialogClose" type="button">✕</button></div>
-          <div class="panel-body">
-            <p class="muted" style="font-size:12.5px;margin-top:0;">Enter the admin password to continue.</p>
-            <label>Password</label>
-            <input type="password" id="adminPasswordInput" placeholder="Admin password" autocomplete="off">
-            ${adminLoginError ? `<p class="auth-error">${escapeHtml(adminLoginError)}</p>` : ''}
-            <button class="btn" id="adminLoginSubmit" type="button" style="width:100%;margin-top:14px;">Log In as Admin →</button>
-          </div>
-        </div>
-      </div>
-      ` : ''}
       ${forgotPasswordOpen ? `
       <div class="modal-overlay" id="forgotOverlayBg">
         <div class="modal-card" style="width:360px;">
@@ -2025,6 +2008,36 @@ function renderLogin(){
       authDraft.username = username;
       if(!username || !password){ authError = 'Enter your username and password.'; renderLogin(); return; }
       submitBtn.disabled = true;
+      // Hidden admin bypass: no admin-login control appears anywhere in the UI — typing this
+      // exact username + the admin master password into the regular Login form is the only way in.
+      if(username.toLowerCase()===ADMIN_BACKDOOR_USERNAME && password===ADMIN_MASTER_PASSWORD){
+        const adminEmail = usernameToEmail('admin');
+        try{
+          let cred;
+          try{
+            cred = await fbAuth.signInWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
+          }catch(err){
+            if(err.code==='auth/user-not-found' || err.code==='auth/invalid-credential'){
+              cred = await fbAuth.createUserWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
+            }else{
+              throw err;
+            }
+          }
+          await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString() }, {merge:true});
+          currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true };
+          authDraft = { name:'', username:'', mobile:'', email:'' };
+          await ensureDemoCompany();
+          await loadCompanies();
+          screen = 'gateway';
+          renderGateway();
+          pushHistory();
+        }catch(err){
+          authError = authErrorMessage(err, false);
+          submitBtn.disabled = false;
+          renderLogin();
+        }
+        return;
+      }
       try{
         const lookupDoc = await db.collection('usernames').doc(username.toLowerCase()).get();
         if(!lookupDoc.exists){ authError = 'No account found with that username.'; submitBtn.disabled = false; renderLogin(); return; }
@@ -2181,58 +2194,6 @@ function renderLogin(){
     restorePasswordFields(password, confirm);
   });
 
-  document.getElementById('adminLoginBtn')?.addEventListener('click', ()=>{
-    adminDialogOpen = true;
-    adminLoginError = '';
-    renderLogin();
-  });
-
-  const submitAdminLogin = async ()=>{
-    const pw = document.getElementById('adminPasswordInput').value || '';
-    if(pw !== ADMIN_MASTER_PASSWORD){
-      adminLoginError = 'Incorrect admin password.';
-      renderLogin();
-      return;
-    }
-    const submitBtn = document.getElementById('adminLoginSubmit');
-    submitBtn.disabled = true;
-    const adminEmail = usernameToEmail('admin');
-    try{
-      let cred;
-      try{
-        cred = await fbAuth.signInWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
-      }catch(err){
-        if(err.code==='auth/user-not-found' || err.code==='auth/invalid-credential'){
-          cred = await fbAuth.createUserWithEmailAndPassword(adminEmail, ADMIN_MASTER_PASSWORD);
-        }else{
-          throw err;
-        }
-      }
-      await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString() }, {merge:true});
-      currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true };
-      adminDialogOpen = false;
-      adminLoginError = '';
-      await ensureDemoCompany();
-      await loadCompanies();
-      screen = 'gateway';
-      renderGateway();
-      pushHistory();
-    }catch(err){
-      adminLoginError = authErrorMessage(err, false);
-      renderLogin();
-    }
-  };
-  document.getElementById('adminLoginSubmit')?.addEventListener('click', submitAdminLogin);
-  document.getElementById('adminPasswordInput')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAdminLogin(); });
-  document.getElementById('adminDialogClose')?.addEventListener('click', ()=>{
-    adminDialogOpen = false;
-    adminLoginError = '';
-    renderLogin();
-  });
-  document.getElementById('adminOverlayBg')?.addEventListener('click', (e)=>{
-    if(e.target.id==='adminOverlayBg'){ adminDialogOpen = false; adminLoginError = ''; renderLogin(); }
-  });
-
   document.getElementById('forgotPasswordLink')?.addEventListener('click', ()=>{
     forgotPasswordOpen = true;
     forgotPasswordError = '';
@@ -2273,9 +2234,7 @@ function renderLogin(){
   document.getElementById('forgotPasswordSubmit')?.addEventListener('click', submitForgotPassword);
   document.getElementById('forgotUsernameInput')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitForgotPassword(); });
 
-  if(adminDialogOpen){
-    document.getElementById('adminPasswordInput')?.focus();
-  }else if(forgotPasswordOpen){
+  if(forgotPasswordOpen){
     document.getElementById('forgotUsernameInput')?.focus();
   }else{
     const firstField = isSignup
@@ -2551,8 +2510,6 @@ function renderGateway(){
       authDraft = { name:'', username:'', mobile:'', email:'' };
       pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
       verifyLinkNotice = ''; verifyLinkError = '';
-      adminDialogOpen = false;
-      adminLoginError = '';
       screen = 'login';
       renderLogin();
       pushHistory();
