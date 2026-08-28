@@ -440,7 +440,7 @@ let servicesMenuOpen = false; // Gateway Services menu dropdown toggle (admin lo
 let isDetailCategory = null; // which Income Statement line was clicked, for the detail modal
 
 /* ---------------- Admin Panel state ---------------- */
-let adminTab = 'overview';      // 'overview' | 'users' | 'companies' | 'auditLog' — which tab the Admin Panel modal shows
+let adminTab = 'overview';      // 'overview' | 'users' | 'companies' | 'analytics' | 'support' | 'settings' | 'auditLog' — which tab the Admin Panel modal shows
 let adminUserSearch = '';       // search box text on the Users tab (matches name/username/email/mobile)
 let adminUserSort = 'name';     // 'name' | 'created' | 'status' — Users tab sort key
 let adminUserSortDir = 'asc';   // 'asc' | 'desc'
@@ -454,6 +454,18 @@ let announcement = { message:'', active:false };      // last-saved announcement
 let announcementDraft = { message:'', active:false }; // editable draft on the Overview tab
 let announcementDismissed = false; // whether the banner was dismissed in THIS browser session (not persisted)
 let adminViewOnlyCompanyId = null; // set while an admin is "viewing" a user's company read-only — every save/delete function checks this first
+/* ---- Admin Panel additions: Analytics, Support, Settings (feature flags, error log, export) ---- */
+let supportTickets = [];        // cache of support tickets, loaded when the Support tab opens
+let ticketStatusFilter = 'all'; // 'all' | 'open' | 'in_progress' | 'resolved' — Support tab filter
+let editingTicketId = null;     // id of the ticket row currently showing its admin-note editor
+let ticketNoteDraft = '';
+let contactSupportOpen = false; // whether the "Contact Support" mini-form is expanded inside the Help modal
+let contactSupportDraft = { subject:'', message:'' };
+let contactSupportSending = false;
+let contactSupportNotice = '';
+let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false }; // settings/featureFlags doc
+let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false };
+let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let pieChartLedgerId = null; // which ledger's pie chart to show
 let stockDetailItemId = null;  // which item's stock movement modal to show
@@ -558,6 +570,204 @@ async function loadAdminPanelData(){
     announcement = annDoc.exists ? { message: annDoc.data().message||'', active: !!annDoc.data().active } : { message:'', active:false };
     announcementDraft = { ...announcement };
   }catch(err){ announcement = { message:'', active:false }; announcementDraft = { ...announcement }; }
+  await loadFeatureFlags();
+  await refreshSupportTickets();
+}
+
+/* ---- Admin roles: 'user' | 'support' | 'admin'. Both 'support' and 'admin' can open the Admin
+   Panel (currentUser.isAdmin is true for either), but only 'admin' may promote/revoke roles,
+   delete accounts or companies, reassign owners, or change feature flags / edit the announcement.
+   isFullAdmin() is the single gate every one of those destructive/sensitive actions checks. */
+function isFullAdmin(){ return !!(currentUser && currentUser.role==='admin'); }
+function roleLabel(u){
+  if(!u) return 'User';
+  if(u.role==='admin') return 'Admin';
+  if(u.role==='support') return 'Support';
+  return 'User';
+}
+
+/* ---------------- Analytics tab (computed client-side from users/companies already in memory —
+   no extra reads needed since the admin's loadAdminPanelData() already pulls every document). ---------------- */
+function computeAnalytics(){
+  const realUsers = users.filter(u=>u.role!=='admin' && u.role!=='support');
+  const realCompanies = companies.filter(c=>c.id!==DEMO_COMPANY_ID);
+  const now = Date.now();
+  const dayMs = 24*60*60*1000;
+
+  // Signups per day for the last 14 days (oldest first)
+  const signupTrend = [];
+  for(let i=13;i>=0;i--){
+    const dayStart = now - i*dayMs;
+    const key = new Date(dayStart).toISOString().slice(0,10);
+    const count = realUsers.filter(u=> (u.createdAt||'').slice(0,10)===key).length;
+    signupTrend.push({ label: key.slice(5), count });
+  }
+
+  // Active vs dormant companies: "active" = at least one voucher dated within the last 30 days
+  let active = 0, dormant = 0;
+  for(const c of realCompanies){
+    const vouchers = Array.isArray(c.vouchers) ? c.vouchers : [];
+    const recent = vouchers.some(v=> v.date && (now - new Date(v.date).getTime()) <= 30*dayMs);
+    if(recent) active++; else dormant++;
+  }
+
+  // Voucher-type breakdown across every company (including the demo, for a fuller picture)
+  const typeCounts = {};
+  for(const c of companies){
+    const vouchers = Array.isArray(c.vouchers) ? c.vouchers : [];
+    for(const v of vouchers){ typeCounts[v.type] = (typeCounts[v.type]||0) + 1; }
+  }
+  const voucherTypes = Object.keys(typeCounts).map(k=>({ type:k, count:typeCounts[k] })).sort((a,b)=>b.count-a.count);
+
+  // Most active companies by voucher count
+  const topCompanies = realCompanies
+    .map(c=>({ id:c.id, name:c.name, count: Array.isArray(c.vouchers) ? c.vouchers.length : 0 }))
+    .sort((a,b)=>b.count-a.count)
+    .slice(0,5);
+
+  return { signupTrend, active, dormant, voucherTypes, topCompanies };
+}
+
+/* ---------------- Support tickets ---------------- */
+async function refreshSupportTickets(){
+  try{
+    const snap = await db.collection('supportTickets').get();
+    supportTickets = snap.docs.map(d=>d.data()).sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
+  }catch(err){ supportTickets = []; }
+}
+function wireContactSupportHandlers(rerender){
+  document.getElementById('contactSupportOpenBtn')?.addEventListener('click', ()=>{
+    contactSupportOpen = true; contactSupportNotice = '';
+    rerender();
+  });
+  document.getElementById('contactSupportCancelBtn')?.addEventListener('click', ()=>{
+    contactSupportOpen = false; contactSupportDraft = { subject:'', message:'' }; contactSupportNotice = '';
+    rerender();
+  });
+  document.getElementById('contactSupportSubject')?.addEventListener('input', e=> contactSupportDraft.subject = e.target.value);
+  document.getElementById('contactSupportMessage')?.addEventListener('input', e=> contactSupportDraft.message = e.target.value);
+  document.getElementById('contactSupportSendBtn')?.addEventListener('click', async ()=>{
+    const subject = (document.getElementById('contactSupportSubject').value||'').trim();
+    const message = (document.getElementById('contactSupportMessage').value||'').trim();
+    if(!message){ toast('Please write a message first.'); return; }
+    contactSupportSending = true;
+    rerender();
+    try{
+      await submitSupportTicket(subject, message);
+      contactSupportOpen = false;
+      contactSupportDraft = { subject:'', message:'' };
+      contactSupportNotice = '';
+      toast('Message sent — thanks for the feedback!');
+    }catch(err){
+      console.error('Submit support ticket failed:', err);
+      toast('Could not send that — ' + (err && (err.code || err.message) || 'unknown error'));
+    }
+    contactSupportSending = false;
+    rerender();
+  });
+}
+async function submitSupportTicket(subject, message){
+  const id = 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+  await db.collection('supportTickets').doc(id).set({
+    id,
+    userId: currentUser ? currentUser.id : null,
+    userName: currentUser ? currentUser.name : 'Unknown',
+    username: currentUser ? currentUser.username : '',
+    subject: subject || '(no subject)',
+    message,
+    status: 'open',
+    adminNote: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+/* ---------------- Feature flags (settings/featureFlags — same collection/rules as the
+   announcement doc, just a different document id) ---------------- */
+async function loadFeatureFlags(){
+  try{
+    const doc = await db.collection('settings').doc('featureFlags').get();
+    featureFlags = doc.exists ? { inventoryRequiresPaid: !!doc.data().inventoryRequiresPaid, importRequiresPaid: !!doc.data().importRequiresPaid } : { inventoryRequiresPaid:false, importRequiresPaid:false };
+  }catch(e){ featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false }; }
+  featureFlagsDraft = { ...featureFlags };
+}
+function userEntitled(){
+  // Whether the current user's plan clears a "requires paid" feature flag. Admins/support always
+  // pass. Reads plan/planExpiry straight off currentUser (set at login) rather than the `users`
+  // cache, since that cache is only populated while the Admin Panel is open — a regular user's
+  // session never loads it.
+  if(!currentUser) return false;
+  if(currentUser.isAdmin) return true;
+  const label = planLabel(currentUser);
+  return label==='Paid' || label==='Lifetime';
+}
+
+/* ---------------- Client-side error log (window.onerror / unhandledrejection — see init() at the
+   bottom of this file). Firestore has no client-readable usage/quota API, so this is the practical
+   stand-in for "system health": real errors real users actually hit, visible to the admin. ---------------- */
+async function logClientError(message, stack){
+  try{
+    const id = 'e_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+    await db.collection('errorLog').doc(id).set({
+      id,
+      message: String(message||'').slice(0,500),
+      stack: String(stack||'').slice(0,2000),
+      url: location.href,
+      userId: currentUser ? currentUser.id : null,
+      userName: currentUser ? currentUser.name : null,
+      at: new Date().toISOString(),
+    });
+  }catch(e){ /* best-effort — never let error logging itself throw */ }
+}
+async function refreshErrorLog(){
+  try{
+    const snap = await db.collection('errorLog').get();
+    errorLog = snap.docs.map(d=>d.data()).sort((a,b)=> (b.at||'').localeCompare(a.at||'')).slice(0,100);
+  }catch(err){ errorLog = []; }
+}
+async function exportAllDataJSON(){
+  try{
+    const [uSnap, cSnap] = await Promise.all([ db.collection('users').get(), db.collection('companies').get() ]);
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      users: uSnap.docs.map(d=>d.data()),
+      companies: cSnap.docs.map(d=>d.data()),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `reckoning-books-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    logAudit('data_export', 'Exported full platform data (JSON)', null, null);
+  }catch(e){ toast('Export failed'); }
+}
+
+/* ---------------- Force logout (client-only approximation — see saveLedgers() etc. for the
+   equivalent "read-only" pattern; there is no server-side session revocation available here, so
+   instead the app polls its own profile doc every 30s while logged in, and signs itself out the
+   moment an admin has set forceLogoutRequested on it). ---------------- */
+let forceLogoutPollHandle = null;
+async function checkForceLogoutOnce(){
+  if(!currentUser || currentUser.isAdmin) return;
+  try{
+    const doc = await db.collection('users').doc(currentUser.id).get();
+    if(doc.exists && doc.data().forceLogoutRequested){
+      await db.collection('users').doc(currentUser.id).update({ forceLogoutRequested:false });
+      await fbAuth.signOut();
+      currentUser = null;
+      stopForceLogoutPoll();
+      toast("You've been signed out by an administrator.");
+      screen = 'login'; authMode = 'login'; renderLogin(); pushHistory();
+    }
+  }catch(e){ /* best-effort */ }
+}
+function startForceLogoutPoll(){
+  stopForceLogoutPoll();
+  forceLogoutPollHandle = setInterval(checkForceLogoutOnce, 30000);
+}
+function stopForceLogoutPoll(){
+  if(forceLogoutPollHandle){ clearInterval(forceLogoutPollHandle); forceLogoutPollHandle = null; }
 }
 
 function toast(msg){
@@ -1497,6 +1707,7 @@ function render(){
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; render(); });
   }
+  if(modal==='help'){ wireContactSupportHandlers(render); }
   if(modal==='editCompany'){
     document.getElementById('editCoName').addEventListener('input', e=> editCoDraft.name = e.target.value);
     document.getElementById('editCoDirectory').addEventListener('input', e=> editCoDraft.directory = e.target.value);
@@ -1570,7 +1781,8 @@ function tab(id,label,shortcutLetter){
   const labelHtml = idx>=0
     ? `${escapeHtml(label.slice(0,idx))}<b>${escapeHtml(label[idx])}</b>${escapeHtml(label.slice(idx+1))}`
     : escapeHtml(label);
-  return `<button class="navtab ${view===id?'active':''}" data-tab="${id}" title="Shortcut: ${shortcutLetter||''}">${tabIcon(id)}<span>${labelHtml}</span></button>`;
+  const gated = id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled();
+  return `<button class="navtab ${view===id?'active':''}" data-tab="${id}" title="${gated?'Paid-plan feature':'Shortcut: '+(shortcutLetter||'')}">${tabIcon(id)}<span>${labelHtml}${gated?' 🔒':''}</span></button>`;
 }
 /* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
    the bold letter in each sidebar label. Only active once a company is open, when focus isn't
@@ -1578,6 +1790,10 @@ function tab(id,label,shortcutLetter){
 const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst' };
 function goToTab(id){
   if(!id || view===id) return;
+  if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled()){
+    toast('Inventory is a Paid-plan feature — contact the administrator to upgrade.');
+    return;
+  }
   view = id;
   if(view==='reports') reportsSelected = null;
   render();
@@ -1979,6 +2195,21 @@ function helpModal(){
             This software is created by Santhosh Kumar MuraliKrishnan.<br>
             For support or feedback, contact the owner at <a href="mailto:thereckoningbooks@gmail.com" style="color:var(--accent1);font-weight:600;">thereckoningbooks@gmail.com</a>.
           </p>
+          ${currentUser && !currentUser.isAdmin ? `
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+            ${contactSupportOpen ? `
+              <label>Subject</label>
+              <input type="text" id="contactSupportSubject" placeholder="What's this about?" value="${escapeAttr(contactSupportDraft.subject)}">
+              <label style="margin-top:8px;">Message</label>
+              <textarea id="contactSupportMessage" rows="3" placeholder="Describe the issue or feedback…">${escapeHtml(contactSupportDraft.message)}</textarea>
+              ${contactSupportNotice ? `<p class="muted" style="font-size:11.5px;color:var(--accent1);margin-top:6px;">${escapeHtml(contactSupportNotice)}</p>` : ''}
+              <div style="display:flex;gap:8px;margin-top:10px;">
+                <button class="btn small" id="contactSupportSendBtn" type="button" ${contactSupportSending?'disabled':''}>${contactSupportSending?'Sending…':'Send'}</button>
+                <button class="btn secondary small" id="contactSupportCancelBtn" type="button">Cancel</button>
+              </div>
+            ` : `<button class="btn secondary small" id="contactSupportOpenBtn" type="button">💬 Contact Support</button>`}
+          </div>
+          ` : ''}
         </div>
       </div>
     </div>
@@ -2103,11 +2334,11 @@ function renderLogin(){
         }
         const takenDoc = await db.collection('usernames').doc(usernameKey).get();
         if(takenDoc.exists){ authError = 'That username is already taken — please choose another (your email is already verified, so just fix the username and click Create Account again).'; submitBtn.disabled = false; renderLogin(); return; }
-        const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString() };
+        const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() };
         await db.collection('users').doc(pendingVerifyUser.uid).set(profile);
         await db.collection('usernames').doc(usernameKey).set({ email });
         lastUsername = username;
-        currentUser = { id: pendingVerifyUser.uid, name, username, isAdmin:false };
+        currentUser = { id: pendingVerifyUser.uid, name, username, isAdmin:false, role:'user', plan:'free', planExpiry:null };
         authDraft = { name:'', username:'', mobile:'', email:'' };
         pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
         verifyLinkNotice = ''; verifyLinkError = '';
@@ -2115,7 +2346,9 @@ function renderLogin(){
         await ensureDemoCompany();
         await loadCompanies();
         await loadAnnouncementForUser();
+        await loadFeatureFlags();
         logAudit('account_created', `New account @${username}`, currentUser.id, name);
+        startForceLogoutPoll();
         screen = 'gateway';
         renderGateway();
         pushHistory();
@@ -2144,11 +2377,12 @@ function renderLogin(){
               throw err;
             }
           }
-          await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString() }, {merge:true});
-          currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true };
+          await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() }, {merge:true});
+          currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true, role:'admin' };
           authDraft = { name:'', username:'', mobile:'', email:'' };
           await ensureDemoCompany();
           await loadCompanies();
+          await loadFeatureFlags();
           logAudit('admin_login', 'Logged in via the admin backdoor', cred.user.uid, 'Administrator');
           screen = 'gateway';
           renderGateway();
@@ -2162,7 +2396,12 @@ function renderLogin(){
       }
       try{
         const lookupDoc = await db.collection('usernames').doc(username.toLowerCase()).get();
-        if(!lookupDoc.exists){ authError = 'No account found with that username.'; submitBtn.disabled = false; renderLogin(); return; }
+        if(!lookupDoc.exists){
+          authError = 'No account found with that username.';
+          submitBtn.disabled = false; renderLogin();
+          logAudit('login_failed', `No account found for username "${username}"`, null, username);
+          return;
+        }
         const { email } = lookupDoc.data();
         const cred = await fbAuth.signInWithEmailAndPassword(email, password);
         const profDoc = await db.collection('users').doc(cred.user.uid).get();
@@ -2174,19 +2413,25 @@ function renderLogin(){
           renderLogin();
           return;
         }
-        currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: profile.role==='admin' };
+        const role = profile.role==='admin' ? 'admin' : (profile.role==='support' ? 'support' : 'user');
+        currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null };
         lastUsername = username;
         authDraft = { name:'', username:'', mobile:'', email:'' };
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+        try{ await db.collection('users').doc(cred.user.uid).update({ lastLoginAt: new Date().toISOString() }); }catch(e){}
         await ensureDemoCompany();
         await loadCompanies();
         await loadAnnouncementForUser();
+        await loadFeatureFlags();
         logAudit('login', '', cred.user.uid, currentUser.name);
+        startForceLogoutPoll();
         screen = 'gateway';
         renderGateway();
         pushHistory();
       }catch(err){
         authError = authErrorMessage(err, false);
+        logAudit('login_failed', `Failed login attempt for username "${username}" (${err && err.code ? err.code : 'error'})`, null, username);
+        submitBtn.disabled = false;
         renderLogin();
       }
     }
@@ -2633,6 +2878,7 @@ function renderGateway(){
     document.getElementById('gwLogOutLink')?.addEventListener('click', async (e)=>{
       e.stopPropagation();
       fileMenuOpen = false;
+      stopForceLogoutPoll();
       try{ await fbAuth.signOut(); }catch(err){}
       currentUser = null;
       companies = [];
@@ -2643,6 +2889,7 @@ function renderGateway(){
       pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
       verifyLinkNotice = ''; verifyLinkError = '';
       announcement = { message:'', active:false }; announcementDismissed = false;
+      contactSupportOpen = false; contactSupportDraft = { subject:'', message:'' }; contactSupportNotice = '';
       screen = 'login';
       renderLogin();
       pushHistory();
@@ -2652,20 +2899,25 @@ function renderGateway(){
     document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
       if(e.target.id==='modalOverlayBg'){
         modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+        editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
         renderGateway();
       }
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{
       modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+      editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
       renderGateway();
     });
   }
+  if(modal==='help'){ wireContactSupportHandlers(renderGateway); }
   if(modal==='adminPanel'){
     document.querySelectorAll('[data-admin-tab]').forEach(el=>{
       el.addEventListener('click', async ()=>{
         adminTab = el.dataset.adminTab;
-        editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
+        editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null; editingTicketId = null;
         if(adminTab==='auditLog') await refreshAuditLog();
+        if(adminTab==='support') await refreshSupportTickets();
+        if(adminTab==='settings') await refreshErrorLog();
         renderGateway();
       });
     });
@@ -2673,6 +2925,7 @@ function renderGateway(){
   if(modal==='adminPanel' && adminTab==='overview'){
     document.querySelectorAll('[data-delete-orphan]').forEach(el=>{
       el.addEventListener('click', async ()=>{
+        if(!isFullAdmin()) return;
         const cid = el.dataset.deleteOrphan;
         const c = companies.find(x=>x.id===cid);
         const ok = await deleteCompanyById(cid);
@@ -2680,6 +2933,7 @@ function renderGateway(){
       });
     });
     document.getElementById('saveAnnouncementBtn')?.addEventListener('click', async ()=>{
+      if(!isFullAdmin()) return;
       const message = (document.getElementById('announcementMessage').value||'').trim();
       const active = document.getElementById('announcementActive').checked;
       const btn = document.getElementById('saveAnnouncementBtn');
@@ -2772,44 +3026,46 @@ function renderGateway(){
         el.disabled = false;
       });
     });
-    document.querySelectorAll('[data-make-admin]').forEach(el=>{
-      el.addEventListener('click', async ()=>{
-        const uid = el.dataset.makeAdmin;
+    document.querySelectorAll('[data-role-select]').forEach(el=>{
+      el.addEventListener('change', async ()=>{
+        if(!isFullAdmin()){ renderGateway(); return; } // belt-and-braces — the select is disabled for Support already
+        const uid = el.dataset.roleSelect;
         const u = users.find(x=>x.id===uid);
         if(!u) return;
-        const ok = window.confirm(`Give "${u.name}" (@${u.username}) full Administrator access?`);
-        if(!ok) return;
+        const nextRole = el.value;
+        const roleName = nextRole==='admin' ? 'full Administrator' : (nextRole==='support' ? 'Support Admin' : 'regular User');
+        const ok = window.confirm(`Set "${u.name}" (@${u.username}) to ${roleName}?`);
+        if(!ok){ renderGateway(); return; }
         el.disabled = true;
         try{
-          await db.collection('users').doc(uid).set({ role: 'admin' }, {merge:true});
-          u.role = 'admin';
-          await logAudit('promoted_to_admin', `Promoted @${u.username} to Administrator`, uid, u.name);
-          toast(u.name + ' is now an Administrator');
+          await db.collection('users').doc(uid).set({ role: nextRole }, {merge:true});
+          const prevRole = u.role;
+          u.role = nextRole;
+          await logAudit('role_changed', `Changed role of @${u.username} from ${prevRole||'user'} to ${nextRole}`, uid, u.name);
+          toast(`${u.name} is now a ${roleName}`);
           renderGateway();
         }catch(err){
-          console.error('Promote to admin failed:', err);
+          console.error('Change role failed:', err);
           toast('Could not update that account — ' + (err && (err.code || err.message) || 'unknown error'));
           el.disabled = false;
         }
       });
     });
-    document.querySelectorAll('[data-revoke-admin]').forEach(el=>{
+    document.querySelectorAll('[data-force-logout]').forEach(el=>{
       el.addEventListener('click', async ()=>{
-        const uid = el.dataset.revokeAdmin;
+        const uid = el.dataset.forceLogout;
         const u = users.find(x=>x.id===uid);
         if(!u) return;
         el.disabled = true;
         try{
-          await db.collection('users').doc(uid).set({ role: 'user' }, {merge:true});
-          u.role = 'user';
-          await logAudit('admin_revoked', `Revoked Administrator access from @${u.username}`, uid, u.name);
-          toast('Administrator access revoked for ' + u.name);
-          renderGateway();
+          await db.collection('users').doc(uid).set({ forceLogoutRequested:true }, {merge:true});
+          await logAudit('force_logout', `Forced ${u.name} (@${u.username}) to sign out on their next check`, uid, u.name);
+          toast(`${u.name} will be signed out (within 30s of their next check)`);
         }catch(err){
-          console.error('Revoke admin failed:', err);
-          toast('Could not update that account — ' + (err && (err.code || err.message) || 'unknown error'));
-          el.disabled = false;
+          console.error('Force logout failed:', err);
+          toast('Could not force logout — ' + (err && (err.code || err.message) || 'unknown error'));
         }
+        el.disabled = false;
       });
     });
     document.querySelectorAll('[data-edit-plan]').forEach(el=>{
@@ -2879,6 +3135,7 @@ function renderGateway(){
     });
     document.querySelectorAll('[data-delete-account]').forEach(el=>{
       el.addEventListener('click', async ()=>{
+        if(!isFullAdmin()){ toast('Only a full Administrator can delete an account.'); return; }
         const uid = el.dataset.deleteAccount;
         const u = users.find(x=>x.id===uid);
         if(!u) return;
@@ -2940,6 +3197,7 @@ function renderGateway(){
     });
     document.querySelectorAll('[data-confirm-reassign]').forEach(el=>{
       el.addEventListener('click', async ()=>{
+        if(!isFullAdmin()) return;
         const cid = el.dataset.confirmReassign;
         const c = companies.find(x=>x.id===cid);
         const select = document.querySelector(`[data-reassign-select="${cid}"]`);
@@ -2965,6 +3223,92 @@ function renderGateway(){
       });
     });
   }
+  if(modal==='adminPanel' && adminTab==='support'){
+    document.getElementById('ticketStatusFilterSelect')?.addEventListener('change', (e)=>{
+      ticketStatusFilter = e.target.value;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-ticket-status]').forEach(el=>{
+      el.addEventListener('change', async ()=>{
+        const tid = el.dataset.ticketStatus;
+        const t = supportTickets.find(x=>x.id===tid);
+        if(!t) return;
+        const nextStatus = el.value;
+        try{
+          await db.collection('supportTickets').doc(tid).set({ status: nextStatus, updatedAt: new Date().toISOString() }, {merge:true});
+          t.status = nextStatus;
+          await logAudit('ticket_status_changed', `Set ticket "${t.subject}" to ${nextStatus}`, t.userId, t.userName);
+          toast('Ticket updated');
+          renderGateway();
+        }catch(err){
+          console.error('Update ticket failed:', err);
+          toast('Could not update that ticket — ' + (err && (err.code || err.message) || 'unknown error'));
+        }
+      });
+    });
+    document.querySelectorAll('[data-edit-ticket-note]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const tid = el.dataset.editTicketNote;
+        const t = supportTickets.find(x=>x.id===tid);
+        ticketNoteDraft = t ? (t.adminNote||'') : '';
+        editingTicketId = tid;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelTicketNoteBtn')?.addEventListener('click', ()=>{
+      editingTicketId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-save-ticket-note]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const tid = el.dataset.saveTicketNote;
+        const t = supportTickets.find(x=>x.id===tid);
+        if(!t) return;
+        const noteInput = document.querySelector(`[data-ticket-note="${tid}"]`);
+        const note = noteInput ? noteInput.value.trim() : '';
+        el.disabled = true;
+        try{
+          await db.collection('supportTickets').doc(tid).set({ adminNote: note, updatedAt: new Date().toISOString() }, {merge:true});
+          t.adminNote = note;
+          editingTicketId = null;
+          toast('Note saved');
+          renderGateway();
+        }catch(err){
+          console.error('Save ticket note failed:', err);
+          toast('Could not save that note — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+  }
+  if(modal==='adminPanel' && adminTab==='settings'){
+    document.getElementById('saveFeatureFlagsBtn')?.addEventListener('click', async ()=>{
+      if(!isFullAdmin()) return;
+      const inventoryRequiresPaid = document.getElementById('flagInventory').checked;
+      const importRequiresPaid = document.getElementById('flagImport').checked;
+      const btn = document.getElementById('saveFeatureFlagsBtn');
+      btn.disabled = true;
+      try{
+        await db.collection('settings').doc('featureFlags').set({ inventoryRequiresPaid, importRequiresPaid, updatedAt: new Date().toISOString() }, {merge:true});
+        featureFlags = { inventoryRequiresPaid, importRequiresPaid };
+        featureFlagsDraft = { ...featureFlags };
+        await logAudit('feature_flags_updated', `Inventory paid-gated: ${inventoryRequiresPaid}, Import paid-gated: ${importRequiresPaid}`);
+        toast('Feature flags saved');
+        renderGateway();
+      }catch(err){
+        console.error('Save feature flags failed:', err);
+        toast('Could not save feature flags — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('exportAllDataBtn')?.addEventListener('click', async ()=>{
+      const btn = document.getElementById('exportAllDataBtn');
+      btn.disabled = true; btn.textContent = 'Exporting…';
+      await exportAllDataJSON();
+      btn.disabled = false; btn.textContent = '⬇ Export All Data (JSON)';
+      toast('Export downloaded');
+    });
+  }
 }
 function fileDropdown(){
   return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
@@ -2985,12 +3329,19 @@ function adminPanelModal(){
           ${adminTabBtn('overview','Overview')}
           ${adminTabBtn('users','Users')}
           ${adminTabBtn('companies','Companies')}
+          ${adminTabBtn('analytics','Analytics')}
+          ${adminTabBtn('support','Support'+(supportTickets.filter(t=>t.status==='open').length?` (${supportTickets.filter(t=>t.status==='open').length})`:''))}
+          ${adminTabBtn('settings','Settings')}
           ${adminTabBtn('auditLog','Audit Log')}
         </div>
         <div class="panel-body" style="overflow-y:auto;flex:1;">
+          ${!isFullAdmin() ? `<p class="muted" style="font-size:11.5px;background:var(--surface-strong);padding:8px 12px;border-radius:6px;margin-bottom:14px;">You're signed in as <strong>Support</strong> — you can view and assist accounts, but role changes, deletions, reassignments, and platform settings are limited to a full Administrator.</p>` : ''}
           ${adminTab==='overview' ? adminOverviewTab() : ''}
           ${adminTab==='users' ? adminUsersTab() : ''}
           ${adminTab==='companies' ? adminCompaniesTab() : ''}
+          ${adminTab==='analytics' ? adminAnalyticsTab() : ''}
+          ${adminTab==='support' ? adminSupportTab() : ''}
+          ${adminTab==='settings' ? adminSettingsTab() : ''}
           ${adminTab==='auditLog' ? adminAuditLogTab() : ''}
         </div>
       </div>
@@ -3010,20 +3361,130 @@ function adminOverviewTab(){
 
     <div class="section-title" style="margin-top:6px;">Announcement Banner</div>
     <p class="muted" style="font-size:12px;margin-top:0;">Shown to every regular user on the Gateway screen while active.</p>
-    <textarea id="announcementMessage" rows="2" placeholder="e.g. Scheduled maintenance this Sunday, 2–4 AM.">${escapeHtml(announcementDraft.message)}</textarea>
+    <textarea id="announcementMessage" rows="2" placeholder="e.g. Scheduled maintenance this Sunday, 2–4 AM." ${isFullAdmin()?'':'disabled'}>${escapeHtml(announcementDraft.message)}</textarea>
     <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
-      <input type="checkbox" id="announcementActive" style="width:auto;" ${announcementDraft.active?'checked':''}> Show this banner to users
+      <input type="checkbox" id="announcementActive" style="width:auto;" ${announcementDraft.active?'checked':''} ${isFullAdmin()?'':'disabled'}> Show this banner to users
     </label>
-    <button class="btn secondary small" id="saveAnnouncementBtn" type="button" style="margin-top:8px;">Save Announcement</button>
+    <button class="btn secondary small" id="saveAnnouncementBtn" type="button" style="margin-top:8px;" ${isFullAdmin()?'':'disabled'}>Save Announcement</button>
 
     <div class="section-title">Orphaned Companies</div>
     <p class="muted" style="font-size:12px;margin-top:0;">Companies whose owner account no longer exists.</p>
     ${orphans.length ? `
     <table>
       <tr><th>Company</th><th></th></tr>
-      ${orphans.map(c=>`<tr><td>${escapeHtml(c.name)}</td><td><button class="btn secondary small" data-delete-orphan="${escapeAttr(c.id)}" type="button" style="color:var(--debit);">Delete</button></td></tr>`).join('')}
+      ${orphans.map(c=>`<tr><td>${escapeHtml(c.name)}</td><td><button class="btn secondary small" data-delete-orphan="${escapeAttr(c.id)}" type="button" style="color:var(--debit);" ${isFullAdmin()?'':'disabled'}>Delete</button></td></tr>`).join('')}
     </table>
     ` : `<div class="empty">None found — everything is tidy.</div>`}
+  `;
+}
+function analyticsBar(label, count, max){
+  const pct = max>0 ? Math.max(3, Math.round((count/max)*100)) : 0;
+  return `
+    <div style="display:flex;align-items:center;gap:10px;font-size:11.5px;padding:3px 0;">
+      <span class="muted" style="width:52px;flex-shrink:0;">${escapeHtml(label)}</span>
+      <div style="flex:1;background:var(--surface-strong);border-radius:4px;height:14px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:var(--accent1);border-radius:4px;"></div>
+      </div>
+      <span style="width:28px;text-align:right;font-weight:700;color:var(--ink);flex-shrink:0;">${count}</span>
+    </div>
+  `;
+}
+function adminAnalyticsTab(){
+  const a = computeAnalytics();
+  const maxSignup = Math.max(1, ...a.signupTrend.map(d=>d.count));
+  const maxVoucherType = Math.max(1, ...a.voucherTypes.map(v=>v.count));
+  const maxCompanyVouchers = Math.max(1, ...a.topCompanies.map(c=>c.count));
+  return `
+    <div class="grid" style="grid-template-columns:repeat(2,1fr);">
+      <div class="stat"><div class="label">Active Companies (30d)</div><div class="val cr">${a.active}</div></div>
+      <div class="stat"><div class="label">Dormant Companies</div><div class="val ${a.dormant?'dr':''}">${a.dormant}</div></div>
+    </div>
+
+    <div class="section-title" style="margin-top:6px;">Signups — last 14 days</div>
+    ${a.signupTrend.every(d=>d.count===0) ? `<div class="empty">No signups in this window yet.</div>` : a.signupTrend.map(d=>analyticsBar(d.label, d.count, maxSignup)).join('')}
+
+    <div class="section-title">Voucher types (all companies)</div>
+    ${a.voucherTypes.length ? a.voucherTypes.map(v=>analyticsBar(v.type, v.count, maxVoucherType)).join('') : `<div class="empty">No vouchers recorded yet.</div>`}
+
+    <div class="section-title">Most active companies</div>
+    ${a.topCompanies.length ? a.topCompanies.map(c=>analyticsBar(c.name.length>18?c.name.slice(0,17)+'…':c.name, c.count, maxCompanyVouchers)).join('') : `<div class="empty">No companies yet.</div>`}
+  `;
+}
+function adminSupportTab(){
+  const filtered = ticketStatusFilter==='all' ? supportTickets : supportTickets.filter(t=>t.status===ticketStatusFilter);
+  const statusPill = (s)=> s==='resolved' ? 'cr' : (s==='in_progress' ? '' : 'dr');
+  const statusLabel = (s)=> s==='in_progress' ? 'In Progress' : (s==='resolved' ? 'Resolved' : 'Open');
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <select id="ticketStatusFilterSelect" style="max-width:180px;">
+        <option value="all" ${ticketStatusFilter==='all'?'selected':''}>All statuses</option>
+        <option value="open" ${ticketStatusFilter==='open'?'selected':''}>Open</option>
+        <option value="in_progress" ${ticketStatusFilter==='in_progress'?'selected':''}>In Progress</option>
+        <option value="resolved" ${ticketStatusFilter==='resolved'?'selected':''}>Resolved</option>
+      </select>
+      <span class="muted" style="font-size:12px;">${filtered.length} of ${supportTickets.length} ticket${supportTickets.length===1?'':'s'}</span>
+    </div>
+    ${filtered.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>From</th><th>Subject</th><th>Message</th><th>Status</th><th>Actions</th></tr>
+      ${filtered.map(t=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.createdAt)}</td>
+        <td>${escapeHtml(t.userName||'—')}${t.username?`<div class="muted" style="font-size:10px;">@${escapeHtml(t.username)}</div>`:''}</td>
+        <td>${escapeHtml(t.subject||'—')}</td>
+        <td class="muted" style="font-size:11.5px;max-width:260px;">${escapeHtml(t.message||'')}
+          ${editingTicketId===t.id ? `
+            <textarea data-ticket-note="${escapeAttr(t.id)}" rows="2" placeholder="Internal note (not sent to the user)" style="margin-top:6px;font-size:11px;">${escapeHtml(ticketNoteDraft)}</textarea>
+            <div style="margin-top:4px;display:flex;gap:4px;">
+              <button class="btn small" data-save-ticket-note="${escapeAttr(t.id)}" type="button">Save Note</button>
+              <button class="btn secondary small" id="cancelTicketNoteBtn" type="button">Cancel</button>
+            </div>
+          ` : (t.adminNote ? `<div class="muted" style="margin-top:6px;font-size:10.5px;border-top:1px dashed var(--border);padding-top:4px;"><strong>Note:</strong> ${escapeHtml(t.adminNote)}</div>` : '')}
+        </td>
+        <td>
+          <select data-ticket-status="${escapeAttr(t.id)}">
+            <option value="open" ${t.status==='open'?'selected':''}>Open</option>
+            <option value="in_progress" ${t.status==='in_progress'?'selected':''}>In Progress</option>
+            <option value="resolved" ${t.status==='resolved'?'selected':''}>Resolved</option>
+          </select>
+        </td>
+        <td>${editingTicketId===t.id ? '' : `<button class="btn secondary small" data-edit-ticket-note="${escapeAttr(t.id)}" type="button">${t.adminNote?'Edit Note':'Add Note'}</button>`}</td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">No support tickets${ticketStatusFilter!=='all'?' with this status':''} yet.</div>`}
+  `;
+}
+function adminSettingsTab(){
+  return `
+    <div class="section-title" style="margin-top:0;">Feature Flags</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">Gate a feature so only Paid/Lifetime accounts can use it. Free-plan users see an upgrade notice instead.</p>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:10px;">
+      <input type="checkbox" id="flagInventory" style="width:auto;" ${featureFlagsDraft.inventoryRequiresPaid?'checked':''} ${isFullAdmin()?'':'disabled'}> Require a Paid/Lifetime plan for <strong>Inventory</strong>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
+      <input type="checkbox" id="flagImport" style="width:auto;" ${featureFlagsDraft.importRequiresPaid?'checked':''} ${isFullAdmin()?'':'disabled'}> Require a Paid/Lifetime plan for <strong>Import Accounting Data</strong>
+    </label>
+    <button class="btn secondary small" id="saveFeatureFlagsBtn" type="button" style="margin-top:10px;" ${isFullAdmin()?'':'disabled'}>Save Feature Flags</button>
+
+    <div class="section-title">Data Export</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">Download every account and company (including ledgers and vouchers) as one JSON file.</p>
+    <button class="btn secondary small" id="exportAllDataBtn" type="button">⬇ Export All Data (JSON)</button>
+
+    <div class="section-title">Client Error Log</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">The most recent errors real users have actually hit in the browser (best-effort — not every error can be captured).</p>
+    ${errorLog.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>User</th><th>Message</th></tr>
+      ${errorLog.map(e=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
+        <td class="muted">${escapeHtml(e.userName||'—')}</td>
+        <td style="font-size:11.5px;">${escapeHtml(e.message||'')}</td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">No client errors recorded — clean bill of health.</div>`}
   `;
 }
 function adminFilteredSortedUsers(){
@@ -3062,6 +3523,7 @@ function adminUsersTab(){
         <th>Mobile</th>
         <th>Email</th>
         <th data-admin-sort="created" style="cursor:pointer;">Signed Up${arrow('created')}</th>
+        <th>Last Active</th>
         <th>Plan</th>
         <th class="num">Companies</th>
         <th data-admin-sort="status" style="cursor:pointer;">Status${arrow('status')}</th>
@@ -3075,11 +3537,12 @@ function adminUsersTab(){
           <td class="muted">${i+1}</td>
           <td>
             ${isEditing ? `<input type="text" data-edit-name="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.name)}" style="margin-bottom:4px;">` : escapeHtml(u.name)}
-            <div class="muted" style="font-size:10.5px;">@${escapeHtml(u.username)}${u.role==='admin'?' · <strong>Admin</strong>':''}</div>
+            <div class="muted" style="font-size:10.5px;">@${escapeHtml(u.username)}${u.role==='admin'?' · <strong>Admin</strong>':(u.role==='support'?' · <strong>Support</strong>':'')}</div>
           </td>
           <td class="muted">${isEditing ? `<input type="tel" data-edit-mobile="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.mobile)}" maxlength="10">` : escapeHtml(u.mobile||'—')}</td>
           <td class="muted">${isEditing ? `<input type="email" data-edit-email="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.email)}">` : escapeHtml(u.email||'—')}</td>
           <td class="muted" style="font-size:11px;">${fmtTimestamp(u.createdAt)}</td>
+          <td class="muted" style="font-size:11px;">${u.lastLoginAt ? fmtTimestamp(u.lastLoginAt) : '—'}</td>
           <td>
             ${isEditingPlan ? `
               <select data-plan-select="${escapeAttr(u.id)}">
@@ -3112,11 +3575,14 @@ function adminUsersTab(){
                 <button class="btn secondary small" id="cancelEditUserBtn" type="button">Cancel</button>
               ` : `<button class="btn secondary small" data-edit-user="${escapeAttr(u.id)}" type="button">Edit</button>`}
               <button class="btn secondary small" data-reset-password="${escapeAttr(u.id)}" type="button" ${u.email?'':'disabled'}>Reset Password</button>
-              ${u.role==='admin'
-                ? `<button class="btn secondary small" data-revoke-admin="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Revoke Admin</button>`
-                : `<button class="btn secondary small" data-make-admin="${escapeAttr(u.id)}" type="button">Make Admin</button>`}
+              <button class="btn secondary small" data-force-logout="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Force Logout</button>
+              <select data-role-select="${escapeAttr(u.id)}" ${isSelf||!isFullAdmin()?'disabled':''} style="width:auto;">
+                <option value="user" ${(!u.role||u.role==='user')?'selected':''}>Role: User</option>
+                <option value="support" ${u.role==='support'?'selected':''}>Role: Support</option>
+                <option value="admin" ${u.role==='admin'?'selected':''}>Role: Admin</option>
+              </select>
               <button class="btn secondary small" data-update-status="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Update Status</button>
-              <button class="btn secondary small" data-delete-account="${escapeAttr(u.id)}" type="button" style="color:var(--debit);" ${isSelf?'disabled':''}>Delete</button>
+              <button class="btn secondary small" data-delete-account="${escapeAttr(u.id)}" type="button" style="color:var(--debit);" ${isSelf||!isFullAdmin()?'disabled':''}>Delete</button>
             </div>
           </td>
         </tr>`;
@@ -3140,7 +3606,7 @@ function adminCompaniesTab(){
         <td>
           <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
             <button class="btn secondary small" data-view-company="${escapeAttr(c.id)}" type="button">View</button>
-            ${c.id!==DEMO_COMPANY_ID ? (
+            ${c.id!==DEMO_COMPANY_ID && isFullAdmin() ? (
               reassigningCompanyId===c.id ? `
                 <select data-reassign-select="${escapeAttr(c.id)}">
                   ${users.filter(u=>u.role!=='admin').map(u=>`<option value="${escapeAttr(u.id)}" ${u.id===c.ownerId?'selected':''}>${escapeHtml(u.name)} (@${escapeHtml(u.username)})</option>`).join('')}
@@ -4934,6 +5400,10 @@ function attachHandlers(){
       render();
     });
     document.getElementById('openImportBtn')?.addEventListener('click', ()=>{
+      if(featureFlags.importRequiresPaid && !userEntitled()){
+        toast('Import is a Paid-plan feature — contact the administrator to upgrade.');
+        return;
+      }
       const defaultPrimary = state.ledgers.find(l=>l.group==='bank') || state.ledgers.find(l=>l.group==='cash');
       importState = {
         step: 1, fileName:'', error:'',
@@ -5453,6 +5923,16 @@ function renderTotalsOnly(){
    fetched here. The app always starts at the login screen (matching how it always worked, even
    before real accounts existed); ensureDemoCompany()/loadCompanies() run right after a successful
    login or admin login instead, once there's a Firebase Auth session to read/write with. */
+// Client-side "system health" — there's no server here to log to, so real JS errors real users
+// hit are captured client-side and written (best-effort) to Firestore's errorLog collection,
+// where the Admin Panel's Settings tab surfaces the most recent 100. Never throws itself.
+window.addEventListener('error', (e)=>{
+  try{ logClientError(e.message, e.error && e.error.stack); }catch(err){}
+});
+window.addEventListener('unhandledrejection', (e)=>{
+  try{ logClientError('Unhandled promise rejection: ' + (e.reason && e.reason.message || e.reason), e.reason && e.reason.stack); }catch(err){}
+});
+
 (async function init(){
   try{ const n = await window.storage.get('lastUsername'); lastUsername = n ? n.value : ''; }catch(e){ lastUsername = ''; }
   authMode = 'login';
