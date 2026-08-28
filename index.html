@@ -354,20 +354,59 @@ function authErrorMessage(err, isSignup){
    Ledger running balance = opening_signed + sum(dr) - sum(cr) across vouchers
 --------------------------------------------------------------- */
 
+/* Ledger groups — the full standard Tally-style chart-of-accounts hierarchy: 15 primary groups
+   plus 13 sub-groups nested under them (`parent` is null for a primary group, or the id of the
+   primary/sub-group it sits under). Every group also carries a `bucket` — one of a small fixed
+   set of functional ids ('cap','loan','curl','fa','inv','misc','ca','bank','cash','sales','dinc',
+   'purch','dexp','iexp','susp') that all the Schedule III / P&L / Balance Sheet / cash-flow logic
+   actually keys off, via bucketOf(ledger) rather than the ledger's own (possibly a sub-group) id.
+   This lets a ledger be tagged with a precise group like "Sundry Debtors" or "Bank OD A/c" for
+   display and classification, while every calculation still resolves it to the correct roll-up
+   (Sundry Debtors and Loans & Advances both roll up into the same "Current Assets" figures Trade
+   Receivables/Other Current Assets are split from; Bank OD A/c rolls up into Loans, same as
+   Secured/Unsecured Loans). The original 12 group ids (cap, loan, curl, fa, ca, bank, cash, sales,
+   dinc, purch, dexp, iexp) are kept exactly as before so any ledger created before this change
+   keeps working with no migration needed — only their display names/parents changed to match Tally. */
 const GROUPS = [
-  {id:'cap',  name:'Capital Account',      nature:'Cr', cat:'Capital'},
-  {id:'loan', name:'Loans (Liability)',    nature:'Cr', cat:'Liabilities'},
-  {id:'curl', name:'Current Liabilities',  nature:'Cr', cat:'Liabilities'},
-  {id:'fa',   name:'Fixed Assets',         nature:'Dr', cat:'Assets'},
-  {id:'ca',   name:'Current Assets',       nature:'Dr', cat:'Assets'},
-  {id:'bank', name:'Bank Accounts',        nature:'Dr', cat:'Assets'},
-  {id:'cash', name:'Cash-in-hand',         nature:'Dr', cat:'Assets'},
-  {id:'sales',name:'Sales Account',        nature:'Cr', cat:'Income'},
-  {id:'dinc', name:'Direct Income',        nature:'Cr', cat:'Income'},
-  {id:'purch',name:'Purchase Account',     nature:'Dr', cat:'Expenses'},
-  {id:'dexp', name:'Direct Expenses',      nature:'Dr', cat:'Expenses'},
-  {id:'iexp', name:'Indirect Expenses',    nature:'Dr', cat:'Expenses'},
+  // ---- Primary Groups ----
+  {id:'cap',   name:'Capital Account',                nature:'Cr', cat:'Capital',     bucket:'cap',   parent:null},
+  {id:'ca',    name:'Current Assets',                 nature:'Dr', cat:'Assets',      bucket:'ca',    parent:null},
+  {id:'curl',  name:'Current Liabilities',             nature:'Cr', cat:'Liabilities', bucket:'curl',  parent:null},
+  {id:'dexp',  name:'Direct Expenses',                 nature:'Dr', cat:'Expenses',    bucket:'dexp',  parent:null},
+  {id:'dirinc',name:'Direct Incomes',                  nature:'Cr', cat:'Income',      bucket:'sales', parent:null},
+  {id:'fa',    name:'Fixed Assets',                    nature:'Dr', cat:'Assets',      bucket:'fa',    parent:null},
+  {id:'iexp',  name:'Indirect Expenses',                nature:'Dr', cat:'Expenses',   bucket:'iexp',  parent:null},
+  {id:'dinc',  name:'Indirect Incomes',                 nature:'Cr', cat:'Income',     bucket:'dinc',  parent:null},
+  {id:'inv',   name:'Investments',                      nature:'Dr', cat:'Assets',     bucket:'inv',   parent:null},
+  {id:'loan',  name:'Loans (Liability)',                nature:'Cr', cat:'Liabilities', bucket:'loan', parent:null},
+  {id:'misc',  name:'Miscellaneous Expenses (Asset)',   nature:'Dr', cat:'Assets',     bucket:'misc',  parent:null},
+  {id:'prov',  name:'Provisions',                       nature:'Cr', cat:'Liabilities', bucket:'curl', parent:null},
+  {id:'purch', name:'Purchase Accounts',                nature:'Dr', cat:'Expenses',   bucket:'purch', parent:null},
+  {id:'sales', name:'Sales Accounts',                   nature:'Cr', cat:'Income',     bucket:'sales', parent:null},
+  {id:'susp',  name:'Suspense Account',                 nature:'Dr', cat:'Assets',     bucket:'susp',  parent:null},
+  // ---- Sub-Groups ----
+  {id:'bank',    name:'Bank Accounts',             nature:'Dr', cat:'Assets',      bucket:'bank', parent:'ca'},
+  {id:'bankod',  name:'Bank OD A/c',               nature:'Cr', cat:'Liabilities', bucket:'loan', parent:'loan'},
+  {id:'cash',    name:'Cash-in-Hand',              nature:'Dr', cat:'Assets',      bucket:'cash', parent:'ca'},
+  {id:'duties',  name:'Duties & Taxes',            nature:'Cr', cat:'Liabilities', bucket:'curl', parent:'curl'},
+  {id:'loanadv', name:'Loans & Advances (Asset)',  nature:'Dr', cat:'Assets',      bucket:'ca',   parent:'ca'},
+  {id:'provsub', name:'Provisions',                nature:'Cr', cat:'Liabilities', bucket:'curl', parent:'curl'},
+  {id:'ressur',  name:'Reserves & Surplus',        nature:'Cr', cat:'Capital',     bucket:'cap',  parent:'cap'},
+  {id:'secloan', name:'Secured Loans',             nature:'Cr', cat:'Liabilities', bucket:'loan', parent:'loan'},
+  {id:'stock',   name:'Stock-in-Hand',             nature:'Dr', cat:'Assets',      bucket:'ca',   parent:'ca'},
+  {id:'sundcr',  name:'Sundry Creditors',          nature:'Cr', cat:'Liabilities', bucket:'curl', parent:'curl'},
+  {id:'sundeb',  name:'Sundry Debtors',            nature:'Dr', cat:'Assets',      bucket:'ca',   parent:'ca'},
+  {id:'unsloan', name:'Unsecured Loans',           nature:'Cr', cat:'Liabilities', bucket:'loan', parent:'loan'},
+  {id:'unsold',  name:'Unsold Stock / Job Work',   nature:'Dr', cat:'Assets',      bucket:'ca',   parent:'ca'},
 ];
+// The functional id every calculation in this app actually classifies a ledger by — resolves a
+// (possibly sub-)group down to the roll-up bucket it belongs to. Unknown/missing group falls back
+// to the raw id so nothing throws on stale/bad data.
+function bucketOf(l){
+  if(!l) return null;
+  const g = groupOf(l.group);
+  return g ? g.bucket : l.group;
+}
 
 const VOUCHER_TYPES = ['Payment','Receipt','Contra','Sales','Credit Note','Purchase','Debit Note','Journal'];
 
@@ -383,9 +422,9 @@ const INDIAN_STATES = [
 ];
 
 const GST_LEDGERS = [
-  {id:'l_ocgst', name:'Output CGST', group:'curl', opening:0, gstType:'output_cgst'},
-  {id:'l_osgst', name:'Output SGST', group:'curl', opening:0, gstType:'output_sgst'},
-  {id:'l_oigst', name:'Output IGST', group:'curl', opening:0, gstType:'output_igst'},
+  {id:'l_ocgst', name:'Output CGST', group:'duties', opening:0, gstType:'output_cgst'},
+  {id:'l_osgst', name:'Output SGST', group:'duties', opening:0, gstType:'output_sgst'},
+  {id:'l_oigst', name:'Output IGST', group:'duties', opening:0, gstType:'output_igst'},
   {id:'l_icgst', name:'Input CGST',  group:'ca',   opening:0, gstType:'input_cgst'},
   {id:'l_isgst', name:'Input SGST',  group:'ca',   opening:0, gstType:'input_sgst'},
   {id:'l_iigst', name:'Input IGST',  group:'ca',   opening:0, gstType:'input_igst'},
@@ -570,6 +609,26 @@ function itemsSummary(v){
 }
 function groupOf(id){ return GROUPS.find(g=>g.id===id); }
 function ledgerOf(id){ return state.ledgers.find(l=>l.id===id); }
+/* Builds <optgroup>-organized <option> markup for the 28 Tally-standard ledger groups,
+   separating Primary Groups from Sub-Groups and labeling each sub-group with its parent
+   so ledgers like the two "Provisions" groups (one primary, one a sub-group of Current
+   Liabilities) are unambiguous in the dropdown. Used by both the Chart of Accounts
+   "Add Ledger" form and the in-voucher Quick Add Ledger modal. */
+function groupOptionsHtml(selectedId){
+  const primaries = GROUPS.filter(g=>!g.parent).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const subs = GROUPS.filter(g=>g.parent).slice().sort((a,b)=>{
+    const pa = groupOf(a.parent), pb = groupOf(b.parent);
+    const pcmp = (pa?pa.name:'').localeCompare(pb?pb.name:'');
+    return pcmp!==0 ? pcmp : a.name.localeCompare(b.name);
+  });
+  const opt = g => `<option value="${g.id}"${g.id===selectedId?' selected':''}>${g.name} (${g.cat})</option>`;
+  const primaryHtml = primaries.map(opt).join('');
+  const subHtml = subs.map(g=>{
+    const p = groupOf(g.parent);
+    return `<option value="${g.id}"${g.id===selectedId?' selected':''}>${g.name} — ${p?p.name:g.parent} (${g.cat})</option>`;
+  }).join('');
+  return `<optgroup label="Primary Groups">${primaryHtml}</optgroup><optgroup label="Sub-Groups">${subHtml}</optgroup>`;
+}
 
 /* ---------------- Admin Panel helpers ---------------- */
 /* Writes one entry to the auditLog collection. Best-effort: a logging failure never blocks the
@@ -1280,7 +1339,7 @@ function assetDepreciationForFY(asset, fyLabel){
   return 0;
 }
 function ensureDepreciationLedger(){
-  let l = state.ledgers.find(x=>x.name==='Depreciation' && x.group==='iexp');
+  let l = state.ledgers.find(x=>x.name==='Depreciation' && bucketOf(x)==='iexp');
   if(!l){ l = {id:uid('l'), name:'Depreciation', group:'iexp', opening:0}; state.ledgers.push(l); saveLedgers(); }
   return l.id;
 }
@@ -1609,18 +1668,18 @@ function fmtPct(x){ return x==null ? '—' : x.toFixed(1)+'%'; }
 function fmtDays(x){ return x==null ? '—' : Math.round(x)+' days'; }
 
 function incomeStatementData(){
-  const revenueLedgers = state.ledgers.filter(l=>l.group==='sales');
+  const revenueLedgers = state.ledgers.filter(l=>bucketOf(l)==='sales');
   const revenue = revenueLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
-  const otherIncomeLedgers = state.ledgers.filter(l=>l.group==='dinc');
+  const otherIncomeLedgers = state.ledgers.filter(l=>bucketOf(l)==='dinc');
   const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
-  const costOfSalesLedgers = state.ledgers.filter(l=>l.group==='purch');
+  const costOfSalesLedgers = state.ledgers.filter(l=>bucketOf(l)==='purch');
   const costOfSales = costOfSalesLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
   const grossProfit = revenue - costOfSales;
 
-  const distributionLedgers = state.ledgers.filter(l=>l.group==='dexp');
+  const distributionLedgers = state.ledgers.filter(l=>bucketOf(l)==='dexp');
   const distributionCosts = distributionLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
 
-  const allIndirect = state.ledgers.filter(l=>l.group==='iexp');
+  const allIndirect = state.ledgers.filter(l=>bucketOf(l)==='iexp');
   const financeLedgers = allIndirect.filter(l=>/interest|bank charge/i.test(l.name));
   const adminLedgers = allIndirect.filter(l=>!/interest|bank charge/i.test(l.name));
   const financeCosts = financeLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
@@ -1637,21 +1696,21 @@ function incomeStatementData(){
 }
 
 function balanceSheetIFRSData(profit){
-  const nonCurrentAssets = state.ledgers.filter(l=>l.group==='fa');
+  const nonCurrentAssets = state.ledgers.filter(l=>['fa','inv','misc'].includes(bucketOf(l)));
   const nonCurrentAssetsTotal = nonCurrentAssets.reduce((s,l)=>s+ledgerBalance(l.id),0);
 
-  const currentAssets = state.ledgers.filter(l=>['cash','bank','ca'].includes(l.group));
+  const currentAssets = state.ledgers.filter(l=>['cash','bank','ca','susp'].includes(bucketOf(l)));
   const currentAssetsTotal = currentAssets.reduce((s,l)=>s+ledgerBalance(l.id),0);
   const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
 
-  const equityLedgers = state.ledgers.filter(l=>l.group==='cap');
+  const equityLedgers = state.ledgers.filter(l=>bucketOf(l)==='cap');
   const equityBase = equityLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
   const totalEquity = equityBase + profit;
 
-  const nonCurrentLiabilities = state.ledgers.filter(l=>l.group==='loan');
+  const nonCurrentLiabilities = state.ledgers.filter(l=>bucketOf(l)==='loan');
   const nonCurrentLiabTotal = nonCurrentLiabilities.reduce((s,l)=>s-ledgerBalance(l.id),0);
 
-  const currentLiabilities = state.ledgers.filter(l=>l.group==='curl');
+  const currentLiabilities = state.ledgers.filter(l=>bucketOf(l)==='curl');
   const currentLiabTotal = currentLiabilities.reduce((s,l)=>s-ledgerBalance(l.id),0);
 
   const totalEquityAndLiab = totalEquity + nonCurrentLiabTotal + currentLiabTotal;
@@ -1679,18 +1738,18 @@ function balanceSheetIFRSData(profit){
 // undefined and ledgerFlowBetween falls back to "no date filter", so every existing all-time caller
 // (the Q&A engine, the detail modals) is completely unaffected by this change.
 function scheduleIIIProfitLossData(fromDate, toDate){
-  const revenueLedgers = state.ledgers.filter(l=>l.group==='sales');
+  const revenueLedgers = state.ledgers.filter(l=>bucketOf(l)==='sales');
   const revenueFromOperations = revenueLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
 
-  const otherIncomeLedgers = state.ledgers.filter(l=>l.group==='dinc');
+  const otherIncomeLedgers = state.ledgers.filter(l=>bucketOf(l)==='dinc');
   const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
 
   const totalIncome = revenueFromOperations + otherIncome;
 
-  const purchaseLedgers = state.ledgers.filter(l=>l.group==='purch');
+  const purchaseLedgers = state.ledgers.filter(l=>bucketOf(l)==='purch');
   const purchasesOfStockInTrade = purchaseLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
 
-  const expenseLedgers = state.ledgers.filter(l=>l.group==='dexp' || l.group==='iexp');
+  const expenseLedgers = state.ledgers.filter(l=>bucketOf(l)==='dexp' || bucketOf(l)==='iexp');
   const employeeLedgers = expenseLedgers.filter(l=>/salary|wages|staff|employee|bonus|provident/i.test(l.name));
   const depreciationLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && /depreciat|amorti/i.test(l.name));
   const financeCostLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && !depreciationLedgers.includes(l) && /interest|bank charge|finance cost/i.test(l.name));
@@ -1725,62 +1784,93 @@ function scheduleIIIProfitLossData(fromDate, toDate){
 // not just the current period. Called with no asOfDate, ledgerBalanceAsOf falls back to "no date
 // filter" so every existing all-time caller is unaffected.
 function scheduleIIIBalanceSheetData(profit, asOfDate){
-  // Non-current assets — Property, Plant and Equipment
-  const ppe = state.ledgers.filter(l=>l.group==='fa');
+  // Non-current assets — Property, Plant and Equipment, Non-current Investments, and Miscellaneous
+  // Expenditure (to the extent not written off) — three separate primary groups, each its own face-
+  // of-balance-sheet line so a ledger under "Investments" or "Misc. Expenses (Asset)" is visible on
+  // the statement, not just silently folded into PPE.
+  const ppe = state.ledgers.filter(l=>bucketOf(l)==='fa');
   const ppeTotal = ppe.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
-  const nonCurrentAssetsTotal = ppeTotal;
+  const investments = state.ledgers.filter(l=>bucketOf(l)==='inv');
+  const investmentsTotal = investments.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const miscExpenditure = state.ledgers.filter(l=>bucketOf(l)==='misc');
+  const miscExpenditureTotal = miscExpenditure.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const nonCurrentAssetsTotal = ppeTotal + investmentsTotal + miscExpenditureTotal;
 
-  // Current assets — split the 'Current Assets' group into Inventories / Trade Receivables / Other Current Assets
-  const caLedgers = state.ledgers.filter(l=>l.group==='ca');
-  const otherCurrentAssetLedgers = caLedgers.filter(l=>l.gstType && l.gstType.startsWith('input'));
-  const inventoryLedgers = caLedgers.filter(l=>!otherCurrentAssetLedgers.includes(l) && /stock|inventor/i.test(l.name));
-  const tradeReceivableLedgers = caLedgers.filter(l=>!otherCurrentAssetLedgers.includes(l) && !inventoryLedgers.includes(l));
-  const cashLedgers = state.ledgers.filter(l=>l.group==='cash' || l.group==='bank');
+  // Current assets — split the 'Current Assets' group into Inventories / Trade Receivables / Other Current Assets.
+  // A ledger tagged with one of the precise sub-groups (Stock-in-Hand, Unsold Stock / Job Work, Loans
+  // & Advances) is classified by that sub-group directly; a ledger left on the generic 'Current
+  // Assets' group (or an older ledger from before these sub-groups existed) falls back to the same
+  // name-based heuristic as before, so nothing that already worked stops working. Suspense Account
+  // ledgers get their own small current-asset line (rather than being silently absorbed elsewhere)
+  // since a Suspense balance is meant to be temporary and worth calling out.
+  const caLedgers = state.ledgers.filter(l=>bucketOf(l)==='ca');
+  const loanAdvanceLedgers = caLedgers.filter(l=>l.group==='loanadv');
+  const otherCurrentAssetLedgers = caLedgers.filter(l=>!loanAdvanceLedgers.includes(l) && l.gstType && l.gstType.startsWith('input'));
+  const inventoryLedgers = caLedgers.filter(l=>!loanAdvanceLedgers.includes(l) && !otherCurrentAssetLedgers.includes(l) && (l.group==='stock' || l.group==='unsold' || /stock|inventor/i.test(l.name)));
+  const tradeReceivableLedgers = caLedgers.filter(l=>!loanAdvanceLedgers.includes(l) && !otherCurrentAssetLedgers.includes(l) && !inventoryLedgers.includes(l));
+  const cashLedgers = state.ledgers.filter(l=>bucketOf(l)==='cash' || bucketOf(l)==='bank');
+  const suspenseLedgers = state.ledgers.filter(l=>bucketOf(l)==='susp');
 
   const inventoriesTotal = inventoryLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
   const tradeReceivablesTotal = tradeReceivableLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
   const cashTotal = cashLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const loanAdvancesTotal = loanAdvanceLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
   const otherCurrentAssetsTotal = otherCurrentAssetLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
-  const currentAssetsTotal = inventoriesTotal + tradeReceivablesTotal + cashTotal + otherCurrentAssetsTotal;
+  const suspenseTotal = suspenseLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const currentAssetsTotal = inventoriesTotal + tradeReceivablesTotal + cashTotal + loanAdvancesTotal + otherCurrentAssetsTotal + suspenseTotal;
 
   const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
 
   // Shareholders' funds
-  const shareCapitalLedgers = state.ledgers.filter(l=>l.group==='cap');
+  const shareCapitalLedgers = state.ledgers.filter(l=>bucketOf(l)==='cap');
   const shareCapitalTotal = shareCapitalLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const reservesAndSurplus = profit; // Surplus i.e. balance in Statement of Profit and Loss — no separate opening reserves tracked
   const shareholdersFundsTotal = shareCapitalTotal + reservesAndSurplus;
 
   // Non-current liabilities — Long-term Borrowings
-  const longTermBorrowings = state.ledgers.filter(l=>l.group==='loan');
+  const longTermBorrowings = state.ledgers.filter(l=>bucketOf(l)==='loan');
   const longTermBorrowingsTotal = longTermBorrowings.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const nonCurrentLiabTotal = longTermBorrowingsTotal;
 
-  // Current liabilities — split 'Current Liabilities' into Trade Payables (MSME/Others, per the 2021 amendment) / Other Current Liabilities
-  const curlLedgers = state.ledgers.filter(l=>l.group==='curl');
-  const tradePayableLedgers = curlLedgers.filter(l=>!(l.gstType && l.gstType.startsWith('output')) && /payable|creditor|supplier|vendor/i.test(l.name));
-  const otherCurrentLiabLedgers = curlLedgers.filter(l=>!tradePayableLedgers.includes(l));
+  // Current liabilities — split 'Current Liabilities' into Trade Payables (MSME/Others, per the 2021 amendment) / Other Current Liabilities.
+  // A ledger tagged 'Sundry Creditors' is always a trade payable; a ledger tagged 'Duties & Taxes' or
+  // either 'Provisions' group is never one (even if its name happens to contain a payable-sounding
+  // word), regardless of GST type; anything left on the generic 'Current Liabilities' group falls
+  // back to the same name-based heuristic as before.
+  const curlLedgers = state.ledgers.filter(l=>bucketOf(l)==='curl');
+  const tradePayableLedgers = curlLedgers.filter(l=> l.group==='sundcr' ||
+    (l.group!=='duties' && l.group!=='prov' && l.group!=='provsub' &&
+     !(l.gstType && l.gstType.startsWith('output')) && /payable|creditor|supplier|vendor/i.test(l.name)));
+  const provisionLedgers = curlLedgers.filter(l=>!tradePayableLedgers.includes(l) && (l.group==='prov' || l.group==='provsub'));
+  const otherCurrentLiabLedgers = curlLedgers.filter(l=>!tradePayableLedgers.includes(l) && !provisionLedgers.includes(l));
   const msmeTradePayableLedgers = tradePayableLedgers.filter(l=>l.isMSME);
   const otherTradePayableLedgers = tradePayableLedgers.filter(l=>!l.isMSME);
   const tradePayablesTotal = tradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const msmeTradePayablesTotal = msmeTradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const otherTradePayablesTotal = otherTradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+  const provisionsTotal = provisionLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const otherCurrentLiabTotal = otherCurrentLiabLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
-  const currentLiabTotal = tradePayablesTotal + otherCurrentLiabTotal;
+  const currentLiabTotal = tradePayablesTotal + provisionsTotal + otherCurrentLiabTotal;
 
   const totalEquityAndLiab = shareholdersFundsTotal + nonCurrentLiabTotal + currentLiabTotal;
 
   return {
-    ppe, ppeTotal, nonCurrentAssetsTotal,
+    ppe, ppeTotal,
+    investments, investmentsTotal,
+    miscExpenditure, miscExpenditureTotal,
+    nonCurrentAssetsTotal,
     inventoryLedgers, inventoriesTotal,
     tradeReceivableLedgers, tradeReceivablesTotal,
     cashLedgers, cashTotal,
+    loanAdvanceLedgers, loanAdvancesTotal,
     otherCurrentAssetLedgers, otherCurrentAssetsTotal,
+    suspenseLedgers, suspenseTotal,
     currentAssetsTotal, totalAssets,
     shareCapitalLedgers, shareCapitalTotal, reservesAndSurplus, shareholdersFundsTotal,
     longTermBorrowings, longTermBorrowingsTotal, nonCurrentLiabTotal,
     tradePayableLedgers, tradePayablesTotal, msmeTradePayableLedgers, msmeTradePayablesTotal,
     otherTradePayableLedgers, otherTradePayablesTotal,
+    provisionLedgers, provisionsTotal,
     otherCurrentLiabLedgers, otherCurrentLiabTotal,
     currentLiabTotal, totalEquityAndLiab,
   };
@@ -1789,11 +1879,11 @@ function scheduleIIIBalanceSheetData(profit, asOfDate){
 function ratioAnalysisData(is, bs){
   const currentAssets = bs.currentAssetsTotal;
   const currentLiab = bs.currentLiabTotal;
-  const cashAndBank = state.ledgers.filter(l=>['cash','bank'].includes(l.group)).reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const cashAndBank = state.ledgers.filter(l=>['cash','bank'].includes(bucketOf(l))).reduce((s,l)=>s+ledgerBalance(l.id),0);
 
-  const receivableLedgers = state.ledgers.filter(l=>l.group==='ca' && !l.gstType);
+  const receivableLedgers = state.ledgers.filter(l=>bucketOf(l)==='ca' && !l.gstType);
   const receivables = receivableLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const payableLedgers = state.ledgers.filter(l=>l.group==='curl' && !l.gstType);
+  const payableLedgers = state.ledgers.filter(l=>bucketOf(l)==='curl' && !l.gstType);
   const payables = payableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
 
   const quickAssets = cashAndBank + receivables;
@@ -1827,10 +1917,10 @@ function ratioAnalysisData(is, bs){
 function cashFlowClassify(voucher){
   const others = voucher.entries.filter(e=>{
     const l = ledgerOf(e.ledgerId);
-    return l && l.group!=='cash' && l.group!=='bank';
+    return l && bucketOf(l)!=='cash' && bucketOf(l)!=='bank';
   });
-  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && l.group==='fa'; })) return 'investing';
-  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && (l.group==='cap'||l.group==='loan'); })) return 'financing';
+  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && (bucketOf(l)==='fa'||bucketOf(l)==='inv'); })) return 'investing';
+  if(others.some(e=>{ const l=ledgerOf(e.ledgerId); return l && (bucketOf(l)==='cap'||bucketOf(l)==='loan'); })) return 'financing';
   return 'operating';
 }
 function cashFlowData(){
@@ -1840,7 +1930,7 @@ function cashFlowData(){
     if(v.type==='Contra') continue;
     for(const e of v.entries){
       const l = ledgerOf(e.ledgerId);
-      if(!l || (l.group!=='cash' && l.group!=='bank')) continue;
+      if(!l || (bucketOf(l)!=='cash' && bucketOf(l)!=='bank')) continue;
       const net = (e.dr||0)-(e.cr||0);
       if(Math.abs(net)<0.001) continue;
       const cls = cashFlowClassify(v);
@@ -1850,10 +1940,10 @@ function cashFlowData(){
       detail[cls].push({date:v.date, type:v.type, narration:v.narration||v.type, ledger:l.name, amount:net});
     }
   }
-  const openingCash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank').reduce((s,l)=>s+(l.opening||0),0);
+  const openingCash = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank').reduce((s,l)=>s+(l.opening||0),0);
   const netChange = operating+investing+financing;
   const closingCash = openingCash+netChange;
-  const actualCash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank').reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const actualCash = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank').reduce((s,l)=>s+ledgerBalance(l.id),0);
   return { operating, investing, financing, netChange, openingCash, closingCash, actualCash, detail };
 }
 
@@ -1944,7 +2034,8 @@ function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate, prevBs, pr
     ...bs.otherTradePayableLedgers.map(l=>detailRow('                  '+l.name, r2(-ledgerBalance(l.id)))),
     row('      (c) Other Current Liabilities', '', r2(bs.otherCurrentLiabTotal), hasPrev?r2(prevBs.otherCurrentLiabTotal):undefined),
     ...bs.otherCurrentLiabLedgers.map(l=>detailRow('            '+l.name, r2(-ledgerBalance(l.id)))),
-    row('      (d) Short-term Provisions', '', 0, hasPrev?0:undefined),
+    row('      (d) Short-term Provisions', '', r2(bs.provisionsTotal), hasPrev?r2(prevBs.provisionsTotal):undefined),
+    ...bs.provisionLedgers.map(l=>detailRow('            '+l.name, r2(-ledgerBalance(l.id)))),
     row('Total Current Liabilities', '', r2(bs.currentLiabTotal), hasPrev?r2(prevBs.currentLiabTotal):undefined),
     [],
     row('TOTAL (EQUITY AND LIABILITIES)', '', r2(bs.totalEquityAndLiab), hasPrev?r2(prevBs.totalEquityAndLiab):undefined),
@@ -1953,10 +2044,12 @@ function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate, prevBs, pr
     ['Non-current Assets'],
     row('      (a) Property, Plant and Equipment', '', r2(bs.ppeTotal), hasPrev?r2(prevBs.ppeTotal):undefined),
     ...bs.ppe.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
-    row('      (b) Non-current Investments', '', 0, hasPrev?0:undefined),
+    row('      (b) Non-current Investments', '', r2(bs.investmentsTotal), hasPrev?r2(prevBs.investmentsTotal):undefined),
+    ...bs.investments.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
     row('      (c) Deferred Tax Assets (Net)', '', 0, hasPrev?0:undefined),
     row('      (d) Long-term Loans and Advances', '', 0, hasPrev?0:undefined),
-    row('      (e) Other Non-current Assets', '', 0, hasPrev?0:undefined),
+    row('      (e) Other Non-current Assets (incl. Misc. Expenditure not written off)', '', r2(bs.miscExpenditureTotal), hasPrev?r2(prevBs.miscExpenditureTotal):undefined),
+    ...bs.miscExpenditure.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
     row('Total Non-Current Assets', '', r2(bs.nonCurrentAssetsTotal), hasPrev?r2(prevBs.nonCurrentAssetsTotal):undefined),
     [],
     ['Current Assets'],
@@ -1967,9 +2060,12 @@ function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate, prevBs, pr
     ...bs.tradeReceivableLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
     row('      (d) Cash and Cash Equivalents', '', r2(bs.cashTotal), hasPrev?r2(prevBs.cashTotal):undefined),
     ...bs.cashLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
-    row('      (e) Short-term Loans and Advances', '', 0, hasPrev?0:undefined),
+    row('      (e) Short-term Loans and Advances', '', r2(bs.loanAdvancesTotal), hasPrev?r2(prevBs.loanAdvancesTotal):undefined),
+    ...bs.loanAdvanceLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
     row('      (f) Other Current Assets', '', r2(bs.otherCurrentAssetsTotal), hasPrev?r2(prevBs.otherCurrentAssetsTotal):undefined),
     ...bs.otherCurrentAssetLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      (g) Suspense Account', '', r2(bs.suspenseTotal), hasPrev?r2(prevBs.suspenseTotal):undefined),
+    ...bs.suspenseLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
     row('Total Current Assets', '', r2(bs.currentAssetsTotal), hasPrev?r2(prevBs.currentAssetsTotal):undefined),
     [],
     row('TOTAL ASSETS', '', r2(bs.totalAssets), hasPrev?r2(prevBs.totalAssets):undefined),
@@ -2338,9 +2434,9 @@ function qaMonthlyTrend(months){
       if(!l) continue;
       const net = (e.dr||0)-(e.cr||0);
       if(!buckets[month]) buckets[month] = {revenue:0, otherIncome:0, expenses:0};
-      if(l.group==='sales') buckets[month].revenue += -net;
-      else if(l.group==='dinc') buckets[month].otherIncome += -net;
-      else if(['purch','dexp','iexp'].includes(l.group)) buckets[month].expenses += net;
+      if(bucketOf(l)==='sales') buckets[month].revenue += -net;
+      else if(bucketOf(l)==='dinc') buckets[month].otherIncome += -net;
+      else if(['purch','dexp','iexp'].includes(bucketOf(l))) buckets[month].expenses += net;
     }
   }
   const keys = Object.keys(buckets).sort().slice(-months);
@@ -2357,9 +2453,9 @@ function qaPeriodTotals(predicate){
       const l = ledgerOf(e.ledgerId);
       if(!l) continue;
       const net = (e.dr||0)-(e.cr||0);
-      if(l.group==='sales') revenue += -net;
-      else if(l.group==='dinc') otherIncome += -net;
-      else if(['purch','dexp','iexp'].includes(l.group)) expenses += net;
+      if(bucketOf(l)==='sales') revenue += -net;
+      else if(bucketOf(l)==='dinc') otherIncome += -net;
+      else if(['purch','dexp','iexp'].includes(bucketOf(l))) expenses += net;
     }
   }
   return { revenue:r2(revenue), otherIncome:r2(otherIncome), expenses:r2(expenses), profit:r2(revenue+otherIncome-expenses) };
@@ -2456,11 +2552,11 @@ function answerQuestionLocally(question){
 
   // Cash / bank
   if(/\bcash\b/.test(q) && !/\bcash flow\b/.test(q)){
-    const cash = state.ledgers.filter(l=>l.group==='cash').reduce((s,l)=>s+ledgerBalance(l.id),0);
+    const cash = state.ledgers.filter(l=>bucketOf(l)==='cash').reduce((s,l)=>s+ledgerBalance(l.id),0);
     return `Your cash-in-hand balance is ₹${fmt(cash)}.`;
   }
   if(/\bbank\b/.test(q)){
-    const bankLedgers = state.ledgers.filter(l=>l.group==='bank');
+    const bankLedgers = state.ledgers.filter(l=>bucketOf(l)==='bank');
     const named = bankLedgers.length>1 ? qaMatchLedgerByName(q, bankLedgers) : null;
     if(named){
       const b = ledgerBalance(named.id);
@@ -3075,7 +3171,7 @@ function stockAdjustModal(){
 /* Dashboard KPI card details — each of the four "grid" stat cards opens a focused breakdown
    of exactly the figure it shows, rather than the full Balance Sheet / Income Statement. */
 function cashBankDetailModal(){
-  const ledgers = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank');
+  const ledgers = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank');
   const total = ledgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
   const rows = ledgers.map(l=>`<tr><td>${l.name}</td><td class="num">₹${fmt(ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">No cash or bank ledgers yet</td></tr>`;
   return `
@@ -4895,7 +4991,7 @@ function masthead(title, sub, helpKey){
 }
 
 function viewDashboard(){
-  const cash = state.ledgers.filter(l=>l.group==='cash'||l.group==='bank')
+  const cash = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank')
     .reduce((s,l)=>s+ledgerBalance(l.id),0);
   const assets = totalsByCategory('Assets');
   const liab = -totalsByCategory('Liabilities') - totalsByCategory('Capital');
@@ -5596,7 +5692,7 @@ function quickAddLedgerModal(){
           <div class="field"><label>Ledger Name</label><input type="text" id="quickLedgerName" placeholder="e.g. Electricity Expense"></div>
           <div class="row">
             <div class="field"><label>Under Group</label>
-              <select id="quickLedgerGroup">${GROUPS.map(g=>`<option value="${g.id}">${g.name} (${g.cat})</option>`).join('')}</select>
+              <select id="quickLedgerGroup">${groupOptionsHtml()}</select>
             </div>
             <div class="field" style="max-width:160px;"><label>Opening Balance</label><input type="number" id="quickLedgerOpening" value="0" step="0.01"></div>
             <div class="field" style="max-width:120px;"><label>Type</label>
@@ -6192,7 +6288,7 @@ function viewCOA(){
         <div class="row">
           <div class="field"><label>Ledger Name</label><input type="text" id="newLedgerName" placeholder="e.g. Electricity Expense"></div>
           <div class="field"><label>Under Group</label>
-            <select id="newLedgerGroup">${GROUPS.map(g=>`<option value="${g.id}">${g.name} (${g.cat})</option>`).join('')}</select>
+            <select id="newLedgerGroup">${groupOptionsHtml()}</select>
           </div>
           <div class="field" style="max-width:160px;"><label>Opening Balance</label><input type="number" id="newLedgerOpening" value="0" step="0.01"></div>
           <div class="field" style="max-width:120px;"><label>Type</label>
@@ -6234,7 +6330,7 @@ function viewCOA(){
             <tr><th>Ledger</th><th>Group</th><th>GST</th><th>MSME</th><th>Party</th><th class="num">Balance</th></tr>
             ${state.ledgers.filter(l=>groupOf(l.group).cat===cat).map(l=>{
               const b = ledgerBalance(l.id);
-              const msmeCell = l.group==='curl'
+              const msmeCell = bucketOf(l)==='curl'
                 ? `<span data-toggle-msme="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${l.isMSME?'✓ MSME':'Mark MSME'}</span>`
                 : '—';
               const partyLabel = l.partyType==='customer' ? '✓ Customer' : l.partyType==='supplier' ? '✓ Supplier' : 'Not a party';
@@ -6572,7 +6668,8 @@ function reportBalanceSheet(){
           ${blrows(bs.otherTradePayableLedgers, -1)}
           ${brow('&nbsp;&nbsp;(c) Other Current Liabilities', money(bs.otherCurrentLiabTotal), hasPrev?money(pb.otherCurrentLiabTotal):'')}
           ${blrows(bs.otherCurrentLiabLedgers, -1)}
-          ${bzero('&nbsp;&nbsp;(d) Short-term Provisions')}
+          ${brow('&nbsp;&nbsp;(d) Short-term Provisions', money(bs.provisionsTotal), hasPrev?money(pb.provisionsTotal):'')}
+          ${blrows(bs.provisionLedgers, -1)}
           ${brow('Total Current Liabilities', money(bs.currentLiabTotal), hasPrev?money(pb.currentLiabTotal):'', {bold:true})}
           ${brow('TOTAL (EQUITY AND LIABILITIES)', money(bs.totalEquityAndLiab), hasPrev?money(pb.totalEquityAndLiab):'', {bold:true})}
         </table>
@@ -6586,10 +6683,12 @@ function reportBalanceSheet(){
           ${bhead('Non-Current Assets')}
           ${brow('&nbsp;&nbsp;(a) Property, Plant and Equipment', money(bs.ppeTotal), hasPrev?money(pb.ppeTotal):'')}
           ${blrows(bs.ppe, 1)}
-          ${bzero('&nbsp;&nbsp;(b) Non-current Investments')}
+          ${brow('&nbsp;&nbsp;(b) Non-current Investments', money(bs.investmentsTotal), hasPrev?money(pb.investmentsTotal):'')}
+          ${blrows(bs.investments, 1)}
           ${bzero('&nbsp;&nbsp;(c) Deferred Tax Assets (Net)')}
           ${bzero('&nbsp;&nbsp;(d) Long-term Loans and Advances')}
-          ${bzero('&nbsp;&nbsp;(e) Other Non-current Assets')}
+          ${brow('&nbsp;&nbsp;(e) Other Non-current Assets (incl. Misc. Expenditure not written off)', money(bs.miscExpenditureTotal), hasPrev?money(pb.miscExpenditureTotal):'')}
+          ${blrows(bs.miscExpenditure, 1)}
           ${brow('Total Non-Current Assets', money(bs.nonCurrentAssetsTotal), hasPrev?money(pb.nonCurrentAssetsTotal):'', {bold:true})}
           ${bhead('Current Assets')}
           ${bzero('&nbsp;&nbsp;(a) Current Investments')}
@@ -6599,16 +6698,19 @@ function reportBalanceSheet(){
           ${blrows(bs.tradeReceivableLedgers, 1)}
           ${brow('&nbsp;&nbsp;(d) Cash and Cash Equivalents', money(bs.cashTotal), hasPrev?money(pb.cashTotal):'')}
           ${blrows(bs.cashLedgers, 1)}
-          ${bzero('&nbsp;&nbsp;(e) Short-term Loans and Advances')}
+          ${brow('&nbsp;&nbsp;(e) Short-term Loans and Advances', money(bs.loanAdvancesTotal), hasPrev?money(pb.loanAdvancesTotal):'')}
+          ${blrows(bs.loanAdvanceLedgers, 1)}
           ${brow('&nbsp;&nbsp;(f) Other Current Assets', money(bs.otherCurrentAssetsTotal), hasPrev?money(pb.otherCurrentAssetsTotal):'')}
           ${blrows(bs.otherCurrentAssetLedgers, 1)}
+          ${brow('&nbsp;&nbsp;(g) Suspense Account', money(bs.suspenseTotal), hasPrev?money(pb.suspenseTotal):'')}
+          ${blrows(bs.suspenseLedgers, 1)}
           ${brow('Total Current Assets', money(bs.currentAssetsTotal), hasPrev?money(pb.currentAssetsTotal):'', {bold:true})}
           ${brow('TOTAL ASSETS', money(bs.totalAssets), hasPrev?money(pb.totalAssets):'', {bold:true})}
         </table>
       </div>
     </div>
     <p class="muted" style="font-size:11.5px;">Total Assets ${Math.abs(bs.totalAssets-bs.totalEquityAndLiab)<0.01?'matches':'does NOT match'} Total Equity and Liabilities (₹${fmt(bs.totalAssets)} vs ₹${fmt(bs.totalEquityAndLiab)}). A mismatch usually means an opening balance or entry was recorded on the wrong side.</p>
-    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021 — including the Trade Payables MSME/Others split.${hasPrev?' The Previous Year column is as at the end of the preceding financial year, as Schedule III requires.':" This is the company's first financial year on the books, so there is no prior year yet to compare against."} Mark a Current Liabilities ledger as an MSME supplier from the Chart of Accounts to route it into (A) instead of (B). Lines shown at ₹0.00 are heads this system doesn't separately track (deferred tax, provisions, investments, loans and advances, short-term borrowings) rather than confirmed nil balances — review before filing. Note-level disclosures (ageing schedules, share reconciliation, promoter shareholding, Additional Regulatory Information) are not included.</p>
+    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021 — including the Trade Payables MSME/Others split.${hasPrev?' The Previous Year column is as at the end of the preceding financial year, as Schedule III requires.':" This is the company's first financial year on the books, so there is no prior year yet to compare against."} Mark a Current Liabilities ledger as an MSME supplier from the Chart of Accounts to route it into (A) instead of (B). Ledgers under Investments, Provisions, Loans &amp; Advances, and Suspense Account now feed their own lines above; this system doesn't track loan tenure or deferred tax separately, so all borrowings are shown under Long-term and lines like Deferred Tax and Short-term Borrowings stay at ₹0.00 (a head this system doesn't track, not a confirmed nil balance) — review before filing. Note-level disclosures (ageing schedules, share reconciliation, promoter shareholding, Additional Regulatory Information) are not included.</p>
 
     <div class="section-title" style="margin-top:20px;">Financing Mix</div>
     <div class="panel"><div class="panel-body">
@@ -6822,7 +6924,7 @@ function reconcileDateLabel(d){
   catch(e){ return d; }
 }
 function viewReconcile(){
-  const bankLedgers = state.ledgers.filter(l=>l.group==='bank');
+  const bankLedgers = state.ledgers.filter(l=>bucketOf(l)==='bank');
   if(!bankLedgers.length){
     return `
       ${masthead('Bank Reconciliation','Match your books against the bank statement, account by account')}
@@ -6906,7 +7008,7 @@ function viewReconcile(){
 
 function assetDraftForm(){
   const d = fixedAssetDraft;
-  const faLedgers = state.ledgers.filter(l=>l.group==='fa');
+  const faLedgers = state.ledgers.filter(l=>bucketOf(l)==='fa');
   return `
     <div class="section-title" style="margin-top:16px;">New Fixed Asset</div>
     <div class="row">
@@ -7276,7 +7378,7 @@ function attachHandlers(){
         toast('Import is a Paid-plan feature — contact the administrator to upgrade.');
         return;
       }
-      const defaultPrimary = state.ledgers.find(l=>l.group==='bank') || state.ledgers.find(l=>l.group==='cash');
+      const defaultPrimary = state.ledgers.find(l=>bucketOf(l)==='bank') || state.ledgers.find(l=>bucketOf(l)==='cash');
       importState = {
         step: 1, fileName:'', error:'',
         headers: [], rows: [],
