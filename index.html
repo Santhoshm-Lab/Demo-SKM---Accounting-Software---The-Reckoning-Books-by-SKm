@@ -473,6 +473,17 @@ let stockAdjustItemId = null;  // which item's adjust-stock modal to show
 let importState = null;    // wizard state for the Import Accounting Data modal
 let reportsSelected = null; // null = Reports landing grid | 'trialBalance'|'incomeStatement'|'balanceSheet'|'ratios'|'cashFlow'
 
+/* ---------------- AI Q&A chat widget state ---------------- */
+let qaOpen = false;      // whether the floating Q&A chat panel is expanded
+let qaMessages = [];     // [{role:'user'|'assistant', content:string}] — this browser session's conversation, not persisted
+let qaLoading = false;   // currently always false — kept for when/if the AI-powered backend below is wired back in
+let qaError = '';        // inline error message shown in the chat panel, if a question ever fails
+// NOT CURRENTLY USED — askQA() below answers locally (see answerQuestionLocally), no network call, no cost.
+// This is where the URL would go if you later deploy the optional AI-powered backend in functions/
+// (functions/README.md) and switch askQA() back to calling it — `firebase deploy --only functions`
+// prints the real URL (region may differ from us-central1).
+const QA_ENDPOINT = 'https://us-central1-' + FIREBASE_CONFIG.projectId + '.cloudfunctions.net/accountingQA';
+
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
 function defaultFYStart(){
   const t = new Date();
@@ -1812,6 +1823,301 @@ function netProfit(){
   return income - expense;
 }
 
+/* ---------------- AI Q&A chat widget ---------------- */
+/* A floating "Ask" button + chat panel, visible across every tab of the app screen. Sends the
+   question (plus a little conversation history) to the accountingQA Cloud Function, which reads
+   this company's ledgers/vouchers server-side, computes the same Schedule III reports as the
+   Reports tab, and asks Claude to answer using only that data. See functions/index.js. */
+function qaWidget(){
+  return `
+    <div id="qaFab" title="Ask a question about your books" style="position:fixed;right:22px;bottom:22px;width:52px;height:52px;border-radius:50%;background:var(--accent1,#2CA01C);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:500;">💬</div>
+    ${qaOpen ? `
+    <div id="qaPanel" style="position:fixed;right:22px;bottom:86px;width:340px;max-width:calc(100vw - 44px);height:440px;max-height:calc(100vh - 130px);background:var(--surface,#fff);border:1px solid var(--border,#E1E7E3);border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.28);display:flex;flex-direction:column;overflow:hidden;z-index:500;">
+      <div style="padding:10px 12px;border-bottom:1px solid var(--border,#E1E7E3);display:flex;justify-content:space-between;align-items:center;background:var(--accent1,#2CA01C);color:#fff;">
+        <strong style="font-size:13px;">Ask your books</strong>
+        <span id="qaCloseBtn" style="cursor:pointer;font-size:15px;">✕</span>
+      </div>
+      <div id="qaMessagesEl" style="flex:1;overflow-y:auto;padding:10px 12px;font-size:12.5px;line-height:1.5;">
+        ${qaMessages.length===0 ? `
+          <div class="muted" style="font-size:11.5px;">
+            Answers common bookkeeping questions straight from your ledgers and vouchers — no internet connection needed, nothing leaves your browser. Ask things like:
+            <div style="margin-top:6px;display:flex;flex-direction:column;gap:5px;">
+              ${['What\'s my cash balance right now?','What was my profit last month?','Who are my top 5 customers by receivables?','Show revenue for the last 6 months'].map(q=>`<span data-qa-suggest="${escapeAttr(q)}" class="linklike" style="cursor:pointer;">"${q}"</span>`).join('')}
+            </div>
+          </div>` : ''}
+        ${qaMessages.map(m=>`
+          <div style="margin-bottom:10px;display:flex;${m.role==='user'?'justify-content:flex-end;':''}">
+            <div style="max-width:85%;padding:7px 10px;border-radius:10px;white-space:pre-wrap;${m.role==='user' ? 'background:var(--accent1,#2CA01C);color:#fff;' : 'background:var(--surface-strong,#EEF3EF);color:var(--ink,#1B2420);'}">${escapeHtml(m.content)}</div>
+          </div>
+        `).join('')}
+        ${qaLoading ? `<div class="muted" style="font-size:11.5px;">Thinking…</div>` : ''}
+        ${qaError ? `<div style="color:#D64545;font-size:11.5px;margin-top:6px;">${escapeHtml(qaError)}</div>` : ''}
+      </div>
+      <div style="padding:8px;border-top:1px solid var(--border,#E1E7E3);display:flex;gap:6px;">
+        <input id="qaInputBox" type="text" placeholder="Ask a question…" style="flex:1;font-size:12.5px;padding:8px 10px;border:1px solid var(--border,#E1E7E3);border-radius:8px;" ${qaLoading?'disabled':''}>
+        <button id="qaSendBtn" class="btn small" type="button" ${qaLoading?'disabled':''}>Send</button>
+      </div>
+    </div>` : ''}
+  `;
+}
+/* ---- Local, rule-based answer engine (no API, no cost, no server) ----
+   Matches common accounting questions against patterns and answers straight from this company's
+   ledgers/vouchers using the same computations the Reports tab uses. Not a real language model —
+   it recognizes phrasings, it doesn't "understand" arbitrary questions — but everything it does
+   answer is a real number pulled live from your books, never a guess. */
+function qaFmtSignedINR(n){
+  return (n<0 ? '-₹' : '₹') + fmt(n);
+}
+function qaMonthlyTrend(months){
+  const buckets = {};
+  for(const v of state.vouchers){
+    if(!v.date) continue;
+    const month = v.date.slice(0,7);
+    for(const e of (v.entries||[])){
+      const l = ledgerOf(e.ledgerId);
+      if(!l) continue;
+      const net = (e.dr||0)-(e.cr||0);
+      if(!buckets[month]) buckets[month] = {revenue:0, otherIncome:0, expenses:0};
+      if(l.group==='sales') buckets[month].revenue += -net;
+      else if(l.group==='dinc') buckets[month].otherIncome += -net;
+      else if(['purch','dexp','iexp'].includes(l.group)) buckets[month].expenses += net;
+    }
+  }
+  const keys = Object.keys(buckets).sort().slice(-months);
+  return keys.map(m=>{
+    const b = buckets[m];
+    return { month:m, revenue:r2(b.revenue), otherIncome:r2(b.otherIncome), expenses:r2(b.expenses), profit:r2(b.revenue+b.otherIncome-b.expenses) };
+  });
+}
+function qaPeriodTotals(predicate){
+  let revenue=0, otherIncome=0, expenses=0;
+  for(const v of state.vouchers){
+    if(!v.date || !predicate(v.date)) continue;
+    for(const e of (v.entries||[])){
+      const l = ledgerOf(e.ledgerId);
+      if(!l) continue;
+      const net = (e.dr||0)-(e.cr||0);
+      if(l.group==='sales') revenue += -net;
+      else if(l.group==='dinc') otherIncome += -net;
+      else if(['purch','dexp','iexp'].includes(l.group)) expenses += net;
+    }
+  }
+  return { revenue:r2(revenue), otherIncome:r2(otherIncome), expenses:r2(expenses), profit:r2(revenue+otherIncome-expenses) };
+}
+function qaParsePeriod(q){
+  const now = new Date();
+  const thisMonthKey = now.toISOString().slice(0,7);
+  const lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
+  const lastMonthKey = lastMonthDate.toISOString().slice(0,7);
+  if(/\blast month\b/.test(q)) return { label:'last month', predicate: d=>d.startsWith(lastMonthKey) };
+  if(/\bthis month\b/.test(q)) return { label:'this month', predicate: d=>d.startsWith(thisMonthKey) };
+  if(/\blast year\b/.test(q)) return { label:'last year', predicate: d=>d.startsWith(String(now.getFullYear()-1)) };
+  if(/\bthis year\b/.test(q)) return { label:'this year', predicate: d=>d.startsWith(String(now.getFullYear())) };
+  const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  const m = q.match(new RegExp('\\b('+months.join('|')+')\\b(?:\\s+(\\d{4}))?'));
+  if(m){
+    const mi = months.indexOf(m[1]);
+    const yr = m[2] ? Number(m[2]) : now.getFullYear();
+    const key = yr+'-'+String(mi+1).padStart(2,'0');
+    return { label: m[1][0].toUpperCase()+m[1].slice(1)+' '+yr, predicate: d=>d.startsWith(key) };
+  }
+  return null; // all-time
+}
+const QA_STOPWORDS = new Set(['bank','cash','account','accounts','balance','the','how','much','what',"what's",'whats','my','is','are','of','in','for','right','now','current']);
+function qaMatchLedgerByName(q, ledgers){
+  const qWords = q.replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(w=>w.length>2 && !QA_STOPWORDS.has(w));
+  if(!qWords.length) return null;
+  let best = null, bestScore = 0;
+  for(const l of ledgers){
+    const lWords = l.name.toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(w=>w.length>2 && !QA_STOPWORDS.has(w));
+    const score = lWords.filter(w=>qWords.includes(w)).length;
+    if(score>bestScore){ bestScore=score; best=l; }
+  }
+  return bestScore>=1 ? best : null;
+}
+function qaTopLedgers(ledgers, sign, label, n){
+  n = n||5;
+  const list = ledgers
+    .map(l=>({ name:l.name, bal: sign*ledgerBalance(l.id) }))
+    .filter(x=>Math.abs(x.bal)>0.005)
+    .sort((a,b)=>b.bal-a.bal)
+    .slice(0,n);
+  if(!list.length) return `I couldn't find any ${label} ledgers with a balance right now.`;
+  return `Top ${list.length} ${label}${list.length>1?'s':''} by balance:\n`+list.map((x,i)=>`${i+1}. ${x.name} — ₹${fmt(x.bal)}`).join('\n');
+}
+function answerQuestionLocally(question){
+  const q = question.toLowerCase();
+
+  // Trend over the last N months (checked first — most specific phrasing)
+  const trendMatch = q.match(/\b(?:last|past)\s+(\d+)\s+months?\b/);
+  if(trendMatch && /\b(revenue|sales|profit|expense)/.test(q)){
+    const n = Math.min(24, Math.max(1, Number(trendMatch[1])));
+    const trend = qaMonthlyTrend(n);
+    if(!trend.length) return `I don't have any dated vouchers to build a trend from yet.`;
+    const metric = /\bprofit\b/.test(q) ? 'profit' : /\bexpense/.test(q) ? 'expenses' : 'revenue';
+    const label = metric==='expenses'?'Expenses':metric[0].toUpperCase()+metric.slice(1);
+    return `${label} by month, last ${trend.length} month${trend.length>1?'s':''}:\n`+trend.map(t=>`${t.month}: ${qaFmtSignedINR(t[metric])}`).join('\n');
+  }
+
+  const period = qaParsePeriod(q);
+
+  // Profit / loss
+  if(/\b(profit|loss|net income)\b/.test(q) || /\bhow much.*(made|earned|lost)\b/.test(q)){
+    const t = period ? qaPeriodTotals(period.predicate) : (()=>{ const pl=scheduleIIIProfitLossData(); return {revenue:pl.revenueFromOperations, otherIncome:pl.otherIncome, expenses:pl.totalExpenses, profit:pl.profitForPeriod}; })();
+    const verb = t.profit>=0 ? 'a profit of' : 'a loss of';
+    const when = period ? period.label : 'cumulatively, across all vouchers to date';
+    return `For ${when}, you made ${verb} ₹${fmt(Math.abs(t.profit))} (income ₹${fmt(t.revenue+t.otherIncome)} against expenses ₹${fmt(t.expenses)}).`;
+  }
+
+  // Revenue / sales / turnover
+  if(/\b(revenue|sales|turnover)\b/.test(q)){
+    if(period){
+      const t = qaPeriodTotals(period.predicate);
+      return `Revenue from operations for ${period.label} was ₹${fmt(t.revenue)}.`;
+    }
+    const pl = scheduleIIIProfitLossData();
+    return `Total revenue from operations, all-time, is ₹${fmt(pl.revenueFromOperations)}${pl.otherIncome?` (plus ₹${fmt(pl.otherIncome)} other income)`:''}.`;
+  }
+
+  // Expenses — top / breakdown / period total
+  if(/\bexpense/.test(q)){
+    if(/\btop\b|\bbiggest\b|\blargest\b/.test(q)){
+      const pl = scheduleIIIProfitLossData();
+      const all = [...pl.purchaseLedgers, ...pl.employeeLedgers, ...pl.financeCostLedgers, ...pl.depreciationLedgers, ...pl.otherExpenseLedgers];
+      return qaTopLedgers(all, 1, 'expense', 5);
+    }
+    if(period){
+      const t = qaPeriodTotals(period.predicate);
+      return `Total expenses for ${period.label} were ₹${fmt(t.expenses)}.`;
+    }
+    const pl = scheduleIIIProfitLossData();
+    return `Total expenses (all-time) are ₹${fmt(pl.totalExpenses)} — ₹${fmt(pl.purchasesOfStockInTrade)} purchases, ₹${fmt(pl.employeeBenefitsExpense)} employee benefits, ₹${fmt(pl.financeCosts)} finance costs, ₹${fmt(pl.depreciationExpense)} depreciation, ₹${fmt(pl.otherExpenses)} other.`;
+  }
+
+  // Cash / bank
+  if(/\bcash\b/.test(q) && !/\bcash flow\b/.test(q)){
+    const cash = state.ledgers.filter(l=>l.group==='cash').reduce((s,l)=>s+ledgerBalance(l.id),0);
+    return `Your cash-in-hand balance is ₹${fmt(cash)}.`;
+  }
+  if(/\bbank\b/.test(q)){
+    const bankLedgers = state.ledgers.filter(l=>l.group==='bank');
+    const named = bankLedgers.length>1 ? qaMatchLedgerByName(q, bankLedgers) : null;
+    if(named){
+      const b = ledgerBalance(named.id);
+      return `${named.name} has a balance of ₹${fmt(Math.abs(b))} ${balanceLabel(b)}.`;
+    }
+    const bank = bankLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+    return bankLedgers.length<=1 ? `Your bank balance is ₹${fmt(bank)}.` : `Your combined bank balance across ${bankLedgers.length} accounts is ₹${fmt(bank)}.`;
+  }
+
+  // Top customers / suppliers (Schedule III trade receivable / payable classification)
+  if(/\btop\b.*(customer|receivable|debtor)/.test(q)){
+    const pl = scheduleIIIProfitLossData();
+    const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+    return qaTopLedgers(bs.tradeReceivableLedgers, 1, 'customer', 5);
+  }
+  if(/\btop\b.*(supplier|vendor|payable|creditor)/.test(q)){
+    const pl = scheduleIIIProfitLossData();
+    const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+    return qaTopLedgers(bs.tradePayableLedgers, -1, 'supplier', 5);
+  }
+
+  // Ratios — checked before the plain "equity" question below, since "debt to equity ratio"
+  // and "current ratio" both contain words ("equity", "current") those broader checks would
+  // otherwise swallow first.
+  if(/\bcurrent ratio\b/.test(q)){
+    const is = incomeStatementData(); const bs = balanceSheetIFRSData(is.profitForPeriod); const ratios = ratioAnalysisData(is,bs);
+    return ratios.currentRatio!=null ? `Your current ratio is ${ratios.currentRatio.toFixed(2)}× (current assets ÷ current liabilities).` : `Current ratio isn't available yet — you have no current liabilities recorded.`;
+  }
+  if(/debt.{0,4}to.{0,4}equity|\bleverage\b/.test(q)){
+    const is = incomeStatementData(); const bs = balanceSheetIFRSData(is.profitForPeriod); const ratios = ratioAnalysisData(is,bs);
+    return ratios.debtToEquity!=null ? `Your debt-to-equity ratio is ${ratios.debtToEquity.toFixed(2)}×.` : `Debt-to-equity isn't available yet — you have no equity recorded.`;
+  }
+
+  // Assets / liabilities / equity
+  if(/\b(total )?assets\b/.test(q)){
+    const pl = scheduleIIIProfitLossData();
+    const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+    return `Total assets are ₹${fmt(bs.totalAssets)} (₹${fmt(bs.ppeTotal)} non-current + ₹${fmt(bs.currentAssetsTotal)} current).`;
+  }
+  if(/\b(total )?liabilit/.test(q)){
+    const pl = scheduleIIIProfitLossData();
+    const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+    const total = bs.longTermBorrowingsTotal + bs.currentLiabTotal;
+    return `Total liabilities are ₹${fmt(total)} (₹${fmt(bs.longTermBorrowingsTotal)} long-term + ₹${fmt(bs.currentLiabTotal)} current, including ₹${fmt(bs.tradePayablesTotal)} trade payables).`;
+  }
+  if(/\bequity\b|\bnet worth\b|\bshareholders.? funds\b/.test(q)){
+    const pl = scheduleIIIProfitLossData();
+    const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+    return `Total equity (Shareholders' Funds) is ₹${fmt(bs.shareholdersFundsTotal)} — ₹${fmt(bs.shareCapitalTotal)} share capital plus ${qaFmtSignedINR(bs.reservesAndSurplus)} reserves and surplus.`;
+  }
+
+  // GST
+  if(/\bgst\b/.test(q)){
+    if(/\binput\b|\breceivable\b|\bcredit\b/.test(q)) return `Input GST credit available is ₹${fmt(gstInputTotal())}.`;
+    if(/\boutput\b|\bpayable\b|\bliab/.test(q)) return `Output GST payable is ₹${fmt(gstOutputTotal())}.`;
+    const net = gstOutputTotal()-gstInputTotal();
+    return `Output GST payable is ₹${fmt(gstOutputTotal())}; Input GST credit is ₹${fmt(gstInputTotal())}; net ${net>=0?'payable':'refundable'} is ₹${fmt(Math.abs(net))}.`;
+  }
+
+  // Stock / inventory
+  if(/\bstock\b|\binventor(y|ies)\b/.test(q)){
+    const summaries = stockSummaryAll();
+    const total = summaries.reduce((s,r)=>s+r.summary.value,0);
+    return `Total stock value on hand is ₹${fmt(total)} across ${state.items.length} item${state.items.length===1?'':'s'}.`;
+  }
+
+  // Voucher / transaction count
+  if(/\bhow many\b.*(voucher|transaction|entr(y|ies))/.test(q)){
+    return `You have ${state.vouchers.length} voucher${state.vouchers.length===1?'':'s'} recorded in total.`;
+  }
+
+  // Trial balance
+  if(/\btrial balance\b/.test(q)){
+    const balances = state.ledgers.map(l=>ledgerBalance(l.id));
+    const dr = balances.filter(b=>b>0).reduce((a,b)=>a+b,0);
+    const cr = balances.filter(b=>b<0).reduce((a,b)=>a-b,0);
+    const diff = Math.abs(dr-cr);
+    return diff<0.01 ? `Your trial balance is in balance — both sides total ₹${fmt(dr)}.` : `Your trial balance is OFF by ₹${fmt(diff)} (Debits ₹${fmt(dr)} vs Credits ₹${fmt(cr)}) — worth checking for a one-sided entry.`;
+  }
+
+  // Fall back to a direct ledger-name lookup — e.g. "what's the balance of ABC Traders?"
+  if(/\bbalance\b|\bhow much\b/.test(q)){
+    const named = qaMatchLedgerByName(q, state.ledgers);
+    if(named){
+      const b = ledgerBalance(named.id);
+      return `${named.name} has a balance of ₹${fmt(Math.abs(b))} ${balanceLabel(b)}.`;
+    }
+  }
+
+  return `I couldn't match that to something I know how to look up yet — I answer from patterns, not free-form understanding. Try asking about: cash or bank balance, revenue or profit (overall, this month, last month, a named month, or "last N months"), total or top expenses, top customers or suppliers by balance, total assets/liabilities/equity, GST payable/input, current ratio or debt-to-equity, stock value, trial balance, or a specific ledger's balance (e.g. "what's the balance of HDFC Bank?").`;
+}
+function askQA(question){
+  question = (question||'').trim();
+  if(!question) return;
+  qaMessages.push({ role:'user', content: question });
+  qaMessages.push({ role:'assistant', content: answerQuestionLocally(question) });
+  qaError = '';
+  render();
+  const el = document.getElementById('qaMessagesEl');
+  if(el) el.scrollTop = el.scrollHeight;
+  document.getElementById('qaInputBox')?.focus();
+}
+function wireQAWidget(){
+  document.getElementById('qaFab')?.addEventListener('click', ()=>{ qaOpen = !qaOpen; render(); });
+  document.getElementById('qaCloseBtn')?.addEventListener('click', ()=>{ qaOpen = false; render(); });
+  const input = document.getElementById('qaInputBox');
+  const send = ()=>{ const v = input?.value||''; if(input) input.value=''; askQA(v); };
+  document.getElementById('qaSendBtn')?.addEventListener('click', send);
+  input?.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); send(); } });
+  input?.focus();
+  document.querySelectorAll('[data-qa-suggest]').forEach(el=>{
+    el.addEventListener('click', ()=> askQA(el.dataset.qaSuggest));
+  });
+  const msgs = document.getElementById('qaMessagesEl');
+  if(msgs) msgs.scrollTop = msgs.scrollHeight;
+}
+
 /* ---------------- rendering ---------------- */
 function render(){
   const app = document.getElementById('app');
@@ -1868,8 +2174,10 @@ function render(){
     ${modal==='totalAssetsDetail' ? totalAssetsDetailModal() : ''}
     ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
     ${modal==='quickAddLedger' ? quickAddLedgerModal() : ''}
+    ${qaWidget()}
   `;
   attachHandlers();
+  wireQAWidget();
 
   document.getElementById('menuCompany').addEventListener('click', ()=>{
     if(adminViewOnlyCompanyId){
