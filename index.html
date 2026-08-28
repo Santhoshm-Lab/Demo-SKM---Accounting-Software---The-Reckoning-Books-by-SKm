@@ -402,6 +402,8 @@ let state = {
   vouchers: [],
   items: [],
   stockAdjustments: [],
+  bankClears: [],       // [{ledgerId, voucherId, clearedDate}] — which bank-ledger voucher entries have been ticked off against a bank statement
+  reconciliations: [],  // [{id, ledgerId, date, statementBalance, bookBalance, difference, ...}] — saved history of past bank reconciliations
 };
 let view = 'dashboard';
 let vform = null; // active voucher form draft
@@ -472,6 +474,8 @@ let stockDetailItemId = null;  // which item's stock movement modal to show
 let stockAdjustItemId = null;  // which item's adjust-stock modal to show
 let importState = null;    // wizard state for the Import Accounting Data modal
 let reportsSelected = null; // null = Reports landing grid | 'trialBalance'|'incomeStatement'|'balanceSheet'|'ratios'|'cashFlow'
+let reconcileLedgerId = null; // which bank ledger the Reconcile tab is currently showing
+let reconcileDraft = { date: new Date().toISOString().slice(0,10), balance: '' }; // Reconcile tab's statement-date/balance inputs
 
 /* ---------------- AI Q&A chat widget state ---------------- */
 let qaOpen = false;      // whether the floating Q&A chat panel is expanded
@@ -1076,6 +1080,8 @@ async function ensureDemoCompany(){
 
 async function loadState(){
   const cid = currentCompany.id;
+  reconcileLedgerId = null; // reset so the Reconcile tab re-picks a bank ledger belonging to this company
+  reconcileDraft = { date: new Date().toISOString().slice(0,10), balance: '' };
   try{
     const doc = await db.collection('companies').doc(cid).get();
     const data = doc.exists ? doc.data() : {};
@@ -1083,12 +1089,16 @@ async function loadState(){
     state.vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
     state.items = Array.isArray(data.items) ? data.items : [];
     state.stockAdjustments = Array.isArray(data.stockAdjustments) ? data.stockAdjustments : [];
+    state.bankClears = Array.isArray(data.bankClears) ? data.bankClears : [];
+    state.reconciliations = Array.isArray(data.reconciliations) ? data.reconciliations : [];
   }catch(e){
     console.error(e);
     state.ledgers = DEFAULT_LEDGERS.slice();
     state.vouchers = [];
     state.items = [];
     state.stockAdjustments = [];
+    state.bankClears = [];
+    state.reconciliations = [];
     toast('Could not load company data');
   }
   // Safety net: if this is the Demo Company but its sample vouchers are missing (e.g. an
@@ -1132,6 +1142,16 @@ async function saveStockAdjustments(){
   try{ await db.collection('companies').doc(currentCompany.id).set({ stockAdjustments: state.stockAdjustments }, {merge:true}); }
   catch(e){ toast('Could not save stock adjustments'); }
 }
+async function saveBankClears(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ bankClears: state.bankClears }, {merge:true}); }
+  catch(e){ toast('Could not save reconciliation status'); }
+}
+async function saveReconciliations(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ reconciliations: state.reconciliations }, {merge:true}); }
+  catch(e){ toast('Could not save reconciliation history'); }
+}
 
 /* ---------------- balance computation ---------------- */
 function ledgerBalance(ledgerId){
@@ -1149,6 +1169,82 @@ function ledgerBalance(ledgerId){
 }
 function balanceLabel(signed){
   return signed >= 0 ? 'Dr' : 'Cr';
+}
+
+/* ---------------- bank reconciliation ---------------- */
+// Ledger balance as of a specific date (inclusive) — a cumulative running balance up to that day,
+// ignoring anything dated after it. Passing a falsy date behaves exactly like ledgerBalance().
+function ledgerBalanceAsOf(ledgerId, asOfDate){
+  const l = ledgerOf(ledgerId);
+  if(!l) return 0;
+  let bal = l.opening || 0;
+  for(const v of state.vouchers){
+    if(asOfDate && v.date > asOfDate) continue;
+    for(const e of v.entries){
+      if(e.ledgerId === ledgerId) bal += (e.dr||0) - (e.cr||0);
+    }
+  }
+  return bal;
+}
+// Cleared/uncleared status is tracked per (bank ledger, voucher) pair rather than on the voucher
+// itself, so editing a voucher later never silently wipes out its reconciliation status.
+function isBankClear(ledgerId, voucherId){
+  return state.bankClears.some(c=>c.ledgerId===ledgerId && c.voucherId===voucherId);
+}
+function toggleBankClear(ledgerId, voucherId, clearedDate){
+  const idx = state.bankClears.findIndex(c=>c.ledgerId===ledgerId && c.voucherId===voucherId);
+  if(idx>-1) state.bankClears.splice(idx,1);
+  else state.bankClears.push({ ledgerId, voucherId, clearedDate: clearedDate || new Date().toISOString().slice(0,10) });
+  saveBankClears();
+}
+// One row per voucher entry that touches this bank ledger, dated on/before asOfDate, oldest first.
+function bankReconcileEntries(ledgerId, asOfDate){
+  const rows = [];
+  for(const v of state.vouchers){
+    if(asOfDate && v.date > asOfDate) continue;
+    for(const e of v.entries){
+      if(e.ledgerId !== ledgerId) continue;
+      if(!(e.dr || e.cr)) continue;
+      rows.push({
+        voucherId: v.id, date: v.date, type: v.type, narration: v.narration,
+        dr: e.dr||0, cr: e.cr||0,
+        cleared: isBankClear(ledgerId, v.id),
+      });
+    }
+  }
+  rows.sort((a,b)=> a.date===b.date ? 0 : (a.date<b.date?-1:1));
+  return rows;
+}
+// Standard bank-reconciliation-statement math, starting from the bank statement's balance:
+//   Balance as per Bank Statement
+//   + deposits/receipts recorded in the books that the bank hasn't credited yet
+//   − payments/cheques recorded in the books that haven't been presented to the bank yet
+//   = Balance as per Books (calculated) — this should equal the ledger's real book balance.
+// Any gap between the two ("difference") is what still needs investigating — a bank charge,
+// interest, or direct debit/credit that hasn't been entered in the books yet, or a mis-tick.
+function bankReconciliationSummary(ledgerId, asOfDate, statementBalance){
+  const bookBalance = ledgerBalanceAsOf(ledgerId, asOfDate);
+  const rows = bankReconcileEntries(ledgerId, asOfDate);
+  const outstandingDeposits = rows.filter(r=>!r.cleared && r.dr>0);
+  const outstandingPayments = rows.filter(r=>!r.cleared && r.cr>0);
+  const outstandingDrTotal = r2(outstandingDeposits.reduce((s,r)=>s+r.dr,0));
+  const outstandingCrTotal = r2(outstandingPayments.reduce((s,r)=>s+r.cr,0));
+  const computedBookBalance = r2((statementBalance||0) + outstandingDrTotal - outstandingCrTotal);
+  const difference = r2(bookBalance - computedBookBalance);
+  return { bookBalance, rows, outstandingDeposits, outstandingPayments, outstandingDrTotal, outstandingCrTotal, computedBookBalance, difference, reconciled: Math.abs(difference) < 0.005 };
+}
+function saveReconciliationRecord(ledgerId, asOfDate, statementBalance){
+  const s = bankReconciliationSummary(ledgerId, asOfDate, statementBalance);
+  state.reconciliations.push({
+    id: uid('rec'), ledgerId, date: asOfDate, statementBalance,
+    bookBalance: s.bookBalance, difference: s.difference,
+    outstandingDepositsCount: s.outstandingDeposits.length,
+    outstandingPaymentsCount: s.outstandingPayments.length,
+    outstandingDrTotal: s.outstandingDrTotal, outstandingCrTotal: s.outstandingCrTotal,
+    createdAt: new Date().toISOString(),
+  });
+  saveReconciliations();
+  return s;
 }
 
 function totalsByCategory(cat){
@@ -2150,6 +2246,7 @@ function render(){
         ${tab('inventory','Inventory','I')}
         ${tab('reports','Reports','R')}
         ${tab('gst','GST','G')}
+        ${tab('reconcile','Reconcile','e')}
       </div>
       <div class="main">${renderView()}</div>
     </div>
@@ -2326,6 +2423,7 @@ function tabIcon(id){
     inventory: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
     reports: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
     gst: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+    reconcile: '<path d="M20 6L9 17l-5-5"/>',
   };
   return `<svg class="tab-icon" viewBox="0 0 24 24">${icons[id]||''}</svg>`;
 }
@@ -2340,7 +2438,7 @@ function tab(id,label,shortcutLetter){
 /* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
    the bold letter in each sidebar label. Only active once a company is open, when focus isn't
    inside a text field/dropdown, and no modal is covering the tabs. */
-const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst' };
+const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst', e:'reconcile' };
 function goToTab(id){
   if(!id || view===id) return;
   if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled()){
@@ -4207,6 +4305,7 @@ function renderView(){
     case 'inventory': return viewInventory();
     case 'reports': return viewReports();
     case 'gst': return viewGST();
+    case 'reconcile': return viewReconcile();
     default: return '';
   }
 }
@@ -5954,6 +6053,92 @@ function viewGST(){
   `;
 }
 
+function reconcileDateLabel(d){
+  try{ return new Date(d).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}); }
+  catch(e){ return d; }
+}
+function viewReconcile(){
+  const bankLedgers = state.ledgers.filter(l=>l.group==='bank');
+  if(!bankLedgers.length){
+    return `
+      ${masthead('Bank Reconciliation','Match your books against the bank statement, account by account')}
+      <div class="panel"><div class="panel-body"><div class="empty">No bank ledgers yet. Add one from Accounts under the "Bank Accounts" group, then come back here to reconcile it.</div></div></div>
+    `;
+  }
+  if(!reconcileLedgerId || !bankLedgers.find(l=>l.id===reconcileLedgerId)) reconcileLedgerId = bankLedgers[0].id;
+  const ledger = ledgerOf(reconcileLedgerId);
+  const asOfDate = reconcileDraft.date || new Date().toISOString().slice(0,10);
+  const hasBalance = reconcileDraft.balance !== '' && reconcileDraft.balance != null;
+  const statementBalance = Number(reconcileDraft.balance)||0;
+  const summary = bankReconciliationSummary(reconcileLedgerId, asOfDate, statementBalance);
+  const history = state.reconciliations
+    .filter(r=>r.ledgerId===reconcileLedgerId)
+    .sort((a,b)=> b.date===a.date ? (b.createdAt||'').localeCompare(a.createdAt||'') : (b.date<a.date?-1:1))
+    .slice(0,8);
+
+  return `
+    ${masthead('Bank Reconciliation','Match your books against the bank statement, account by account')}
+
+    <div class="panel">
+      <div class="panel-body" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
+        <div class="field" style="min-width:220px;">
+          <label>Bank Ledger</label>
+          <select id="reconcileLedgerSelect">
+            ${bankLedgers.map(l=>`<option value="${l.id}" ${l.id===reconcileLedgerId?'selected':''}>${escapeHtml(l.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Statement Date</label><input type="date" id="reconcileDate" value="${asOfDate}"></div>
+        <div class="field"><label>Statement Closing Balance (₹)</label><input type="number" step="0.01" id="reconcileBalance" placeholder="As shown on your bank statement" value="${escapeAttr(String(reconcileDraft.balance))}"></div>
+        <button class="btn" id="saveReconcileBtn" type="button" ${hasBalance?'':'disabled'}>💾 Save Reconciliation</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Summary — ${escapeHtml(ledger.name)}</h2><span class="pill ${!hasBalance ? '' : (summary.reconciled?'cr':'dr')}">${hasBalance ? (summary.reconciled?'✓ Reconciled':'⚠ Difference ₹'+fmt(Math.abs(summary.difference))) : 'Enter statement balance'}</span></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><td>Balance as per Bank Statement (${reconcileDateLabel(asOfDate)})</td><td class="num">₹${fmt(statementBalance)}</td></tr>
+          <tr><td>Add: Deposits/Receipts in books not yet credited by bank (${summary.outstandingDeposits.length})</td><td class="num cr">+ ₹${fmt(summary.outstandingDrTotal)}</td></tr>
+          <tr><td>Less: Payments/Cheques in books not yet presented (${summary.outstandingPayments.length})</td><td class="num dr">− ₹${fmt(summary.outstandingCrTotal)}</td></tr>
+          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>= Balance as per Books (calculated)</td><td class="num">₹${fmt(summary.computedBookBalance)}</td></tr>
+          <tr><td class="muted">Actual Balance as per Books (Ledger)</td><td class="num muted">₹${fmt(summary.bookBalance)}</td></tr>
+          <tr style="font-weight:700;"><td>Unreconciled Difference</td><td class="num ${Math.abs(summary.difference)<0.005?'':'dr'}">₹${fmt(summary.difference)}</td></tr>
+        </table>
+      </div>
+      <p class="muted" style="font-size:11.5px;padding:0 16px 12px;">${!hasBalance ? 'Enter the closing balance from your bank statement above to see how it lines up with the books.' : (Math.abs(summary.difference)<0.005 ? 'This account is fully reconciled as of the statement date — every difference is explained by items still outstanding below.' : 'A non-zero difference usually means something is on the bank statement but not yet in your books (bank charges, interest, a direct debit/credit) — or a transaction below is ticked the wrong way.')}</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Transactions up to ${reconcileDateLabel(asOfDate)}</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Date</th><th>Voucher</th><th>Narration</th><th class="num">Deposit (Dr)</th><th class="num">Payment (Cr)</th><th style="text-align:center;">Cleared</th></tr>
+          ${summary.rows.map(r=>`
+          <tr>
+            <td class="muted">${r.date}</td>
+            <td class="muted">${escapeHtml(r.type)}</td>
+            <td>${escapeHtml(r.narration||'—')}</td>
+            <td class="num cr">${r.dr?'₹'+fmt(r.dr):''}</td>
+            <td class="num dr">${r.cr?'₹'+fmt(r.cr):''}</td>
+            <td style="text-align:center;"><input type="checkbox" data-clear-voucher="${r.voucherId}" ${r.cleared?'checked':''}></td>
+          </tr>`).join('') || `<tr><td colspan="6" class="empty">No transactions on this account up to this date yet.</td></tr>`}
+        </table>
+      </div>
+    </div>
+
+    ${history.length ? `
+    <div class="panel">
+      <div class="panel-head"><h2>Reconciliation History</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th>Statement Date</th><th class="num">Statement Bal.</th><th class="num">Book Bal.</th><th class="num">Difference</th><th>Saved</th></tr>
+          ${history.map(h=>`<tr><td class="muted">${h.date}</td><td class="num">₹${fmt(h.statementBalance)}</td><td class="num">₹${fmt(h.bookBalance)}</td><td class="num ${Math.abs(h.difference)<0.005?'':'dr'}">₹${fmt(h.difference)}</td><td class="muted" style="font-size:11px;">${fmtTimestamp(h.createdAt)}</td></tr>`).join('')}
+        </table>
+      </div>
+    </div>` : ''}
+  `;
+}
+
 /* ---------------- event handling ---------------- */
 function attachHandlers(){
   document.querySelectorAll('.navtab').forEach(b=>{
@@ -6496,6 +6681,33 @@ function attachHandlers(){
 
   if(view==='gst'){
     document.getElementById('downloadGSTBtn')?.addEventListener('click', downloadGSTStatement);
+  }
+
+  if(view==='reconcile'){
+    document.getElementById('reconcileLedgerSelect')?.addEventListener('change', e=>{
+      reconcileLedgerId = e.target.value;
+      render();
+    });
+    document.getElementById('reconcileDate')?.addEventListener('change', e=>{
+      reconcileDraft.date = e.target.value;
+      render();
+    });
+    document.getElementById('reconcileBalance')?.addEventListener('input', e=>{
+      reconcileDraft.balance = e.target.value;
+      render();
+    });
+    document.querySelectorAll('[data-clear-voucher]').forEach(el=>{
+      el.addEventListener('change', ()=>{
+        toggleBankClear(reconcileLedgerId, el.dataset.clearVoucher, reconcileDraft.date);
+        render();
+      });
+    });
+    document.getElementById('saveReconcileBtn')?.addEventListener('click', ()=>{
+      if(reconcileDraft.balance === '' || reconcileDraft.balance == null){ toast('Enter the statement closing balance first'); return; }
+      saveReconciliationRecord(reconcileLedgerId, reconcileDraft.date, Number(reconcileDraft.balance)||0);
+      toast('Reconciliation saved');
+      render();
+    });
   }
 }
 
