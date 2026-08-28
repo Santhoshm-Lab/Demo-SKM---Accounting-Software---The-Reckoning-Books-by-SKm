@@ -404,6 +404,8 @@ let state = {
   stockAdjustments: [],
   bankClears: [],       // [{ledgerId, voucherId, clearedDate}] — which bank-ledger voucher entries have been ticked off against a bank statement
   reconciliations: [],  // [{id, ledgerId, date, statementBalance, bookBalance, difference, ...}] — saved history of past bank reconciliations
+  recurringTemplates: [], // [{id, name, type, ledgerA, ledgerB, amount, narration, frequency, nextDueDate, lastGeneratedDate, active}]
+  fixedAssets: [], // [{id, name, ledgerId, cost, purchaseDate, usefulLifeYears, method, salvageValue, postedFYs, active}]
 };
 let view = 'dashboard';
 let vform = null; // active voucher form draft
@@ -469,6 +471,7 @@ let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false }; //
 let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
+let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
 let pieChartLedgerId = null; // which ledger's pie chart to show
 let stockDetailItemId = null;  // which item's stock movement modal to show
 let stockAdjustItemId = null;  // which item's adjust-stock modal to show
@@ -476,6 +479,9 @@ let importState = null;    // wizard state for the Import Accounting Data modal
 let reportsSelected = null; // null = Reports landing grid | 'trialBalance'|'incomeStatement'|'balanceSheet'|'ratios'|'cashFlow'
 let reconcileLedgerId = null; // which bank ledger the Reconcile tab is currently showing
 let reconcileDraft = { date: new Date().toISOString().slice(0,10), balance: '' }; // Reconcile tab's statement-date/balance inputs
+let recurringDraft = null; // null = not adding/editing a recurring template | {id?, name, type, ledgerA, ledgerB, amount, narration, frequency, nextDueDate}
+let restoreFile = null; // parsed backup JSON staged for confirmation in the Backup & Restore modal, or null
+let fixedAssetDraft = null; // null = not adding an asset | {name, ledgerId, cost, purchaseDate, usefulLifeYears, method, salvageValue}
 
 /* ---------------- AI Q&A chat widget state ---------------- */
 let qaOpen = false;      // whether the floating Q&A chat panel is expanded
@@ -514,6 +520,41 @@ function reportPeriodLabel(){
   try{ startLabel = new Date(start).toLocaleDateString('en-IN', {day:'2-digit', month:'long', year:'numeric'}); }
   catch(e){ startLabel = start; }
   return `${startLabel} to ${reportAsOfDateLabel()}`;
+}
+function humanDate(dateStr){
+  try{ return new Date(dateStr+'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'long', year:'numeric'}); }
+  catch(e){ return dateStr; }
+}
+// Everything the Schedule III Income Statement / Balance Sheet reports need: the current financial
+// year's figures (from the FY's start through today — this app is live, not a year-end snapshot, so
+// a FY "in progress" is normal) and, when there's data from before this FY started, the immediately
+// preceding FY's figures as a comparative. prevPl/prevBs come back null for a company with nothing
+// on the books before the current FY (a brand-new company) — callers use that to skip the
+// comparative column entirely rather than show a meaningless 0 vs 0.
+function currentAndPriorFYData(){
+  const today = new Date().toISOString().slice(0,10);
+  const currentFY = fyLabelForDate(today);
+  const priorFYStartYear = parseInt(currentFY.slice(0,4),10) - 1;
+  const priorFY = `${priorFYStartYear}-${String((priorFYStartYear+1)%100).padStart(2,'0')}`;
+  const curBounds = fyBoundsForLabel(currentFY);
+  const priorBounds = fyBoundsForLabel(priorFY);
+
+  const pl = scheduleIIIProfitLossData(curBounds.start, today);
+  const cumProfitToday = scheduleIIIProfitLossData(null, today).profitForPeriod;
+  const bs = scheduleIIIBalanceSheetData(cumProfitToday, today);
+
+  const hasPriorData = state.vouchers.some(v=>v.date < curBounds.start);
+  let prevPl = null, prevBs = null;
+  if(hasPriorData){
+    prevPl = scheduleIIIProfitLossData(priorBounds.start, priorBounds.end);
+    const cumProfitPriorEnd = scheduleIIIProfitLossData(null, priorBounds.end).profitForPeriod;
+    prevBs = scheduleIIIBalanceSheetData(cumProfitPriorEnd, priorBounds.end);
+  }
+  const periodLabel = `${humanDate(curBounds.start)} to ${humanDate(today)}`;
+  const asOfLabel = humanDate(today);
+  const prevPeriodLabel = hasPriorData ? `${humanDate(priorBounds.start)} to ${humanDate(priorBounds.end)}` : '';
+  const prevAsOfLabel = hasPriorData ? humanDate(priorBounds.end) : '';
+  return { currentFY, priorFY, curBounds, priorBounds, pl, bs, prevPl, prevBs, hasPriorData, periodLabel, asOfLabel, prevPeriodLabel, prevAsOfLabel };
 }
 function itemsSummary(v){
   if(!v.items || !v.items.length) return '';
@@ -1091,6 +1132,8 @@ async function loadState(){
     state.stockAdjustments = Array.isArray(data.stockAdjustments) ? data.stockAdjustments : [];
     state.bankClears = Array.isArray(data.bankClears) ? data.bankClears : [];
     state.reconciliations = Array.isArray(data.reconciliations) ? data.reconciliations : [];
+    state.recurringTemplates = Array.isArray(data.recurringTemplates) ? data.recurringTemplates : [];
+    state.fixedAssets = Array.isArray(data.fixedAssets) ? data.fixedAssets : [];
   }catch(e){
     console.error(e);
     state.ledgers = DEFAULT_LEDGERS.slice();
@@ -1099,6 +1142,8 @@ async function loadState(){
     state.stockAdjustments = [];
     state.bankClears = [];
     state.reconciliations = [];
+    state.recurringTemplates = [];
+    state.fixedAssets = [];
     toast('Could not load company data');
   }
   // Safety net: if this is the Demo Company but its sample vouchers are missing (e.g. an
@@ -1152,6 +1197,209 @@ async function saveReconciliations(){
   try{ await db.collection('companies').doc(currentCompany.id).set({ reconciliations: state.reconciliations }, {merge:true}); }
   catch(e){ toast('Could not save reconciliation history'); }
 }
+async function saveRecurringTemplates(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ recurringTemplates: state.recurringTemplates }, {merge:true}); }
+  catch(e){ toast('Could not save recurring templates'); }
+}
+async function saveFixedAssets(){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ fixedAssets: state.fixedAssets }, {merge:true}); }
+  catch(e){ toast('Could not save fixed asset register'); }
+}
+
+/* ---------------- Fixed Asset Register ---------------- */
+// Depreciation for one financial year, walked forward year by year from the purchase date so the
+// first (partial) year is prorated by days and WDV compounds correctly off each year's closing
+// balance — nothing is stored per-year; it's always derived fresh from the asset's own fields plus
+// which FYs have already been posted (asset.postedFYs), the same "derive, don't store" approach the
+// rest of the ledger math uses.
+function assetDepreciationForFY(asset, fyLabel){
+  const cost = Number(asset.cost)||0;
+  const salvage = Math.max(Number(asset.salvageValue)||0, 0);
+  const life = Math.max(Number(asset.usefulLifeYears)||1, 1);
+  if(cost<=0) return 0;
+  const purchaseFY = fyLabelForDate(asset.purchaseDate);
+  if(fyLabel < purchaseFY) return 0;
+  const depreciableBase = Math.max(cost - salvage, 0);
+  const slmAnnual = depreciableBase / life;
+  // Standard reducing-balance rate: 1 - (salvage/cost)^(1/life). A zero salvage would force a 100%
+  // rate, so floor it at 1% of cost for the rate calculation only — the actual balance still floors
+  // at the real salvage value below.
+  const wdvRate = 1 - Math.pow(Math.max(salvage, cost*0.01) / cost, 1 / life);
+
+  let wdv = cost;
+  let label = purchaseFY;
+  let guard = 0;
+  while(guard < 100){
+    guard++;
+    if(wdv <= salvage + 0.005){
+      if(label === fyLabel) return 0;
+      label = nextFYLabel(label);
+      continue;
+    }
+    const { start: yStart, end: yEnd } = fyBoundsForLabel(label);
+    const periodStart = (label===purchaseFY) ? asset.purchaseDate : yStart;
+    const daysInYear = Math.round((new Date(yEnd) - new Date(yStart)) / 86400000) + 1;
+    const daysUsed = Math.round((new Date(yEnd) - new Date(periodStart)) / 86400000) + 1;
+    const fraction = Math.min(Math.max(daysUsed / daysInYear, 0), 1);
+
+    let yearDep = asset.method==='WDV' ? wdv * wdvRate * fraction : slmAnnual * fraction;
+    yearDep = Math.min(yearDep, Math.max(wdv - salvage, 0));
+    yearDep = r2(yearDep);
+
+    if(label === fyLabel) return yearDep;
+
+    wdv = r2(wdv - yearDep);
+    label = nextFYLabel(label);
+  }
+  return 0;
+}
+function ensureDepreciationLedger(){
+  let l = state.ledgers.find(x=>x.name==='Depreciation' && x.group==='iexp');
+  if(!l){ l = {id:uid('l'), name:'Depreciation', group:'iexp', opening:0}; state.ledgers.push(l); saveLedgers(); }
+  return l.id;
+}
+async function postDepreciationForFY(assetId, fyLabel){
+  const asset = state.fixedAssets.find(a=>a.id===assetId);
+  if(!asset) return;
+  if((asset.postedFYs||[]).includes(fyLabel)){ toast(`Depreciation for FY ${fyLabel} is already posted for this asset`); return; }
+  const amt = assetDepreciationForFY(asset, fyLabel);
+  if(amt<=0){ toast('Nothing to depreciate — before purchase, or already fully depreciated'); return; }
+  const depLedgerId = ensureDepreciationLedger();
+  const { end: fyEnd } = fyBoundsForLabel(fyLabel);
+  const today = new Date().toISOString().slice(0,10);
+  const date = fyEnd > today ? today : fyEnd; // never post a voucher dated in the future
+  state.vouchers.push({
+    id: uid('v'), date, type:'Journal',
+    narration: `Depreciation (${asset.method}) — ${asset.name} — FY ${fyLabel}`,
+    entries: [{ledgerId:depLedgerId, dr:amt, cr:0},{ledgerId:asset.ledgerId, dr:0, cr:amt}],
+    createdAt: new Date().toISOString(),
+    fromFixedAsset: asset.id,
+  });
+  asset.postedFYs = [...(asset.postedFYs||[]), fyLabel];
+  await saveVouchers();
+  await saveFixedAssets();
+  toast(`Posted ₹${fmt(amt)} depreciation for ${asset.name}`);
+}
+
+/* ---------------- Party Master + AR/AP ageing ---------------- */
+// FIFO matching of invoices against payments on one party ledger. A customer ledger is invoiced on
+// the Dr side (Sales) and paid on the Cr side (Receipt); a supplier ledger is billed on the Cr side
+// (Purchase) and paid on the Dr side (Payment). Each payment is applied to the oldest still-open
+// invoice first; a payment with nothing open yet to apply against (an advance) is pooled and consumed
+// by the next invoice(s) that arrive. Returns only invoices with something still outstanding.
+function partyOutstandingInvoices(ledgerId){
+  const l = ledgerOf(ledgerId);
+  if(!l) return [];
+  const isCustomer = l.partyType==='customer';
+  const invoiceField = isCustomer ? 'dr' : 'cr';
+  const paymentField = isCustomer ? 'cr' : 'dr';
+
+  const txns = [];
+  for(const v of state.vouchers){
+    for(const e of v.entries){
+      if(e.ledgerId!==ledgerId) continue;
+      if(!(e.dr||e.cr)) continue;
+      txns.push({ voucherId:v.id, date:v.date, type:v.type, narration:v.narration, dr:e.dr||0, cr:e.cr||0, createdAt:v.createdAt||'' });
+    }
+  }
+  txns.sort((a,b)=> a.date===b.date ? (a.createdAt||'').localeCompare(b.createdAt||'') : (a.date<b.date?-1:1));
+
+  const invoices = [];
+  let paymentPool = 0;
+  for(const t of txns){
+    const invAmt = t[invoiceField];
+    const payAmt = t[paymentField];
+    if(invAmt>0){
+      invoices.push({ voucherId:t.voucherId, date:t.date, type:t.type, narration:t.narration, amount: r2(invAmt), remaining: r2(invAmt) });
+      if(paymentPool>0){
+        const last = invoices[invoices.length-1];
+        const applied = Math.min(paymentPool, last.remaining);
+        last.remaining = r2(last.remaining - applied);
+        paymentPool = r2(paymentPool - applied);
+      }
+    }
+    if(payAmt>0){
+      let remainingPayment = payAmt;
+      for(const inv of invoices){
+        if(remainingPayment<=0) break;
+        if(inv.remaining<=0) continue;
+        const applied = Math.min(inv.remaining, remainingPayment);
+        inv.remaining = r2(inv.remaining - applied);
+        remainingPayment = r2(remainingPayment - applied);
+      }
+      if(remainingPayment>0) paymentPool = r2(paymentPool + remainingPayment);
+    }
+  }
+  return invoices.filter(inv=>inv.remaining>0.005);
+}
+function ageBucket(days){
+  if(days<=30) return '0-30';
+  if(days<=60) return '31-60';
+  if(days<=90) return '61-90';
+  return '90+';
+}
+function partyAgeing(ledgerId, asOfDate){
+  const today = asOfDate || new Date().toISOString().slice(0,10);
+  return partyOutstandingInvoices(ledgerId).map(inv=>{
+    const days = Math.round((new Date(today) - new Date(inv.date)) / 86400000);
+    return { ...inv, ageDays: days, bucket: ageBucket(days) };
+  });
+}
+function partyAgeingSummary(ledgerId, asOfDate){
+  const rows = partyAgeing(ledgerId, asOfDate);
+  const buckets = {'0-30':0, '31-60':0, '61-90':0, '90+':0};
+  for(const r of rows) buckets[r.bucket] = r2(buckets[r.bucket] + r.remaining);
+  return { rows, buckets, total: r2(rows.reduce((s,r)=>s+r.remaining,0)) };
+}
+
+/* ---------------- full data backup / restore ---------------- */
+function buildCompanyBackup(){
+  return {
+    _backupFormat: 'reckoning-books-v1',
+    _exportedAt: new Date().toISOString(),
+    companyName: currentCompany.name,
+    ledgers: state.ledgers,
+    vouchers: state.vouchers,
+    items: state.items,
+    stockAdjustments: state.stockAdjustments,
+    bankClears: state.bankClears,
+    reconciliations: state.reconciliations,
+    recurringTemplates: state.recurringTemplates,
+    fixedAssets: state.fixedAssets,
+  };
+}
+function downloadCompanyBackup(){
+  const data = buildCompanyBackup();
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (currentCompany.name||'company').replace(/[^a-z0-9]+/gi,'_');
+  a.href = url;
+  a.download = `${safeName}_Backup_${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  toast('Backup downloaded');
+}
+async function restoreCompanyBackup(data){
+  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  state.ledgers = Array.isArray(data.ledgers) ? data.ledgers : [];
+  state.vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
+  state.items = Array.isArray(data.items) ? data.items : [];
+  state.stockAdjustments = Array.isArray(data.stockAdjustments) ? data.stockAdjustments : [];
+  state.bankClears = Array.isArray(data.bankClears) ? data.bankClears : [];
+  state.reconciliations = Array.isArray(data.reconciliations) ? data.reconciliations : [];
+  state.recurringTemplates = Array.isArray(data.recurringTemplates) ? data.recurringTemplates : [];
+  state.fixedAssets = Array.isArray(data.fixedAssets) ? data.fixedAssets : [];
+  await Promise.all([
+    saveLedgers(), saveVouchers(), saveItems(), saveStockAdjustments(),
+    saveBankClears(), saveReconciliations(), saveRecurringTemplates(), saveFixedAssets(),
+  ]);
+}
 
 /* ---------------- balance computation ---------------- */
 function ledgerBalance(ledgerId){
@@ -1185,6 +1433,21 @@ function ledgerBalanceAsOf(ledgerId, asOfDate){
     }
   }
   return bal;
+}
+// Net movement (dr-cr) on a ledger strictly WITHIN a date range, excluding the ledger's opening
+// balance — the "flow for this period" figure a P&L line needs, as opposed to a cumulative balance.
+// Falsy fromDate/toDate mean "no lower/upper bound", so calling this with neither behaves exactly
+// like the cumulative ledgerBalance()/ledgerBalanceAsOf(id) — same value, by construction.
+function ledgerFlowBetween(ledgerId, fromDate, toDate){
+  let sum = 0;
+  for(const v of state.vouchers){
+    if(fromDate && v.date < fromDate) continue;
+    if(toDate && v.date > toDate) continue;
+    for(const e of v.entries){
+      if(e.ledgerId === ledgerId) sum += (e.dr||0) - (e.cr||0);
+    }
+  }
+  return sum;
 }
 // Cleared/uncleared status is tracked per (bank ledger, voucher) pair rather than on the voucher
 // itself, so editing a voucher later never silently wipes out its reconciliation status.
@@ -1245,6 +1508,64 @@ function saveReconciliationRecord(ledgerId, asOfDate, statementBalance){
   });
   saveReconciliations();
   return s;
+}
+
+/* ---------------- recurring vouchers ---------------- */
+// Adds one period to a YYYY-MM-DD date string. Monthly/yearly clamp to the shortest month involved
+// (31 Jan -> 28/29 Feb) rather than overflowing into the next month — a template scheduled for the
+// 31st will drift to the len of whatever month it lands on from then on, which matches how most
+// billing systems (and bank standing instructions) behave for month-end dates.
+function advanceDate(dateStr, frequency){
+  const d = new Date(dateStr + 'T00:00:00');
+  if(frequency==='weekly'){ d.setDate(d.getDate()+7); }
+  else if(frequency==='yearly'){ d.setFullYear(d.getFullYear()+1); }
+  else {
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth()+1);
+    const daysInMonth = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+    d.setDate(Math.min(day, daysInMonth));
+  }
+  return d.toISOString().slice(0,10);
+}
+function dueRecurringTemplates(asOfDate){
+  return state.recurringTemplates.filter(t=>t.active && t.nextDueDate && t.nextDueDate<=asOfDate);
+}
+// Same single-entry-to-double-entry mapping used by the Payment/Receipt/Contra "Single Entry" voucher
+// form (see the saveVoucher handler) — kept as its own function so recurring generation doesn't have
+// to touch that already-tested code path.
+function entriesForRecurring(type, ledgerA, ledgerB, amt){
+  if(type==='Receipt') return [{ledgerId:ledgerA,dr:amt,cr:0},{ledgerId:ledgerB,dr:0,cr:amt}];
+  return [{ledgerId:ledgerB,dr:amt,cr:0},{ledgerId:ledgerA,dr:0,cr:amt}]; // Payment or Contra
+}
+// Generates a voucher for every elapsed due date of every active template, up to today — so if the
+// books haven't been opened in a while, catching up creates one voucher per missed period rather
+// than just one. Returns how many vouchers were created.
+function generateDueVouchers(){
+  const today = new Date().toISOString().slice(0,10);
+  const now = new Date().toISOString();
+  let count = 0;
+  for(const t of state.recurringTemplates){
+    if(!t.active) continue;
+    let guard = 0;
+    while(t.nextDueDate && t.nextDueDate<=today && guard<60){
+      const amt = Number(t.amount)||0;
+      if(t.ledgerA && t.ledgerB && amt>0){
+        state.vouchers.push({
+          id: uid('v'), date: t.nextDueDate, type: t.type,
+          narration: t.narration || t.name, entries: entriesForRecurring(t.type, t.ledgerA, t.ledgerB, amt),
+          createdAt: now, fromRecurring: t.id,
+        });
+        count++;
+      }
+      t.lastGeneratedDate = t.nextDueDate;
+      t.nextDueDate = advanceDate(t.nextDueDate, t.frequency);
+      guard++;
+    }
+  }
+  if(count){ saveVouchers(); }
+  saveRecurringTemplates();
+  return count;
 }
 
 function totalsByCategory(cat){
@@ -1328,17 +1649,22 @@ function balanceSheetIFRSData(profit){
    vendor flags, ageing schedules, share reconciliation, promoter shareholding,
    the Additional Regulatory Information block, etc.) are intentionally left out
    of the face of the statement rather than shown with fabricated figures. */
-function scheduleIIIProfitLossData(){
+// fromDate/toDate scope this to one period (e.g. one financial year) using each line's flow WITHIN
+// that range — not a cumulative balance — so Revenue/Expenses reflect just that period, the way
+// Schedule III's Statement of Profit and Loss actually expects. Called with no arguments, both are
+// undefined and ledgerFlowBetween falls back to "no date filter", so every existing all-time caller
+// (the Q&A engine, the detail modals) is completely unaffected by this change.
+function scheduleIIIProfitLossData(fromDate, toDate){
   const revenueLedgers = state.ledgers.filter(l=>l.group==='sales');
-  const revenueFromOperations = revenueLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const revenueFromOperations = revenueLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
 
   const otherIncomeLedgers = state.ledgers.filter(l=>l.group==='dinc');
-  const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
 
   const totalIncome = revenueFromOperations + otherIncome;
 
   const purchaseLedgers = state.ledgers.filter(l=>l.group==='purch');
-  const purchasesOfStockInTrade = purchaseLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const purchasesOfStockInTrade = purchaseLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
 
   const expenseLedgers = state.ledgers.filter(l=>l.group==='dexp' || l.group==='iexp');
   const employeeLedgers = expenseLedgers.filter(l=>/salary|wages|staff|employee|bonus|provident/i.test(l.name));
@@ -1346,10 +1672,10 @@ function scheduleIIIProfitLossData(){
   const financeCostLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && !depreciationLedgers.includes(l) && /interest|bank charge|finance cost/i.test(l.name));
   const otherExpenseLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && !depreciationLedgers.includes(l) && !financeCostLedgers.includes(l));
 
-  const employeeBenefitsExpense = employeeLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const depreciationExpense = depreciationLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const financeCosts = financeCostLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const otherExpenses = otherExpenseLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const employeeBenefitsExpense = employeeLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const depreciationExpense = depreciationLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const financeCosts = financeCostLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const otherExpenses = otherExpenseLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
 
   const totalExpenses = purchasesOfStockInTrade + employeeBenefitsExpense + depreciationExpense + financeCosts + otherExpenses;
 
@@ -1369,10 +1695,15 @@ function scheduleIIIProfitLossData(){
     totalExpenses, profitBeforeExceptionalAndTax, exceptionalItems, profitBeforeTax,
     currentTax, deferredTax, taxExpense, profitForPeriod };
 }
-function scheduleIIIBalanceSheetData(profit){
+// asOfDate makes this a point-in-time snapshot as of that date instead of "right now" — pass the
+// cumulative profit-to-date (scheduleIIIProfitLossData(null, asOfDate).profitForPeriod, NOT the
+// current-FY-only figure) as `profit`, since Reserves & Surplus is retained earnings since inception,
+// not just the current period. Called with no asOfDate, ledgerBalanceAsOf falls back to "no date
+// filter" so every existing all-time caller is unaffected.
+function scheduleIIIBalanceSheetData(profit, asOfDate){
   // Non-current assets — Property, Plant and Equipment
   const ppe = state.ledgers.filter(l=>l.group==='fa');
-  const ppeTotal = ppe.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const ppeTotal = ppe.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
   const nonCurrentAssetsTotal = ppeTotal;
 
   // Current assets — split the 'Current Assets' group into Inventories / Trade Receivables / Other Current Assets
@@ -1382,23 +1713,23 @@ function scheduleIIIBalanceSheetData(profit){
   const tradeReceivableLedgers = caLedgers.filter(l=>!otherCurrentAssetLedgers.includes(l) && !inventoryLedgers.includes(l));
   const cashLedgers = state.ledgers.filter(l=>l.group==='cash' || l.group==='bank');
 
-  const inventoriesTotal = inventoryLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const tradeReceivablesTotal = tradeReceivableLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const cashTotal = cashLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
-  const otherCurrentAssetsTotal = otherCurrentAssetLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const inventoriesTotal = inventoryLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const tradeReceivablesTotal = tradeReceivableLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const cashTotal = cashLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const otherCurrentAssetsTotal = otherCurrentAssetLedgers.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
   const currentAssetsTotal = inventoriesTotal + tradeReceivablesTotal + cashTotal + otherCurrentAssetsTotal;
 
   const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
 
   // Shareholders' funds
   const shareCapitalLedgers = state.ledgers.filter(l=>l.group==='cap');
-  const shareCapitalTotal = shareCapitalLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const shareCapitalTotal = shareCapitalLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const reservesAndSurplus = profit; // Surplus i.e. balance in Statement of Profit and Loss — no separate opening reserves tracked
   const shareholdersFundsTotal = shareCapitalTotal + reservesAndSurplus;
 
   // Non-current liabilities — Long-term Borrowings
   const longTermBorrowings = state.ledgers.filter(l=>l.group==='loan');
-  const longTermBorrowingsTotal = longTermBorrowings.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const longTermBorrowingsTotal = longTermBorrowings.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const nonCurrentLiabTotal = longTermBorrowingsTotal;
 
   // Current liabilities — split 'Current Liabilities' into Trade Payables (MSME/Others, per the 2021 amendment) / Other Current Liabilities
@@ -1407,10 +1738,10 @@ function scheduleIIIBalanceSheetData(profit){
   const otherCurrentLiabLedgers = curlLedgers.filter(l=>!tradePayableLedgers.includes(l));
   const msmeTradePayableLedgers = tradePayableLedgers.filter(l=>l.isMSME);
   const otherTradePayableLedgers = tradePayableLedgers.filter(l=>!l.isMSME);
-  const tradePayablesTotal = tradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
-  const msmeTradePayablesTotal = msmeTradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
-  const otherTradePayablesTotal = otherTradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
-  const otherCurrentLiabTotal = otherCurrentLiabLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const tradePayablesTotal = tradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+  const msmeTradePayablesTotal = msmeTradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+  const otherTradePayablesTotal = otherTradePayableLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+  const otherCurrentLiabTotal = otherCurrentLiabLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
   const currentLiabTotal = tradePayablesTotal + otherCurrentLiabTotal;
 
   const totalEquityAndLiab = shareholdersFundsTotal + nonCurrentLiabTotal + currentLiabTotal;
@@ -1548,68 +1879,76 @@ function buildBalanceSheetIFRSSheet(bs){
 
 /* Schedule III (Division I) — Balance Sheet, in the Part I face-of-statement layout,
    including the Trade Payables MSME/Others split added by the 2021 amendment. */
-function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate){
+// prevBs/prevLabel are optional — when supplied, a "previous reporting period" comparative column is
+// added next to every face-of-statement total (Schedule III expects prior-year comparatives). The
+// supplementary per-ledger breakdown rows this sheet adds beyond what Schedule III requires stay
+// current-period-only (blank in the comparative column) since re-deriving a dated figure for every
+// individual ledger isn't part of the prescribed format.
+function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate, prevBs, prevLabel){
+  const hasPrev = !!prevBs;
+  const row = (label, note, cur, prev) => hasPrev ? [label, note, cur, prev===undefined?'':prev] : [label, note, cur];
+  const detailRow = (label, val) => row(label, '', val, '');
   const rows = [
     [companyName || 'Company Name'],
     ['Balance Sheet as at ' + asOfDate],
     ['(Pursuant to Schedule III, Division I to the Companies Act, 2013 — figures in ₹)'],
     [],
-    ['Particulars', 'Note', 'Figures as at end of current reporting period'],
+    row('Particulars', 'Note', 'Figures as at end of current reporting period', hasPrev ? `Figures as at end of previous reporting period (${prevLabel})` : undefined),
     ['I. EQUITY AND LIABILITIES'],
     ["(1) Shareholders' Funds"],
-    ['      (a) Share Capital', '', r2(bs.shareCapitalTotal)],
-    ...bs.shareCapitalLedgers.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['      (b) Reserves and Surplus', '', r2(bs.reservesAndSurplus)],
-    ["Total Shareholders' Funds", '', r2(bs.shareholdersFundsTotal)],
+    row('      (a) Share Capital', '', r2(bs.shareCapitalTotal), hasPrev?r2(prevBs.shareCapitalTotal):undefined),
+    ...bs.shareCapitalLedgers.map(l=>detailRow('            '+l.name, r2(-ledgerBalance(l.id)))),
+    row('      (b) Reserves and Surplus', '', r2(bs.reservesAndSurplus), hasPrev?r2(prevBs.reservesAndSurplus):undefined),
+    row("Total Shareholders' Funds", '', r2(bs.shareholdersFundsTotal), hasPrev?r2(prevBs.shareholdersFundsTotal):undefined),
     [],
-    ['(2) Share Application Money Pending Allotment', '', 0],
+    row('(2) Share Application Money Pending Allotment', '', 0, hasPrev?0:undefined),
     [],
     ['(3) Non-Current Liabilities'],
-    ['      (a) Long-term Borrowings', '', r2(bs.longTermBorrowingsTotal)],
-    ...bs.longTermBorrowings.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['      (b) Deferred Tax Liabilities (Net)', '', 0],
-    ['      (c) Other Long-term Liabilities', '', 0],
-    ['      (d) Long-term Provisions', '', 0],
-    ['Total Non-Current Liabilities', '', r2(bs.nonCurrentLiabTotal)],
+    row('      (a) Long-term Borrowings', '', r2(bs.longTermBorrowingsTotal), hasPrev?r2(prevBs.longTermBorrowingsTotal):undefined),
+    ...bs.longTermBorrowings.map(l=>detailRow('            '+l.name, r2(-ledgerBalance(l.id)))),
+    row('      (b) Deferred Tax Liabilities (Net)', '', 0, hasPrev?0:undefined),
+    row('      (c) Other Long-term Liabilities', '', 0, hasPrev?0:undefined),
+    row('      (d) Long-term Provisions', '', 0, hasPrev?0:undefined),
+    row('Total Non-Current Liabilities', '', r2(bs.nonCurrentLiabTotal), hasPrev?r2(prevBs.nonCurrentLiabTotal):undefined),
     [],
     ['(4) Current Liabilities'],
-    ['      (a) Short-term Borrowings', '', 0],
-    ['      (b) Trade Payables', '', r2(bs.tradePayablesTotal)],
-    ['            (A) total outstanding dues of micro enterprises and small enterprises', '', r2(bs.msmeTradePayablesTotal)],
-    ...bs.msmeTradePayableLedgers.map(l=>['                  '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['            (B) total outstanding dues of creditors other than micro enterprises and small enterprises', '', r2(bs.otherTradePayablesTotal)],
-    ...bs.otherTradePayableLedgers.map(l=>['                  '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['      (c) Other Current Liabilities', '', r2(bs.otherCurrentLiabTotal)],
-    ...bs.otherCurrentLiabLedgers.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['      (d) Short-term Provisions', '', 0],
-    ['Total Current Liabilities', '', r2(bs.currentLiabTotal)],
+    row('      (a) Short-term Borrowings', '', 0, hasPrev?0:undefined),
+    row('      (b) Trade Payables', '', r2(bs.tradePayablesTotal), hasPrev?r2(prevBs.tradePayablesTotal):undefined),
+    row('            (A) total outstanding dues of micro enterprises and small enterprises', '', r2(bs.msmeTradePayablesTotal), hasPrev?r2(prevBs.msmeTradePayablesTotal):undefined),
+    ...bs.msmeTradePayableLedgers.map(l=>detailRow('                  '+l.name, r2(-ledgerBalance(l.id)))),
+    row('            (B) total outstanding dues of creditors other than micro enterprises and small enterprises', '', r2(bs.otherTradePayablesTotal), hasPrev?r2(prevBs.otherTradePayablesTotal):undefined),
+    ...bs.otherTradePayableLedgers.map(l=>detailRow('                  '+l.name, r2(-ledgerBalance(l.id)))),
+    row('      (c) Other Current Liabilities', '', r2(bs.otherCurrentLiabTotal), hasPrev?r2(prevBs.otherCurrentLiabTotal):undefined),
+    ...bs.otherCurrentLiabLedgers.map(l=>detailRow('            '+l.name, r2(-ledgerBalance(l.id)))),
+    row('      (d) Short-term Provisions', '', 0, hasPrev?0:undefined),
+    row('Total Current Liabilities', '', r2(bs.currentLiabTotal), hasPrev?r2(prevBs.currentLiabTotal):undefined),
     [],
-    ['TOTAL (EQUITY AND LIABILITIES)', '', r2(bs.totalEquityAndLiab)],
+    row('TOTAL (EQUITY AND LIABILITIES)', '', r2(bs.totalEquityAndLiab), hasPrev?r2(prevBs.totalEquityAndLiab):undefined),
     [],
     ['II. ASSETS'],
     ['Non-current Assets'],
-    ['      (a) Property, Plant and Equipment', '', r2(bs.ppeTotal)],
-    ...bs.ppe.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      (b) Non-current Investments', '', 0],
-    ['      (c) Deferred Tax Assets (Net)', '', 0],
-    ['      (d) Long-term Loans and Advances', '', 0],
-    ['      (e) Other Non-current Assets', '', 0],
-    ['Total Non-Current Assets', '', r2(bs.nonCurrentAssetsTotal)],
+    row('      (a) Property, Plant and Equipment', '', r2(bs.ppeTotal), hasPrev?r2(prevBs.ppeTotal):undefined),
+    ...bs.ppe.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      (b) Non-current Investments', '', 0, hasPrev?0:undefined),
+    row('      (c) Deferred Tax Assets (Net)', '', 0, hasPrev?0:undefined),
+    row('      (d) Long-term Loans and Advances', '', 0, hasPrev?0:undefined),
+    row('      (e) Other Non-current Assets', '', 0, hasPrev?0:undefined),
+    row('Total Non-Current Assets', '', r2(bs.nonCurrentAssetsTotal), hasPrev?r2(prevBs.nonCurrentAssetsTotal):undefined),
     [],
     ['Current Assets'],
-    ['      (a) Current Investments', '', 0],
-    ['      (b) Inventories', '', r2(bs.inventoriesTotal)],
-    ...bs.inventoryLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      (c) Trade Receivables', '', r2(bs.tradeReceivablesTotal)],
-    ...bs.tradeReceivableLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      (d) Cash and Cash Equivalents', '', r2(bs.cashTotal)],
-    ...bs.cashLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      (e) Short-term Loans and Advances', '', 0],
-    ['      (f) Other Current Assets', '', r2(bs.otherCurrentAssetsTotal)],
-    ...bs.otherCurrentAssetLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['Total Current Assets', '', r2(bs.currentAssetsTotal)],
+    row('      (a) Current Investments', '', 0, hasPrev?0:undefined),
+    row('      (b) Inventories', '', r2(bs.inventoriesTotal), hasPrev?r2(prevBs.inventoriesTotal):undefined),
+    ...bs.inventoryLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      (c) Trade Receivables', '', r2(bs.tradeReceivablesTotal), hasPrev?r2(prevBs.tradeReceivablesTotal):undefined),
+    ...bs.tradeReceivableLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      (d) Cash and Cash Equivalents', '', r2(bs.cashTotal), hasPrev?r2(prevBs.cashTotal):undefined),
+    ...bs.cashLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      (e) Short-term Loans and Advances', '', 0, hasPrev?0:undefined),
+    row('      (f) Other Current Assets', '', r2(bs.otherCurrentAssetsTotal), hasPrev?r2(prevBs.otherCurrentAssetsTotal):undefined),
+    ...bs.otherCurrentAssetLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('Total Current Assets', '', r2(bs.currentAssetsTotal), hasPrev?r2(prevBs.currentAssetsTotal):undefined),
     [],
-    ['TOTAL ASSETS', '', r2(bs.totalAssets)],
+    row('TOTAL ASSETS', '', r2(bs.totalAssets), hasPrev?r2(prevBs.totalAssets):undefined),
     [],
     ['Note: This statement presents the face-of-Balance-Sheet line items prescribed by Schedule III (Division I) to the'],
     ['Companies Act, 2013 (as amended in 2021). Note-level disclosures that require data this system does not separately'],
@@ -1618,45 +1957,49 @@ function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate){
   ];
   return XLSX.utils.aoa_to_sheet(rows);
 }
-/* Schedule III (Division I) — Statement of Profit and Loss, Part II face-of-statement layout. */
-function buildScheduleIIIPLSheet(pl, companyName, periodLabel){
+/* Schedule III (Division I) — Statement of Profit and Loss, Part II face-of-statement layout.
+   prevPl/prevLabel are optional — see buildScheduleIIIBalanceSheetSheet's comment above; same approach. */
+function buildScheduleIIIPLSheet(pl, companyName, periodLabel, prevPl, prevLabel){
+  const hasPrev = !!prevPl;
+  const row = (label, note, cur, prev) => hasPrev ? [label, note, cur, prev===undefined?'':prev] : [label, note, cur];
+  const detailRow = (label, val) => row(label, '', val, '');
   const rows = [
     [companyName || 'Company Name'],
     ['Statement of Profit and Loss for the period ended ' + periodLabel],
     ['(Pursuant to Schedule III, Division I to the Companies Act, 2013 — figures in ₹)'],
     [],
-    ['Particulars', 'Note', 'Figures for current reporting period'],
-    ['I. Revenue from Operations', '', r2(pl.revenueFromOperations)],
-    ...pl.revenueLedgers.map(l=>['      '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['II. Other Income', '', r2(pl.otherIncome)],
-    ...pl.otherIncomeLedgers.map(l=>['      '+l.name, '', r2(-ledgerBalance(l.id))]),
-    ['III. Total Income (I + II)', '', r2(pl.totalIncome)],
+    row('Particulars', 'Note', 'Figures for current reporting period', hasPrev ? `Figures for previous reporting period (${prevLabel})` : undefined),
+    row('I. Revenue from Operations', '', r2(pl.revenueFromOperations), hasPrev?r2(prevPl.revenueFromOperations):undefined),
+    ...pl.revenueLedgers.map(l=>detailRow('      '+l.name, r2(-ledgerBalance(l.id)))),
+    row('II. Other Income', '', r2(pl.otherIncome), hasPrev?r2(prevPl.otherIncome):undefined),
+    ...pl.otherIncomeLedgers.map(l=>detailRow('      '+l.name, r2(-ledgerBalance(l.id)))),
+    row('III. Total Income (I + II)', '', r2(pl.totalIncome), hasPrev?r2(prevPl.totalIncome):undefined),
     [],
     ['IV. Expenses'],
-    ['      Purchases of Stock-in-Trade', '', r2(pl.purchasesOfStockInTrade)],
-    ...pl.purchaseLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      Changes in Inventories of Finished Goods, Work-in-Progress and Stock-in-Trade', '', 0],
-    ['      Employee Benefits Expense', '', r2(pl.employeeBenefitsExpense)],
-    ...pl.employeeLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      Finance Costs', '', r2(pl.financeCosts)],
-    ...pl.financeCostLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      Depreciation and Amortisation Expense', '', r2(pl.depreciationExpense)],
-    ...pl.depreciationLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['      Other Expenses', '', r2(pl.otherExpenses)],
-    ...pl.otherExpenseLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
-    ['Total Expenses (IV)', '', r2(pl.totalExpenses)],
+    row('      Purchases of Stock-in-Trade', '', r2(pl.purchasesOfStockInTrade), hasPrev?r2(prevPl.purchasesOfStockInTrade):undefined),
+    ...pl.purchaseLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      Changes in Inventories of Finished Goods, Work-in-Progress and Stock-in-Trade', '', 0, hasPrev?0:undefined),
+    row('      Employee Benefits Expense', '', r2(pl.employeeBenefitsExpense), hasPrev?r2(prevPl.employeeBenefitsExpense):undefined),
+    ...pl.employeeLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      Finance Costs', '', r2(pl.financeCosts), hasPrev?r2(prevPl.financeCosts):undefined),
+    ...pl.financeCostLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      Depreciation and Amortisation Expense', '', r2(pl.depreciationExpense), hasPrev?r2(prevPl.depreciationExpense):undefined),
+    ...pl.depreciationLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('      Other Expenses', '', r2(pl.otherExpenses), hasPrev?r2(prevPl.otherExpenses):undefined),
+    ...pl.otherExpenseLedgers.map(l=>detailRow('            '+l.name, r2(ledgerBalance(l.id)))),
+    row('Total Expenses (IV)', '', r2(pl.totalExpenses), hasPrev?r2(prevPl.totalExpenses):undefined),
     [],
-    ['V. Profit Before Exceptional and Extraordinary Items and Tax (III - IV)', '', r2(pl.profitBeforeExceptionalAndTax)],
-    ['VI. Exceptional Items', '', r2(pl.exceptionalItems)],
-    ['VII. Profit Before Tax (V - VI)', '', r2(pl.profitBeforeTax)],
+    row('V. Profit Before Exceptional and Extraordinary Items and Tax (III - IV)', '', r2(pl.profitBeforeExceptionalAndTax), hasPrev?r2(prevPl.profitBeforeExceptionalAndTax):undefined),
+    row('VI. Exceptional Items', '', r2(pl.exceptionalItems), hasPrev?r2(prevPl.exceptionalItems):undefined),
+    row('VII. Profit Before Tax (V - VI)', '', r2(pl.profitBeforeTax), hasPrev?r2(prevPl.profitBeforeTax):undefined),
     ['VIII. Tax Expense'],
-    ['      (1) Current Tax', '', r2(pl.currentTax)],
-    ['      (2) Deferred Tax', '', r2(pl.deferredTax)],
-    ['IX. Profit for the Period', '', r2(pl.profitForPeriod)],
+    row('      (1) Current Tax', '', r2(pl.currentTax), hasPrev?r2(prevPl.currentTax):undefined),
+    row('      (2) Deferred Tax', '', r2(pl.deferredTax), hasPrev?r2(prevPl.deferredTax):undefined),
+    row('IX. Profit for the Period', '', r2(pl.profitForPeriod), hasPrev?r2(prevPl.profitForPeriod):undefined),
     [],
     ['X. Earnings Per Equity Share'],
-    ['      (1) Basic', '', '—'],
-    ['      (2) Diluted', '', '—'],
+    row('      (1) Basic', '', '—', hasPrev?'—':undefined),
+    row('      (2) Diluted', '', '—', hasPrev?'—':undefined),
     [],
     ['Note: Income tax is not separately tracked from GST in this system, so Current Tax / Deferred Tax show as nil;'],
     ['Earnings Per Share is not computed as share count and face value are not tracked.'],
@@ -1725,11 +2068,9 @@ function buildReportsWorkbook(){
 
   XLSX.utils.book_append_sheet(wb, buildTrialBalanceSheet(), 'Trial Balance');
 
-  const pl = scheduleIIIProfitLossData();
-  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(pl, currentCompany.name, reportPeriodLabel()), 'Income Statement');
-
-  const sbs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
-  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(sbs, currentCompany.name, reportAsOfDateLabel()), 'Balance Sheet');
+  const fyData = currentAndPriorFYData();
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(fyData.pl, currentCompany.name, fyData.periodLabel, fyData.prevPl, fyData.prevPeriodLabel), 'Income Statement');
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(fyData.bs, currentCompany.name, fyData.asOfLabel, fyData.prevBs, fyData.prevAsOfLabel), 'Balance Sheet');
 
   const is = incomeStatementData();
   const bs = balanceSheetIFRSData(is.profitForPeriod);
@@ -1759,19 +2100,18 @@ function exportTrialBalanceToExcel(){
 }
 function exportPLToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const pl = scheduleIIIProfitLossData();
+  const fyData = currentAndPriorFYData();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(pl, currentCompany.name, reportPeriodLabel()), 'Income Statement');
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(fyData.pl, currentCompany.name, fyData.periodLabel, fyData.prevPl, fyData.prevPeriodLabel), 'Income Statement');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
   XLSX.writeFile(wb, `${safeName}_Income_Statement_ScheduleIII_${new Date().toISOString().slice(0,10)}.xlsx`);
   toast('Income Statement (Schedule III) exported to Excel');
 }
 function exportBalanceSheetToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const pl = scheduleIIIProfitLossData();
-  const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+  const fyData = currentAndPriorFYData();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(bs, currentCompany.name, reportAsOfDateLabel()), 'Balance Sheet');
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(fyData.bs, currentCompany.name, fyData.asOfLabel, fyData.prevBs, fyData.prevAsOfLabel), 'Balance Sheet');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
   XLSX.writeFile(wb, `${safeName}_Balance_Sheet_ScheduleIII_${new Date().toISOString().slice(0,10)}.xlsx`);
   toast('Balance Sheet (Schedule III) exported to Excel');
@@ -2226,6 +2566,7 @@ function render(){
       <span id="menuCompany">Company</span>
       <span id="menuEdit">Edit</span>
       <span id="menuView" style="position:relative;">View${viewMenuOpen?viewDropdown():''}</span>
+      <span id="menuBackup">Backup</span>
       <span id="menuHelp">Help</span>
       <span id="menuDeleteCompany" class="menu-danger">Delete Company</span>
     </div>
@@ -2247,6 +2588,8 @@ function render(){
         ${tab('reports','Reports','R')}
         ${tab('gst','GST','G')}
         ${tab('reconcile','Reconcile','e')}
+        ${tab('assets','Assets','s')}
+        ${tab('parties','Parties','p')}
       </div>
       <div class="main">${renderView()}</div>
     </div>
@@ -2272,6 +2615,9 @@ function render(){
     ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
     ${modal==='quickAddLedger' ? quickAddLedgerModal() : ''}
     ${modal==='reconcileHelp' ? reconcileHelpModal() : ''}
+    ${modal==='recurring' ? recurringModal() : ''}
+    ${modal==='backup' ? backupModal() : ''}
+    ${modal==='partyDetail' ? partyDetailModal() : ''}
     ${qaWidget()}
   `;
   attachHandlers();
@@ -2319,6 +2665,7 @@ function render(){
       decimalPlaces: currentCompany.decimalPlaces!=null ? currentCompany.decimalPlaces : 2,
       fractionUnit: currentCompany.fractionUnit||'Paisa',
       suffixSymbol: !!currentCompany.suffixSymbol,
+      lockDate: currentCompany.lockDate||'',
     };
     modal = 'editCompany';
     render();
@@ -2326,6 +2673,11 @@ function render(){
   document.getElementById('menuView').addEventListener('click', (e)=>{
     e.stopPropagation();
     viewMenuOpen = !viewMenuOpen;
+    render();
+  });
+  document.getElementById('menuBackup').addEventListener('click', ()=>{
+    restoreFile = null;
+    modal = 'backup';
     render();
   });
   document.getElementById('menuHelp').addEventListener('click', ()=>{
@@ -2380,6 +2732,7 @@ function render(){
     document.getElementById('editCoDecimalPlaces').addEventListener('change', e=> editCoDraft.decimalPlaces = Number(e.target.value));
     document.getElementById('editCoFractionUnit').addEventListener('input', e=> editCoDraft.fractionUnit = e.target.value);
     document.getElementById('editCoSuffixSymbol').addEventListener('change', e=> editCoDraft.suffixSymbol = e.target.checked);
+    document.getElementById('editCoLockDate').addEventListener('change', e=> editCoDraft.lockDate = e.target.value);
     document.getElementById('saveCoEditBtn').addEventListener('click', async ()=>{
       if(!editCoDraft.name.trim()){ toast('Enter a company name'); return; }
       Object.assign(currentCompany, {
@@ -2403,6 +2756,7 @@ function render(){
         decimalPlaces: editCoDraft.decimalPlaces,
         fractionUnit: editCoDraft.fractionUnit.trim() || 'Paisa',
         suffixSymbol: editCoDraft.suffixSymbol,
+        lockDate: editCoDraft.lockDate || '',
       });
       const idx = companies.findIndex(c=>c.id===currentCompany.id);
       if(idx>-1) companies[idx] = currentCompany;
@@ -2425,6 +2779,8 @@ function tabIcon(id){
     reports: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
     gst: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
     reconcile: '<path d="M20 6L9 17l-5-5"/>',
+    assets: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="3" y1="12" x2="21" y2="12"/>',
+    parties: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   };
   return `<svg class="tab-icon" viewBox="0 0 24 24">${icons[id]||''}</svg>`;
 }
@@ -2439,7 +2795,7 @@ function tab(id,label,shortcutLetter){
 /* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
    the bold letter in each sidebar label. Only active once a company is open, when focus isn't
    inside a text field/dropdown, and no modal is covering the tabs. */
-const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst', e:'reconcile' };
+const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst', e:'reconcile', s:'assets', p:'parties' };
 function goToTab(id){
   if(!id || view===id) return;
   if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled()){
@@ -2526,6 +2882,10 @@ function editCompanyModal(){
           <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:2px;">
             <input type="checkbox" id="editCoSuffixSymbol" style="width:auto;" ${editCoDraft.suffixSymbol?'checked':''}> Show symbol after the amount
           </label>
+
+          <div class="section-title" style="margin-top:14px;">Data Lock</div>
+          <div class="field"><label>Lock Vouchers Before</label><input type="date" id="editCoLockDate" value="${editCoDraft.lockDate}"></div>
+          <p class="muted" style="font-size:11px;margin:-4px 0 0;">No new voucher can be created or edited to fall on or before this date — use it once a financial year is closed and filed, so nothing already reported gets changed by accident. Leave blank for no lock.</p>
 
           <button class="btn" id="saveCoEditBtn" type="button" style="width:100%;margin-top:8px;">Save Changes</button>
         </div>
@@ -2889,6 +3249,107 @@ function reconcileHelpModal(){
           <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
             This is a manual tick-off tool, not automatic bank-feed matching — you confirm each item against your real statement. The cleared/uncleared status is stored separately from the voucher itself, so editing a voucher later never wipes out its reconciliation history.
           </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function recurringModal(){
+  const today = new Date().toISOString().slice(0,10);
+  const dueCount = dueRecurringTemplates(today).length;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:660px;position:relative;">
+        <button class="btn secondary small" id="modalClose" type="button" style="position:absolute;top:14px;right:14px;z-index:2;">✕</button>
+        <div class="panel-head"><h2>Recurring Vouchers</h2></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+            <p class="muted" style="font-size:12px;margin:0;max-width:380px;">Templates auto-generate the same two-ledger voucher on a schedule — rent, EMIs, subscriptions, recurring bills.</p>
+            <button class="btn small" id="generateDueBtn" type="button" ${dueCount?'':'disabled'}>▶ Generate Due${dueCount?` (${dueCount})`:''}</button>
+          </div>
+          <table>
+            <tr><th>Name</th><th>Type</th><th class="num">Amount</th><th>Frequency</th><th>Next Due</th><th style="text-align:center;">Active</th><th></th></tr>
+            ${state.recurringTemplates.map(t=>`
+            <tr>
+              <td>${escapeHtml(t.name)}</td>
+              <td class="muted">${t.type}</td>
+              <td class="num">₹${fmt(Number(t.amount)||0)}</td>
+              <td class="muted" style="text-transform:capitalize;">${t.frequency}</td>
+              <td class="muted">${t.nextDueDate}${t.nextDueDate<=today?' <span style="color:var(--debit);">⚠ due</span>':''}</td>
+              <td style="text-align:center;"><input type="checkbox" data-toggle-recurring="${t.id}" ${t.active?'checked':''}></td>
+              <td><button class="btn secondary small" data-delete-recurring="${t.id}" type="button">🗑</button></td>
+            </tr>`).join('') || `<tr><td colspan="7" class="empty">No recurring templates yet.</td></tr>`}
+          </table>
+
+          ${recurringDraft ? recurringDraftForm() : `<button class="btn secondary small" id="newRecurringBtn" type="button" style="margin-top:14px;">+ New Recurring Template</button>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function recurringDraftForm(){
+  const d = recurringDraft;
+  const labelA = d.type==='Payment' ? 'Paid From (Cash/Bank)' : d.type==='Receipt' ? 'Received In (Cash/Bank)' : 'From Account';
+  const labelB = d.type==='Payment' ? 'Paid To (Account)' : d.type==='Receipt' ? 'Received From (Account)' : 'To Account';
+  return `
+    <div class="section-title" style="margin-top:16px;">New Recurring Template</div>
+    <div class="row">
+      <div class="field"><label>Name</label><input type="text" id="rTplName" value="${escapeAttr(d.name)}" placeholder="e.g. Office Rent"></div>
+      <div class="field"><label>Type</label>
+        <select id="rTplType">
+          <option value="Payment" ${d.type==='Payment'?'selected':''}>Payment</option>
+          <option value="Receipt" ${d.type==='Receipt'?'selected':''}>Receipt</option>
+          <option value="Contra" ${d.type==='Contra'?'selected':''}>Contra</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>${labelA}</label>
+        <select id="rTplLedgerA"><option value="">Select ledger…</option>${state.ledgers.map(l=>`<option value="${l.id}" ${d.ledgerA===l.id?'selected':''}>${escapeHtml(l.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>${labelB}</label>
+        <select id="rTplLedgerB"><option value="">Select ledger…</option>${state.ledgers.map(l=>`<option value="${l.id}" ${d.ledgerB===l.id?'selected':''}>${escapeHtml(l.name)}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Amount (₹)</label><input type="number" id="rTplAmount" step="0.01" value="${escapeAttr(String(d.amount))}"></div>
+      <div class="field"><label>Frequency</label>
+        <select id="rTplFrequency">
+          <option value="weekly" ${d.frequency==='weekly'?'selected':''}>Weekly</option>
+          <option value="monthly" ${d.frequency==='monthly'?'selected':''}>Monthly</option>
+          <option value="yearly" ${d.frequency==='yearly'?'selected':''}>Yearly</option>
+        </select>
+      </div>
+      <div class="field"><label>Start / Next Due Date</label><input type="date" id="rTplStart" value="${d.nextDueDate}"></div>
+    </div>
+    <div class="field"><label>Narration</label><input type="text" id="rTplNarration" value="${escapeAttr(d.narration)}" placeholder="Shown on each generated voucher"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn small" id="saveRecurringBtn" type="button">Save Template</button>
+      <button class="btn secondary small" id="cancelRecurringBtn" type="button">Cancel</button>
+    </div>
+  `;
+}
+
+function backupModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:520px;position:relative;">
+        <button class="btn secondary small" id="modalClose" type="button" style="position:absolute;top:14px;right:14px;z-index:2;">✕</button>
+        <div class="panel-head"><h2>Backup &amp; Restore</h2></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.7;">
+            Download a complete copy of <strong style="color:var(--ink);">${escapeHtml(currentCompany.name)}</strong>'s data — every ledger, voucher, item, bank reconciliation, recurring template and fixed asset — as a single file that stays on your own device, independent of this app.
+          </p>
+          <button class="btn" id="downloadBackupBtn" type="button" style="margin-top:6px;">⬇ Download Backup (.json)</button>
+
+          <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--border);">
+            <label>Restore from a backup file</label>
+            <input type="file" id="restoreFileInput" accept="application/json,.json" style="margin-top:6px;">
+            <p id="restorePreview" class="muted" style="font-size:12px;margin-top:8px;min-height:16px;"></p>
+            <button class="btn" id="restoreConfirmBtn" type="button" style="margin-top:4px;" disabled>⚠ Restore — Replace Current Data</button>
+            <p class="muted" style="font-size:11px;margin-top:8px;">Restoring REPLACES everything currently in this company with what's in the file. Use it to undo a mistake or move data between browsers — not casually, and not without a recent backup of what's here now.</p>
+          </div>
         </div>
       </div>
     </div>
@@ -4333,6 +4794,8 @@ function renderView(){
     case 'reports': return viewReports();
     case 'gst': return viewGST();
     case 'reconcile': return viewReconcile();
+    case 'assets': return viewAssets();
+    case 'parties': return viewParties();
     default: return '';
   }
 }
@@ -5167,6 +5630,141 @@ function generateAndPrintBill(){
   w.document.close();
 }
 
+// Indian financial-year label for a date, e.g. '2026-27', anchored on the company's fyStart/booksFrom
+// (month+day only — the year is worked out per date). Shared by the invoice numbering below and by
+// the FY-comparative reports.
+function fyLabelForDate(dateStr){
+  const fyStartStr = (currentCompany && (currentCompany.booksFrom||currentCompany.fyStart)) || defaultFYStart();
+  const anchor = new Date(fyStartStr+'T00:00:00');
+  const d = new Date(dateStr+'T00:00:00');
+  let fyStartYear = d.getFullYear();
+  const beforeAnchor = (d.getMonth() < anchor.getMonth()) || (d.getMonth()===anchor.getMonth() && d.getDate()<anchor.getDate());
+  if(beforeAnchor) fyStartYear -= 1;
+  return `${fyStartYear}-${String((fyStartYear+1) % 100).padStart(2,'0')}`;
+}
+function nextFYLabel(label){
+  const startYear = parseInt(label.slice(0,4),10) + 1;
+  return `${startYear}-${String((startYear+1)%100).padStart(2,'0')}`;
+}
+// Calendar start/end dates for a FY label (e.g. '2026-27'), anchored on the company's fyStart month+day.
+function fyBoundsForLabel(fyLabel){
+  const startYear = parseInt(fyLabel.slice(0,4),10);
+  const fyStartStr = (currentCompany && (currentCompany.booksFrom||currentCompany.fyStart)) || defaultFYStart();
+  const anchor = new Date(fyStartStr+'T00:00:00');
+  const start = new Date(startYear, anchor.getMonth(), anchor.getDate());
+  const end = new Date(startYear+1, anchor.getMonth(), anchor.getDate());
+  end.setDate(end.getDate()-1);
+  return { start: start.toISOString().slice(0,10), end: end.toISOString().slice(0,10) };
+}
+// A stable-enough invoice number derived from position among all Sales vouchers ordered by date —
+// there's no separate persisted invoice-numbering sequence, so this is recomputed each time from the
+// voucher list itself (stable as long as vouchers aren't deleted/reordered in between reprints).
+function salesVoucherInvoiceNumber(v){
+  const sales = state.vouchers.filter(x=>x.type==='Sales')
+    .sort((a,b)=> a.date===b.date ? (a.createdAt||'').localeCompare(b.createdAt||'') : (a.date<b.date?-1:1));
+  const idx = sales.findIndex(x=>x.id===v.id);
+  const seq = idx>-1 ? idx+1 : sales.length+1;
+  return `INV/${fyLabelForDate(v.date)}/${String(seq).padStart(4,'0')}`;
+}
+// Printable/downloadable GST tax invoice for an already-saved Sales voucher — reachable from the Day
+// Book, unlike generateAndPrintBill() above which only works on the live GST Calculator draft while
+// creating a new voucher. Reuses the same visual layout for consistency.
+function printInvoiceForVoucher(voucherId){
+  const v = state.vouchers.find(x=>x.id===voucherId);
+  if(!v){ toast('Voucher not found'); return; }
+  if(v.type!=='Sales'){ toast('Printable tax invoices are available for Sales vouchers'); return; }
+  const partyEntry = v.entries.find(e=>e.dr>0);
+  const party = partyEntry ? ledgerOf(partyEntry.ledgerId) : null;
+  if(!party){ toast('Could not find the customer ledger on this voucher'); return; }
+
+  const g = gstBreakdownForVoucher(v);
+  const total = voucherAmount(v);
+  const subtotal = r2(total - g.totalTax);
+  const supplyIntra = (g.cgst>0 || g.sgst>0) && g.igst===0;
+  const rawItems = (v.items||[]).filter(it=>it.name && (Number(it.qty)||0)>0);
+  const items = rawItems.length ? rawItems : [{ name: v.narration || 'Sale as per voucher', qty:1, rate: subtotal }];
+  const cgstRate = subtotal>0 ? r2(g.cgst/subtotal*100) : 0;
+  const sgstRate = subtotal>0 ? r2(g.sgst/subtotal*100) : 0;
+  const igstRate = subtotal>0 ? r2(g.igst/subtotal*100) : 0;
+
+  const now = new Date();
+  const printedAt = now.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const rows = items.map((it,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td>${escapeHtml(it.name)}</td>
+      <td style="text-align:right;">${it.qty}</td>
+      <td style="text-align:right;">₹${fmt(Number(it.rate)||0)}</td>
+      <td style="text-align:right;">₹${fmt((Number(it.qty)||0)*(Number(it.rate)||0))}</td>
+    </tr>`).join('');
+  const taxTotalsRows = g.totalTax<=0 ? '' : (supplyIntra
+    ? `<tr><td>CGST @ ${cgstRate}%</td><td style="text-align:right;">₹${fmt(g.cgst)}</td></tr>
+       <tr><td>SGST @ ${sgstRate}%</td><td style="text-align:right;">₹${fmt(g.sgst)}</td></tr>`
+    : `<tr><td>IGST @ ${igstRate}%</td><td style="text-align:right;">₹${fmt(g.igst)}</td></tr>`);
+
+  const html = `<!DOCTYPE html><html><head><title>Invoice — ${escapeHtml(party.name)}</title>
+<meta charset="UTF-8">
+<style>
+  body{font-family: Arial, Helvetica, sans-serif; color:#111; margin:0; padding:34px; font-size:13px;}
+  .bill-header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px;}
+  .bill-header h1{margin:0;font-size:20px;}
+  .bill-header .meta{text-align:right;font-size:12px;color:#333;}
+  .bill-header .meta .invtitle{font-size:16px;font-weight:bold;color:#111;margin-bottom:4px;}
+  .parties{display:flex;justify-content:space-between;margin-bottom:20px;font-size:12.5px;}
+  .parties h3{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#555;}
+  table{width:100%;border-collapse:collapse;margin-bottom:18px;}
+  th{background:#f0f0f0;text-align:left;padding:8px;font-size:11px;text-transform:uppercase;border-bottom:2px solid #111;}
+  td{padding:8px;border-bottom:1px solid #ddd;font-size:12.5px;}
+  .totals-table{width:320px;margin-left:auto;}
+  .totals-table td{border:none;padding:4px 8px;}
+  .grand-total td{font-weight:bold;font-size:15px;border-top:2px solid #111;padding-top:8px;}
+  .footer{margin-top:30px;font-size:10.5px;color:#777;border-top:1px solid #ddd;padding-top:10px;}
+  @media print{ body{padding:0;} }
+</style>
+</head><body>
+  <div class="bill-header">
+    <div>
+      <h1>${escapeHtml(currentCompany.name)}</h1>
+      ${currentCompany.address?`<div style="font-size:12px;color:#555;margin-top:2px;">${escapeHtml(currentCompany.address)}${currentCompany.state?', '+escapeHtml(currentCompany.state):''}${currentCompany.pincode?' - '+escapeHtml(currentCompany.pincode):''}</div>`:''}
+      ${currentCompany.gstin?`<div style="font-size:12px;color:#555;margin-top:4px;">GSTIN: ${escapeHtml(currentCompany.gstin)}</div>`:''}
+    </div>
+    <div class="meta">
+      <div class="invtitle">TAX INVOICE</div>
+      <div>Invoice No: ${salesVoucherInvoiceNumber(v)}</div>
+      <div>Date: ${v.date}</div>
+    </div>
+  </div>
+  <div class="parties">
+    <div>
+      <h3>Bill To</h3>
+      <div style="font-size:14px;font-weight:bold;">${escapeHtml(party.name)}</div>
+    </div>
+    <div style="text-align:right;">
+      <h3>Supply Type</h3>
+      <div>${g.totalTax<=0 ? 'No GST on this voucher' : (supplyIntra?'Intrastate (CGST + SGST)':'Interstate (IGST)')}</div>
+    </div>
+  </div>
+  <table>
+    <tr><th>#</th><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Amount</th></tr>
+    ${rows}
+  </table>
+  <table class="totals-table">
+    <tr><td>Subtotal</td><td style="text-align:right;">₹${fmt(subtotal)}</td></tr>
+    ${taxTotalsRows}
+    <tr class="grand-total"><td>Grand Total</td><td style="text-align:right;">₹${fmt(total)}</td></tr>
+  </table>
+  ${v.narration?`<div style="font-size:12px;color:#444;"><strong>Notes:</strong> ${escapeHtml(v.narration)}</div>`:''}
+  <div class="footer">Generated by The Reckoning Books by SKm on ${printedAt}</div>
+  <script>window.onload = function(){ window.print(); };<\/script>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if(!w){ toast('Please allow pop-ups to print the invoice'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
+
 function gstCalculator(){
   const g = vform.gst;
   if(!g.items) g.items = [];
@@ -5262,8 +5860,12 @@ function gstPreview(g){
 
 function viewDaybook(){
   const rows = state.vouchers.slice().reverse();
+  const dueRecurringCount = dueRecurringTemplates(new Date().toISOString().slice(0,10)).length;
   return `
     ${masthead('Day Book','All vouchers, most recent first')}
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+      <button class="btn secondary small" id="openRecurringBtn" type="button">🔁 Recurring Vouchers${dueRecurringCount?` — ${dueRecurringCount} due`:''}</button>
+    </div>
     <div class="panel">
       <div class="panel-body" style="padding:0;">
         ${rows.length ? `<table>
@@ -5278,7 +5880,7 @@ function viewDaybook(){
               return e.dr ? `${name} Dr` : `${name} Cr`;
             }).join(', ')}</td>
             <td class="num">₹${fmt(voucherAmount(v))}</td>
-            <td><button class="btn small secondary" data-edit-voucher="${v.id}" type="button">Edit</button> <button class="btn small secondary" data-delete-voucher="${v.id}" type="button">Delete</button></td>
+            <td><button class="btn small secondary" data-edit-voucher="${v.id}" type="button">Edit</button> <button class="btn small secondary" data-delete-voucher="${v.id}" type="button">Delete</button>${v.type==='Sales'?` <button class="btn small secondary" data-print-invoice="${v.id}" type="button">🖨 Invoice</button>`:''}</td>
           </tr>`).join('')}
         </table>` : `<div class="empty">No vouchers recorded yet.</div>`}
       </div>
@@ -5513,8 +6115,15 @@ function viewCOA(){
               <option value="1">Yes — Micro/Small/Medium Enterprise</option>
             </select>
           </div>
+          <div class="field" style="max-width:180px;"><label>Party Type</label>
+            <select id="newLedgerPartyType">
+              <option value="">— Not a party —</option>
+              <option value="customer">Customer</option>
+              <option value="supplier">Supplier</option>
+            </select>
+          </div>
         </div>
-        <p class="muted" style="font-size:11px;margin:6px 0 0;">MSME Supplier only matters for Current Liabilities ledgers — it drives the MSME/Others split under Trade Payables on the Schedule III Balance Sheet.</p>
+        <p class="muted" style="font-size:11px;margin:6px 0 0;">MSME Supplier only matters for Current Liabilities ledgers — it drives the MSME/Others split under Trade Payables on the Schedule III Balance Sheet. Party Type feeds the AR/AP Ageing under the Parties tab.</p>
         <button class="btn" id="addLedgerBtn">Add Ledger</button>
       </div>
     </div>
@@ -5523,14 +6132,15 @@ function viewCOA(){
       <div class="panel">
         <div class="panel-body" style="padding:0;">
           <table>
-            <tr><th>Ledger</th><th>Group</th><th>GST</th><th>MSME</th><th class="num">Balance</th></tr>
+            <tr><th>Ledger</th><th>Group</th><th>GST</th><th>MSME</th><th>Party</th><th class="num">Balance</th></tr>
             ${state.ledgers.filter(l=>groupOf(l.group).cat===cat).map(l=>{
               const b = ledgerBalance(l.id);
               const msmeCell = l.group==='curl'
                 ? `<span data-toggle-msme="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${l.isMSME?'✓ MSME':'Mark MSME'}</span>`
                 : '—';
-              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="muted">${msmeCell}</td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
-            }).join('') || `<tr><td colspan="5" class="empty">No ledgers in this category yet.</td></tr>`}
+              const partyLabel = l.partyType==='customer' ? '✓ Customer' : l.partyType==='supplier' ? '✓ Supplier' : 'Not a party';
+              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="muted">${msmeCell}</td><td class="muted"><span data-cycle-party="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${partyLabel}</span></td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
+            }).join('') || `<tr><td colspan="6" class="empty">No ledgers in this category yet.</td></tr>`}
           </table>
         </div>
       </div>
@@ -5767,31 +6377,44 @@ function reportTrialBalance(){
   `;
 }
 function reportIncomeStatement(){
-  const pl = scheduleIIIProfitLossData();
+  const fy = currentAndPriorFYData();
+  const pl = fy.pl, pp = fy.prevPl, hasPrev = fy.hasPriorData;
+  const money = n => `₹${fmt(n)}`;
+  const paren = n => `(₹${fmt(n)})`;
+  const prow = (label, cur, prev, opts={}) => {
+    const style = opts.bold?'style="font-weight:700;border-top:2px solid var(--ink);"':'';
+    const prevCell = hasPrev ? `<td class="num ${opts.cls||''}">${prev}</td>` : '';
+    return `<tr ${style}><td>${label}</td><td class="num ${opts.cls||''}">${cur}</td>${prevCell}</tr>`;
+  };
+  const pdrow = (id, label, cur, prev, dr) => {
+    const prevCell = hasPrev ? `<td class="num">${prev}</td>` : '';
+    return `<tr data-is-detail="${id}" style="cursor:pointer;"><td>${label}</td><td class="num ${dr?'dr':''}">${cur}</td>${prevCell}</tr>`;
+  };
   return `
     ${reportHeader('Income Statement (Schedule III, Division I) — Statement of Profit and Loss', 'exportPLBtn')}
-    <p class="muted" style="font-size:11.5px;margin-top:-8px;">For the period ${reportPeriodLabel()}</p>
+    <p class="muted" style="font-size:11.5px;margin-top:-8px;">For the period ${fy.periodLabel}${hasPrev?` — compared to ${fy.prevPeriodLabel}`:''}</p>
     <div class="panel"><div class="panel-body" style="padding:0;">
       <table>
-        <tr data-is-detail="revenueFromOperations" style="cursor:pointer;"><td>I. Revenue from Operations</td><td class="num">₹${fmt(pl.revenueFromOperations)}</td></tr>
-        <tr data-is-detail="otherIncome" style="cursor:pointer;"><td>II. Other Income</td><td class="num">₹${fmt(pl.otherIncome)}</td></tr>
-        ${reportRow('III. Total Income (I + II)', `₹${fmt(pl.totalIncome)}`, {bold:true})}
-        <tr data-is-detail="purchases" style="cursor:pointer;"><td>&nbsp;&nbsp;Purchases of Stock-in-Trade</td><td class="num dr">(₹${fmt(pl.purchasesOfStockInTrade)})</td></tr>
-        <tr><td>&nbsp;&nbsp;Changes in Inventories of Finished Goods, WIP and Stock-in-Trade</td><td class="num">₹0.00</td></tr>
-        <tr data-is-detail="employeeBenefits" style="cursor:pointer;"><td>&nbsp;&nbsp;Employee Benefits Expense</td><td class="num dr">(₹${fmt(pl.employeeBenefitsExpense)})</td></tr>
-        <tr data-is-detail="financeCosts" style="cursor:pointer;"><td>&nbsp;&nbsp;Finance Costs</td><td class="num dr">(₹${fmt(pl.financeCosts)})</td></tr>
-        <tr data-is-detail="depreciation" style="cursor:pointer;"><td>&nbsp;&nbsp;Depreciation and Amortisation Expense</td><td class="num dr">(₹${fmt(pl.depreciationExpense)})</td></tr>
-        <tr data-is-detail="otherExpenses" style="cursor:pointer;"><td>&nbsp;&nbsp;Other Expenses</td><td class="num dr">(₹${fmt(pl.otherExpenses)})</td></tr>
-        ${reportRow('IV. Total Expenses', `₹${fmt(pl.totalExpenses)}`, {bold:true})}
-        ${reportRow('V. Profit Before Exceptional Items and Tax (III − IV)', `₹${fmt(pl.profitBeforeExceptionalAndTax)}`, {bold:true})}
-        ${reportRow('VI. Exceptional Items', `₹${fmt(pl.exceptionalItems)}`)}
-        ${reportRow('VII. Profit Before Tax (V − VI)', `₹${fmt(pl.profitBeforeTax)}`, {bold:true})}
-        ${reportRow('VIII. Tax Expense — Current Tax', `(₹${fmt(pl.currentTax)})`, {cls:'dr'})}
-        ${reportRow('VIII. Tax Expense — Deferred Tax', `(₹${fmt(pl.deferredTax)})`, {cls:'dr'})}
-        ${reportRow('IX. Profit for the Period', `₹${fmt(pl.profitForPeriod)}`, {bold:true, cls: pl.profitForPeriod>=0?'cr':'dr'})}
+        <tr><th>Particulars</th><th class="num">Current Year</th>${hasPrev?'<th class="num">Previous Year</th>':''}</tr>
+        ${pdrow('revenueFromOperations','I. Revenue from Operations', money(pl.revenueFromOperations), hasPrev?money(pp.revenueFromOperations):'')}
+        ${pdrow('otherIncome','II. Other Income', money(pl.otherIncome), hasPrev?money(pp.otherIncome):'')}
+        ${prow('III. Total Income (I + II)', money(pl.totalIncome), hasPrev?money(pp.totalIncome):'', {bold:true})}
+        ${pdrow('purchases','&nbsp;&nbsp;Purchases of Stock-in-Trade', paren(pl.purchasesOfStockInTrade), hasPrev?paren(pp.purchasesOfStockInTrade):'', true)}
+        ${prow('&nbsp;&nbsp;Changes in Inventories of Finished Goods, WIP and Stock-in-Trade', '₹0.00', hasPrev?'₹0.00':'')}
+        ${pdrow('employeeBenefits','&nbsp;&nbsp;Employee Benefits Expense', paren(pl.employeeBenefitsExpense), hasPrev?paren(pp.employeeBenefitsExpense):'', true)}
+        ${pdrow('financeCosts','&nbsp;&nbsp;Finance Costs', paren(pl.financeCosts), hasPrev?paren(pp.financeCosts):'', true)}
+        ${pdrow('depreciation','&nbsp;&nbsp;Depreciation and Amortisation Expense', paren(pl.depreciationExpense), hasPrev?paren(pp.depreciationExpense):'', true)}
+        ${pdrow('otherExpenses','&nbsp;&nbsp;Other Expenses', paren(pl.otherExpenses), hasPrev?paren(pp.otherExpenses):'', true)}
+        ${prow('IV. Total Expenses', money(pl.totalExpenses), hasPrev?money(pp.totalExpenses):'', {bold:true})}
+        ${prow('V. Profit Before Exceptional Items and Tax (III − IV)', money(pl.profitBeforeExceptionalAndTax), hasPrev?money(pp.profitBeforeExceptionalAndTax):'', {bold:true})}
+        ${prow('VI. Exceptional Items', money(pl.exceptionalItems), hasPrev?money(pp.exceptionalItems):'')}
+        ${prow('VII. Profit Before Tax (V − VI)', money(pl.profitBeforeTax), hasPrev?money(pp.profitBeforeTax):'', {bold:true})}
+        ${prow('VIII. Tax Expense — Current Tax', paren(pl.currentTax), hasPrev?paren(pp.currentTax):'', {cls:'dr'})}
+        ${prow('VIII. Tax Expense — Deferred Tax', paren(pl.deferredTax), hasPrev?paren(pp.deferredTax):'', {cls:'dr'})}
+        ${prow('IX. Profit for the Period', money(pl.profitForPeriod), hasPrev?money(pp.profitForPeriod):'', {bold:true, cls: pl.profitForPeriod>=0?'cr':'dr'})}
       </table>
     </div></div>
-    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021. Click any line above to see the individual ledger accounts behind it. Employee Benefits Expense / Depreciation &amp; Amortisation / Finance Costs are detected from ledger names; everything else in the Direct/Indirect Expenses groups falls under Other Expenses. Income tax is not tracked separately from GST in this system (see the GST tab), so Current Tax and Deferred Tax show as nil. Earnings Per Share is not shown, as share count and face value are not tracked.</p>
+    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021.${hasPrev?' Figures are for the current financial year to date, with the immediately preceding financial year shown alongside for comparison, as Schedule III requires.':" This is the company's first financial year on the books, so there is no prior year yet to compare against."} Click any line above to see the individual ledger accounts behind it (all-time, not just this year). Employee Benefits Expense / Depreciation &amp; Amortisation / Finance Costs are detected from ledger names; everything else in the Direct/Indirect Expenses groups falls under Other Expenses. Income tax is not tracked separately from GST in this system (see the GST tab), so Current Tax and Deferred Tax show as nil. Earnings Per Share is not shown, as share count and face value are not tracked.</p>
   `;
 }
 function reportBalanceSheet(){
@@ -5802,43 +6425,57 @@ function reportBalanceSheet(){
   const ratios = ratioAnalysisData(is, ifrsBs);
   const notes = balanceSheetInterpretation(ifrsBs, ratios);
 
-  const pl = scheduleIIIProfitLossData();
-  const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+  const fy = currentAndPriorFYData();
+  const bs = fy.bs, pb = fy.prevBs, hasPrev = fy.hasPriorData;
   const liabilities = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
+  const cols = hasPrev ? 3 : 2;
+  const money = n => `₹${fmt(n)}`;
+
+  const brow = (label, cur, prev, opts={}) => {
+    const style = opts.bold?'style="font-weight:700;border-top:2px solid var(--ink);"':'';
+    const prevCell = hasPrev ? `<td class="num">${prev}</td>` : '';
+    return `<tr ${style}><td>${label}</td><td class="num">${cur}</td>${prevCell}</tr>`;
+  };
+  const bzero = label => brow(label, '₹0.00', hasPrev?'₹0.00':'');
+  const bhead = label => `<tr><th colspan="${cols}">${label}</th></tr>`;
+  const blrows = (ledgers, sign) => hasPrev
+    ? (ledgers.map(l=>`<tr data-ledger-detail="${l.id}" style="cursor:pointer;"><td>&nbsp;&nbsp;${l.name}</td><td class="num">₹${fmt(sign*ledgerBalance(l.id))}</td><td></td></tr>`).join('') || `<tr><td colspan="3" class="empty">None</td></tr>`)
+    : reportLedgerRows(ledgers, sign);
 
   return `
     ${reportHeader('Balance Sheet (Schedule III, Division I)', 'exportBSBtn')}
-    <p class="muted" style="font-size:11.5px;margin-top:-8px;">As at ${reportAsOfDateLabel()}</p>
+    <p class="muted" style="font-size:11.5px;margin-top:-8px;">As at ${fy.asOfLabel}${hasPrev?` — compared to ${fy.prevAsOfLabel}`:''}</p>
     <div class="panel">
       <div class="panel-head"><h2>I. Equity and Liabilities</h2></div>
       <div class="panel-body" style="padding:0;">
         <table>
-          <tr><th colspan="2">(1) Shareholders' Funds</th></tr>
-          <tr><td>&nbsp;&nbsp;(a) Share Capital</td><td class="num">₹${fmt(bs.shareCapitalTotal)}</td></tr>
-          ${reportLedgerRows(bs.shareCapitalLedgers, -1)}
-          <tr><td>&nbsp;&nbsp;(b) Reserves and Surplus</td><td class="num">₹${fmt(bs.reservesAndSurplus)}</td></tr>
-          ${reportRow("Total Shareholders' Funds", `₹${fmt(bs.shareholdersFundsTotal)}`, {bold:true})}
-          <tr><th colspan="2">(2) Share Application Money Pending Allotment</th></tr>
-          <tr><td>&nbsp;</td><td class="num">₹0.00</td></tr>
-          <tr><th colspan="2">(3) Non-Current Liabilities</th></tr>
-          <tr><td>&nbsp;&nbsp;(a) Long-term Borrowings</td><td class="num">₹${fmt(bs.longTermBorrowingsTotal)}</td></tr>
-          ${reportLedgerRows(bs.longTermBorrowings, -1)}
-          <tr><td>&nbsp;&nbsp;(b) Deferred Tax Liabilities (Net)</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(c) Other Long-term Liabilities</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(d) Long-term Provisions</td><td class="num">₹0.00</td></tr>
-          ${reportRow('Total Non-Current Liabilities', `₹${fmt(bs.nonCurrentLiabTotal)}`, {bold:true})}
-          <tr><th colspan="2">(4) Current Liabilities</th></tr>
-          <tr><td>&nbsp;&nbsp;(a) Short-term Borrowings</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(b) Trade Payables</td><td class="num">₹${fmt(bs.tradePayablesTotal)}</td></tr>
-          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;(A) Dues of micro and small enterprises</td><td class="num">₹${fmt(bs.msmeTradePayablesTotal)}</td></tr>
-          ${reportLedgerRows(bs.msmeTradePayableLedgers, -1)}
-          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;(B) Dues of creditors other than micro/small enterprises</td><td class="num">₹${fmt(bs.otherTradePayablesTotal)}</td></tr>
-          ${reportLedgerRows(bs.otherTradePayableLedgers, -1)}
-          <tr><td>&nbsp;&nbsp;(c) Other Current Liabilities</td><td class="num">₹${fmt(bs.otherCurrentLiabTotal)}</td></tr>
-          ${reportLedgerRows(bs.otherCurrentLiabLedgers, -1)}
-          <tr><td>&nbsp;&nbsp;(d) Short-term Provisions</td><td class="num">₹0.00</td></tr>
-          ${reportRow('Total Current Liabilities', `₹${fmt(bs.currentLiabTotal)}`, {bold:true})}
-          ${reportRow('TOTAL (EQUITY AND LIABILITIES)', `₹${fmt(bs.totalEquityAndLiab)}`, {bold:true})}
+          <tr><th>Particulars</th><th class="num">Current Year</th>${hasPrev?'<th class="num">Previous Year</th>':''}</tr>
+          ${bhead("(1) Shareholders' Funds")}
+          ${brow('&nbsp;&nbsp;(a) Share Capital', money(bs.shareCapitalTotal), hasPrev?money(pb.shareCapitalTotal):'')}
+          ${blrows(bs.shareCapitalLedgers, -1)}
+          ${brow('&nbsp;&nbsp;(b) Reserves and Surplus', money(bs.reservesAndSurplus), hasPrev?money(pb.reservesAndSurplus):'')}
+          ${brow("Total Shareholders' Funds", money(bs.shareholdersFundsTotal), hasPrev?money(pb.shareholdersFundsTotal):'', {bold:true})}
+          ${bhead('(2) Share Application Money Pending Allotment')}
+          ${bzero('&nbsp;')}
+          ${bhead('(3) Non-Current Liabilities')}
+          ${brow('&nbsp;&nbsp;(a) Long-term Borrowings', money(bs.longTermBorrowingsTotal), hasPrev?money(pb.longTermBorrowingsTotal):'')}
+          ${blrows(bs.longTermBorrowings, -1)}
+          ${bzero('&nbsp;&nbsp;(b) Deferred Tax Liabilities (Net)')}
+          ${bzero('&nbsp;&nbsp;(c) Other Long-term Liabilities')}
+          ${bzero('&nbsp;&nbsp;(d) Long-term Provisions')}
+          ${brow('Total Non-Current Liabilities', money(bs.nonCurrentLiabTotal), hasPrev?money(pb.nonCurrentLiabTotal):'', {bold:true})}
+          ${bhead('(4) Current Liabilities')}
+          ${bzero('&nbsp;&nbsp;(a) Short-term Borrowings')}
+          ${brow('&nbsp;&nbsp;(b) Trade Payables', money(bs.tradePayablesTotal), hasPrev?money(pb.tradePayablesTotal):'')}
+          ${brow('&nbsp;&nbsp;&nbsp;&nbsp;(A) Dues of micro and small enterprises', money(bs.msmeTradePayablesTotal), hasPrev?money(pb.msmeTradePayablesTotal):'')}
+          ${blrows(bs.msmeTradePayableLedgers, -1)}
+          ${brow('&nbsp;&nbsp;&nbsp;&nbsp;(B) Dues of creditors other than micro/small enterprises', money(bs.otherTradePayablesTotal), hasPrev?money(pb.otherTradePayablesTotal):'')}
+          ${blrows(bs.otherTradePayableLedgers, -1)}
+          ${brow('&nbsp;&nbsp;(c) Other Current Liabilities', money(bs.otherCurrentLiabTotal), hasPrev?money(pb.otherCurrentLiabTotal):'')}
+          ${blrows(bs.otherCurrentLiabLedgers, -1)}
+          ${bzero('&nbsp;&nbsp;(d) Short-term Provisions')}
+          ${brow('Total Current Liabilities', money(bs.currentLiabTotal), hasPrev?money(pb.currentLiabTotal):'', {bold:true})}
+          ${brow('TOTAL (EQUITY AND LIABILITIES)', money(bs.totalEquityAndLiab), hasPrev?money(pb.totalEquityAndLiab):'', {bold:true})}
         </table>
       </div>
     </div>
@@ -5846,32 +6483,33 @@ function reportBalanceSheet(){
       <div class="panel-head"><h2>II. Assets</h2></div>
       <div class="panel-body" style="padding:0;">
         <table>
-          <tr><th colspan="2">Non-Current Assets</th></tr>
-          <tr><td>&nbsp;&nbsp;(a) Property, Plant and Equipment</td><td class="num">₹${fmt(bs.ppeTotal)}</td></tr>
-          ${reportLedgerRows(bs.ppe, 1)}
-          <tr><td>&nbsp;&nbsp;(b) Non-current Investments</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(c) Deferred Tax Assets (Net)</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(d) Long-term Loans and Advances</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(e) Other Non-current Assets</td><td class="num">₹0.00</td></tr>
-          ${reportRow('Total Non-Current Assets', `₹${fmt(bs.nonCurrentAssetsTotal)}`, {bold:true})}
-          <tr><th colspan="2">Current Assets</th></tr>
-          <tr><td>&nbsp;&nbsp;(a) Current Investments</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(b) Inventories</td><td class="num">₹${fmt(bs.inventoriesTotal)}</td></tr>
-          ${reportLedgerRows(bs.inventoryLedgers, 1)}
-          <tr><td>&nbsp;&nbsp;(c) Trade Receivables</td><td class="num">₹${fmt(bs.tradeReceivablesTotal)}</td></tr>
-          ${reportLedgerRows(bs.tradeReceivableLedgers, 1)}
-          <tr><td>&nbsp;&nbsp;(d) Cash and Cash Equivalents</td><td class="num">₹${fmt(bs.cashTotal)}</td></tr>
-          ${reportLedgerRows(bs.cashLedgers, 1)}
-          <tr><td>&nbsp;&nbsp;(e) Short-term Loans and Advances</td><td class="num">₹0.00</td></tr>
-          <tr><td>&nbsp;&nbsp;(f) Other Current Assets</td><td class="num">₹${fmt(bs.otherCurrentAssetsTotal)}</td></tr>
-          ${reportLedgerRows(bs.otherCurrentAssetLedgers, 1)}
-          ${reportRow('Total Current Assets', `₹${fmt(bs.currentAssetsTotal)}`, {bold:true})}
-          ${reportRow('TOTAL ASSETS', `₹${fmt(bs.totalAssets)}`, {bold:true})}
+          <tr><th>Particulars</th><th class="num">Current Year</th>${hasPrev?'<th class="num">Previous Year</th>':''}</tr>
+          ${bhead('Non-Current Assets')}
+          ${brow('&nbsp;&nbsp;(a) Property, Plant and Equipment', money(bs.ppeTotal), hasPrev?money(pb.ppeTotal):'')}
+          ${blrows(bs.ppe, 1)}
+          ${bzero('&nbsp;&nbsp;(b) Non-current Investments')}
+          ${bzero('&nbsp;&nbsp;(c) Deferred Tax Assets (Net)')}
+          ${bzero('&nbsp;&nbsp;(d) Long-term Loans and Advances')}
+          ${bzero('&nbsp;&nbsp;(e) Other Non-current Assets')}
+          ${brow('Total Non-Current Assets', money(bs.nonCurrentAssetsTotal), hasPrev?money(pb.nonCurrentAssetsTotal):'', {bold:true})}
+          ${bhead('Current Assets')}
+          ${bzero('&nbsp;&nbsp;(a) Current Investments')}
+          ${brow('&nbsp;&nbsp;(b) Inventories', money(bs.inventoriesTotal), hasPrev?money(pb.inventoriesTotal):'')}
+          ${blrows(bs.inventoryLedgers, 1)}
+          ${brow('&nbsp;&nbsp;(c) Trade Receivables', money(bs.tradeReceivablesTotal), hasPrev?money(pb.tradeReceivablesTotal):'')}
+          ${blrows(bs.tradeReceivableLedgers, 1)}
+          ${brow('&nbsp;&nbsp;(d) Cash and Cash Equivalents', money(bs.cashTotal), hasPrev?money(pb.cashTotal):'')}
+          ${blrows(bs.cashLedgers, 1)}
+          ${bzero('&nbsp;&nbsp;(e) Short-term Loans and Advances')}
+          ${brow('&nbsp;&nbsp;(f) Other Current Assets', money(bs.otherCurrentAssetsTotal), hasPrev?money(pb.otherCurrentAssetsTotal):'')}
+          ${blrows(bs.otherCurrentAssetLedgers, 1)}
+          ${brow('Total Current Assets', money(bs.currentAssetsTotal), hasPrev?money(pb.currentAssetsTotal):'', {bold:true})}
+          ${brow('TOTAL ASSETS', money(bs.totalAssets), hasPrev?money(pb.totalAssets):'', {bold:true})}
         </table>
       </div>
     </div>
     <p class="muted" style="font-size:11.5px;">Total Assets ${Math.abs(bs.totalAssets-bs.totalEquityAndLiab)<0.01?'matches':'does NOT match'} Total Equity and Liabilities (₹${fmt(bs.totalAssets)} vs ₹${fmt(bs.totalEquityAndLiab)}). A mismatch usually means an opening balance or entry was recorded on the wrong side.</p>
-    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021 — including the Trade Payables MSME/Others split. Mark a Current Liabilities ledger as an MSME supplier from the Chart of Accounts to route it into (A) instead of (B). Lines shown at ₹0.00 are heads this system doesn't separately track (deferred tax, provisions, investments, loans and advances, short-term borrowings) rather than confirmed nil balances — review before filing. Note-level disclosures (ageing schedules, share reconciliation, promoter shareholding, Additional Regulatory Information) are not included.</p>
+    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021 — including the Trade Payables MSME/Others split.${hasPrev?' The Previous Year column is as at the end of the preceding financial year, as Schedule III requires.':" This is the company's first financial year on the books, so there is no prior year yet to compare against."} Mark a Current Liabilities ledger as an MSME supplier from the Chart of Accounts to route it into (A) instead of (B). Lines shown at ₹0.00 are heads this system doesn't separately track (deferred tax, provisions, investments, loans and advances, short-term borrowings) rather than confirmed nil balances — review before filing. Note-level disclosures (ageing schedules, share reconciliation, promoter shareholding, Additional Regulatory Information) are not included.</p>
 
     <div class="section-title" style="margin-top:20px;">Financing Mix</div>
     <div class="panel"><div class="panel-body">
@@ -6167,10 +6805,303 @@ function viewReconcile(){
   `;
 }
 
+function assetDraftForm(){
+  const d = fixedAssetDraft;
+  const faLedgers = state.ledgers.filter(l=>l.group==='fa');
+  return `
+    <div class="section-title" style="margin-top:16px;">New Fixed Asset</div>
+    <div class="row">
+      <div class="field"><label>Asset Name</label><input type="text" id="faName" value="${escapeAttr(d.name)}" placeholder="e.g. Delivery Van"></div>
+      <div class="field"><label>Linked Ledger (Fixed Assets group)</label>
+        <select id="faLedger">
+          <option value="">Select ledger…</option>
+          ${faLedgers.map(l=>`<option value="${l.id}" ${d.ledgerId===l.id?'selected':''}>${escapeHtml(l.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p class="muted" style="font-size:11.5px;margin-top:-6px;">${faLedgers.length ? "Depreciation posts as a credit against this ledger's balance." : 'No Fixed Assets ledgers yet — add one from Accounts first, under the "Fixed Assets" group.'}</p>
+    <div class="row">
+      <div class="field"><label>Cost (₹)</label><input type="number" id="faCost" step="0.01" value="${escapeAttr(String(d.cost))}"></div>
+      <div class="field"><label>Salvage Value (₹)</label><input type="number" id="faSalvage" step="0.01" value="${escapeAttr(String(d.salvageValue))}" placeholder="0"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Purchase Date</label><input type="date" id="faPurchaseDate" value="${d.purchaseDate}"></div>
+      <div class="field"><label>Useful Life (years)</label><input type="number" id="faLife" min="1" step="1" value="${escapeAttr(String(d.usefulLifeYears))}"></div>
+      <div class="field"><label>Method</label>
+        <select id="faMethod">
+          <option value="SLM" ${d.method==='SLM'?'selected':''}>Straight Line (SLM)</option>
+          <option value="WDV" ${d.method==='WDV'?'selected':''}>Written Down Value (WDV)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn small" id="saveAssetBtn" type="button">Save Asset</button>
+      <button class="btn secondary small" id="cancelAssetBtn" type="button">Cancel</button>
+    </div>
+  `;
+}
+function viewAssets(){
+  const currentFY = fyLabelForDate(new Date().toISOString().slice(0,10));
+  return `
+    ${masthead('Fixed Asset Register',`Track assets and post depreciation for FY ${currentFY}`)}
+    <div class="panel">
+      <div class="panel-body" style="padding:0;">
+        ${state.fixedAssets.length ? `<table>
+          <tr><th>Asset</th><th>Ledger</th><th class="num">Cost</th><th>Method</th><th>Life</th><th class="num">Book Value</th><th class="num">FY ${currentFY} Dep.</th><th></th></tr>
+          ${state.fixedAssets.map(a=>{
+            const ledger = ledgerOf(a.ledgerId);
+            const bookValue = ledger ? ledgerBalance(ledger.id) : null;
+            const posted = (a.postedFYs||[]).includes(currentFY);
+            const dueDep = assetDepreciationForFY(a, currentFY);
+            return `<tr>
+              <td>${escapeHtml(a.name)}</td>
+              <td class="muted">${ledger ? escapeHtml(ledger.name) : '<span style="color:var(--debit);">Ledger deleted</span>'}</td>
+              <td class="num">₹${fmt(Number(a.cost)||0)}</td>
+              <td class="muted">${a.method}</td>
+              <td class="muted">${a.usefulLifeYears} yr</td>
+              <td class="num">${bookValue==null?'—':'₹'+fmt(bookValue)}</td>
+              <td class="num">${posted ? `<span class="muted">✓ Posted</span>` : (dueDep>0 ? '₹'+fmt(dueDep) : '—')}</td>
+              <td>
+                ${!posted && dueDep>0 && ledger ? `<button class="btn small secondary" data-post-depreciation="${a.id}" type="button">Post Dep.</button>` : ''}
+                <button class="btn small secondary" data-delete-asset="${a.id}" type="button">🗑</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </table>` : `<div class="empty">No fixed assets registered yet.</div>`}
+      </div>
+    </div>
+    <div class="panel"><div class="panel-body">
+      ${fixedAssetDraft ? assetDraftForm() : `<button class="btn secondary small" id="newAssetBtn" type="button">+ Add Fixed Asset</button>`}
+    </div></div>
+    <p class="muted" style="font-size:11.5px;">Book Value is read live off the linked ledger's balance. "Post Dep." posts a Journal voucher (Dr Depreciation / Cr the asset's ledger) for the current financial year and can only be posted once per asset per year.</p>
+  `;
+}
+
+function partyAgeingTable(rows, emptyMsg){
+  if(!rows.length) return `<div class="empty">${emptyMsg}</div>`;
+  return `<table>
+    <tr><th>Party</th><th class="num">0-30 days</th><th class="num">31-60 days</th><th class="num">61-90 days</th><th class="num">90+ days</th><th class="num">Total Outstanding</th></tr>
+    ${rows.map(r=>`<tr data-open-party="${r.ledger.id}" style="cursor:pointer;">
+      <td>${escapeHtml(r.ledger.name)}</td>
+      <td class="num">${r.summary.buckets['0-30']?'₹'+fmt(r.summary.buckets['0-30']):'—'}</td>
+      <td class="num">${r.summary.buckets['31-60']?'₹'+fmt(r.summary.buckets['31-60']):'—'}</td>
+      <td class="num ${r.summary.buckets['61-90']?'dr':''}">${r.summary.buckets['61-90']?'₹'+fmt(r.summary.buckets['61-90']):'—'}</td>
+      <td class="num ${r.summary.buckets['90+']?'dr':''}">${r.summary.buckets['90+']?'₹'+fmt(r.summary.buckets['90+']):'—'}</td>
+      <td class="num" style="font-weight:700;">₹${fmt(r.summary.total)}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+function viewParties(){
+  const customers = state.ledgers.filter(l=>l.partyType==='customer');
+  const suppliers = state.ledgers.filter(l=>l.partyType==='supplier');
+  const rowsFor = list => list.map(l=>({ ledger:l, summary: partyAgeingSummary(l.id) })).sort((a,b)=>b.summary.total-a.summary.total);
+  const custRows = rowsFor(customers);
+  const suppRows = rowsFor(suppliers);
+  const totalReceivable = r2(custRows.reduce((s,r)=>s+r.summary.total,0));
+  const totalPayable = r2(suppRows.reduce((s,r)=>s+r.summary.total,0));
+
+  return `
+    ${masthead('Parties','Customers & suppliers — outstanding balances by age')}
+    <div class="section-title">Receivables (Customers) — Outstanding ₹${fmt(totalReceivable)}</div>
+    <div class="panel"><div class="panel-body" style="padding:0;">${partyAgeingTable(custRows, customers.length ? 'No outstanding receivables — every customer invoice is settled.' : 'No ledgers tagged as customers yet. Tag one from the Accounts tab.')}</div></div>
+
+    <div class="section-title">Payables (Suppliers) — Outstanding ₹${fmt(totalPayable)}</div>
+    <div class="panel"><div class="panel-body" style="padding:0;">${partyAgeingTable(suppRows, suppliers.length ? 'No outstanding payables — every supplier bill is settled.' : 'No ledgers tagged as suppliers yet. Tag one from the Accounts tab.')}</div></div>
+    <p class="muted" style="font-size:11.5px;">Tag a ledger as a Customer or Supplier from the Accounts tab (click "Not a party" next to any ledger) to have it appear here. Click a row for its invoice-by-invoice breakdown. Payments are matched to the oldest outstanding invoice first (FIFO).</p>
+  `;
+}
+function partyDetailModal(){
+  if(!partyDetailLedgerId) return '';
+  const l = ledgerOf(partyDetailLedgerId);
+  if(!l) return '';
+  const rows = partyAgeing(partyDetailLedgerId).sort((a,b)=> a.date===b.date?0:(a.date<b.date?-1:1));
+  const total = r2(rows.reduce((s,r)=>s+r.remaining,0));
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:620px;position:relative;">
+        <button class="btn secondary small" id="modalClose" type="button" style="position:absolute;top:14px;right:14px;z-index:2;">✕</button>
+        <div class="panel-head"><h2>${escapeHtml(l.name)} — Outstanding</h2></div>
+        <div class="panel-body" style="max-height:72vh;overflow-y:auto;">
+          ${rows.length ? `<table>
+            <tr><th>Date</th><th>Voucher</th><th>Narration</th><th class="num">Invoice Amt.</th><th class="num">Outstanding</th><th>Age</th></tr>
+            ${rows.map(r=>`<tr>
+              <td class="muted">${r.date}</td><td class="muted">${r.type}</td><td>${escapeHtml(r.narration||'—')}</td>
+              <td class="num">₹${fmt(r.amount)}</td><td class="num">₹${fmt(r.remaining)}</td>
+              <td class="muted" style="font-size:11.5px;">${r.ageDays}d (${r.bucket})</td>
+            </tr>`).join('')}
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="4">Total Outstanding</td><td class="num">₹${fmt(total)}</td><td></td></tr>
+          </table>` : `<div class="empty">Nothing outstanding — fully settled.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 /* ---------------- event handling ---------------- */
 function attachHandlers(){
   document.querySelectorAll('.navtab').forEach(b=>{
     b.addEventListener('click',()=>{ goToTab(b.dataset.tab); });
+  });
+
+  document.getElementById('openRecurringBtn')?.addEventListener('click', ()=>{
+    recurringDraft = null;
+    modal = 'recurring';
+    render();
+  });
+
+  if(modal==='backup'){
+    document.getElementById('downloadBackupBtn')?.addEventListener('click', downloadCompanyBackup);
+    document.getElementById('restoreFileInput')?.addEventListener('change', e=>{
+      const file = e.target.files[0];
+      const preview = document.getElementById('restorePreview');
+      const confirmBtn = document.getElementById('restoreConfirmBtn');
+      restoreFile = null;
+      if(confirmBtn) confirmBtn.disabled = true;
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = ev=>{
+        try{
+          const data = JSON.parse(ev.target.result);
+          if(!data || !Array.isArray(data.ledgers) || !Array.isArray(data.vouchers)){
+            if(preview) preview.textContent = "This doesn't look like a valid backup file.";
+            return;
+          }
+          restoreFile = data;
+          if(preview) preview.textContent = `Backup from "${data.companyName||'unknown company'}", exported ${data._exportedAt?fmtTimestamp(data._exportedAt):'unknown date'} — ${data.ledgers.length} ledgers, ${data.vouchers.length} vouchers, ${(data.items||[]).length} items.`;
+          if(confirmBtn) confirmBtn.disabled = false;
+        }catch(err){
+          if(preview) preview.textContent = "Could not read this file — make sure it's a backup .json exported from this app.";
+        }
+      };
+      reader.readAsText(file);
+    });
+    document.getElementById('restoreConfirmBtn')?.addEventListener('click', async ()=>{
+      if(!restoreFile) return;
+      const ok = window.confirm(`This will REPLACE all current data in "${currentCompany.name}" with the backup (${restoreFile.ledgers.length} ledgers, ${restoreFile.vouchers.length} vouchers). This cannot be undone. Continue?`);
+      if(!ok) return;
+      await restoreCompanyBackup(restoreFile);
+      restoreFile = null;
+      modal = null;
+      toast('Data restored from backup');
+      render();
+    });
+  }
+
+  if(view==='parties'){
+    document.querySelectorAll('[data-open-party]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        partyDetailLedgerId = el.dataset.openParty;
+        modal = 'partyDetail';
+        render();
+      });
+    });
+  }
+
+  if(view==='assets'){
+    document.getElementById('newAssetBtn')?.addEventListener('click', ()=>{
+      fixedAssetDraft = { name:'', ledgerId:'', cost:'', purchaseDate: new Date().toISOString().slice(0,10), usefulLifeYears:5, method:'SLM', salvageValue:0 };
+      render();
+    });
+    document.getElementById('cancelAssetBtn')?.addEventListener('click', ()=>{ fixedAssetDraft = null; render(); });
+    document.getElementById('faName')?.addEventListener('input', e=> fixedAssetDraft.name = e.target.value);
+    document.getElementById('faLedger')?.addEventListener('change', e=> fixedAssetDraft.ledgerId = e.target.value);
+    document.getElementById('faCost')?.addEventListener('input', e=> fixedAssetDraft.cost = e.target.value);
+    document.getElementById('faSalvage')?.addEventListener('input', e=> fixedAssetDraft.salvageValue = e.target.value);
+    document.getElementById('faPurchaseDate')?.addEventListener('change', e=> fixedAssetDraft.purchaseDate = e.target.value);
+    document.getElementById('faLife')?.addEventListener('input', e=> fixedAssetDraft.usefulLifeYears = e.target.value);
+    document.getElementById('faMethod')?.addEventListener('change', e=> fixedAssetDraft.method = e.target.value);
+    document.getElementById('saveAssetBtn')?.addEventListener('click', async ()=>{
+      const d = fixedAssetDraft;
+      if(!d.name.trim()){ toast('Enter an asset name'); return; }
+      if(!d.ledgerId){ toast('Select the linked Fixed Assets ledger'); return; }
+      if(!(Number(d.cost)>0)){ toast('Enter a cost greater than zero'); return; }
+      if(!d.purchaseDate){ toast('Select a purchase date'); return; }
+      if(!(Number(d.usefulLifeYears)>0)){ toast('Enter a useful life of at least 1 year'); return; }
+      state.fixedAssets.push({
+        id: uid('fa'), name: d.name.trim(), ledgerId: d.ledgerId, cost: Number(d.cost),
+        purchaseDate: d.purchaseDate, usefulLifeYears: Number(d.usefulLifeYears), method: d.method,
+        salvageValue: Number(d.salvageValue)||0, postedFYs: [], active: true, createdAt: new Date().toISOString(),
+      });
+      await saveFixedAssets();
+      fixedAssetDraft = null;
+      toast('Fixed asset added');
+      render();
+    });
+    document.querySelectorAll('[data-post-depreciation]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const currentFY = fyLabelForDate(new Date().toISOString().slice(0,10));
+        await postDepreciationForFY(el.dataset.postDepreciation, currentFY);
+        render();
+      });
+    });
+    document.querySelectorAll('[data-delete-asset]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const a = state.fixedAssets.find(x=>x.id===el.dataset.deleteAsset);
+        if(!a) return;
+        if(!window.confirm(`Remove "${a.name}" from the Fixed Asset Register? Depreciation vouchers already posted for it will NOT be deleted.`)) return;
+        state.fixedAssets = state.fixedAssets.filter(x=>x.id!==a.id);
+        await saveFixedAssets();
+        render();
+      });
+    });
+  }
+
+  if(modal==='recurring'){
+    document.getElementById('newRecurringBtn')?.addEventListener('click', ()=>{
+      recurringDraft = { name:'', type:'Payment', ledgerA:'', ledgerB:'', amount:'', narration:'', frequency:'monthly', nextDueDate: new Date().toISOString().slice(0,10) };
+      render();
+    });
+    document.getElementById('cancelRecurringBtn')?.addEventListener('click', ()=>{ recurringDraft = null; render(); });
+    document.getElementById('rTplName')?.addEventListener('input', e=> recurringDraft.name = e.target.value);
+    document.getElementById('rTplType')?.addEventListener('change', e=>{ recurringDraft.type = e.target.value; render(); });
+    document.getElementById('rTplLedgerA')?.addEventListener('change', e=> recurringDraft.ledgerA = e.target.value);
+    document.getElementById('rTplLedgerB')?.addEventListener('change', e=> recurringDraft.ledgerB = e.target.value);
+    document.getElementById('rTplAmount')?.addEventListener('input', e=> recurringDraft.amount = e.target.value);
+    document.getElementById('rTplFrequency')?.addEventListener('change', e=> recurringDraft.frequency = e.target.value);
+    document.getElementById('rTplStart')?.addEventListener('change', e=> recurringDraft.nextDueDate = e.target.value);
+    document.getElementById('rTplNarration')?.addEventListener('input', e=> recurringDraft.narration = e.target.value);
+    document.getElementById('saveRecurringBtn')?.addEventListener('click', async ()=>{
+      const d = recurringDraft;
+      if(!d.name.trim()){ toast('Enter a name for this template'); return; }
+      if(!d.ledgerA || !d.ledgerB){ toast('Select both ledgers'); return; }
+      if(d.ledgerA===d.ledgerB){ toast('The two ledgers must be different'); return; }
+      if(!(Number(d.amount)>0)){ toast('Enter an amount greater than zero'); return; }
+      if(!d.nextDueDate){ toast('Select a start date'); return; }
+      state.recurringTemplates.push({
+        id: uid('rtpl'), name: d.name.trim(), type: d.type, ledgerA: d.ledgerA, ledgerB: d.ledgerB,
+        amount: Number(d.amount), narration: d.narration.trim(), frequency: d.frequency,
+        nextDueDate: d.nextDueDate, lastGeneratedDate: null, active: true, createdAt: new Date().toISOString(),
+      });
+      await saveRecurringTemplates();
+      recurringDraft = null;
+      toast('Recurring template saved');
+      render();
+    });
+    document.querySelectorAll('[data-toggle-recurring]').forEach(el=>{
+      el.addEventListener('change', async ()=>{
+        const t = state.recurringTemplates.find(x=>x.id===el.dataset.toggleRecurring);
+        if(t){ t.active = el.checked; await saveRecurringTemplates(); }
+      });
+    });
+    document.querySelectorAll('[data-delete-recurring]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const t = state.recurringTemplates.find(x=>x.id===el.dataset.deleteRecurring);
+        if(!t) return;
+        if(!window.confirm(`Delete the recurring template "${t.name}"? This won't delete vouchers already generated from it.`)) return;
+        state.recurringTemplates = state.recurringTemplates.filter(x=>x.id!==t.id);
+        await saveRecurringTemplates();
+        render();
+      });
+    });
+    document.getElementById('generateDueBtn')?.addEventListener('click', ()=>{
+      const n = generateDueVouchers();
+      toast(n ? `Generated ${n} voucher${n===1?'':'s'}` : 'Nothing due right now');
+      render();
+    });
+  }
+
+  document.querySelectorAll('[data-print-invoice]').forEach(b=>{
+    b.addEventListener('click', ()=> printInvoiceForVoucher(b.dataset.printInvoice));
   });
 
   document.querySelectorAll('[data-delete-voucher]').forEach(b=>{
@@ -6435,6 +7366,10 @@ function attachHandlers(){
         entries = vform.entries.filter(e=>e.ledgerId && (e.dr||e.cr));
         if(entries.length<2){ toast('Add at least two ledger entries'); return; }
       }
+      if(currentCompany.lockDate && vform.date <= currentCompany.lockDate){
+        toast(`Vouchers dated on or before ${currentCompany.lockDate} are locked. Change the date, or clear the lock from Edit Company.`);
+        return;
+      }
       if(vform.id){
         const idx = state.vouchers.findIndex(v=>v.id===vform.id);
         if(idx>-1){
@@ -6528,10 +7463,12 @@ function attachHandlers(){
       const sign = Number(document.getElementById('newLedgerType').value);
       const gstRaw = document.getElementById('newLedgerGST').value;
       const msmeRaw = document.getElementById('newLedgerMSME')?.value;
+      const partyTypeRaw = document.getElementById('newLedgerPartyType')?.value;
       if(!name){ toast('Enter a ledger name'); return; }
       const ledger = { id: uid('l'), name, group, opening: openingRaw*sign };
       if(gstRaw !== '') ledger.gstRate = Number(gstRaw);
       if(msmeRaw === '1') ledger.isMSME = true;
+      if(partyTypeRaw === 'customer' || partyTypeRaw === 'supplier') ledger.partyType = partyTypeRaw;
       state.ledgers.push(ledger);
       await saveLedgers();
       toast('Ledger added');
@@ -6544,6 +7481,17 @@ function attachHandlers(){
         l.isMSME = !l.isMSME;
         await saveLedgers();
         toast(l.isMSME ? 'Marked as MSME supplier' : 'Unmarked as MSME supplier');
+        render();
+      });
+    });
+    document.querySelectorAll('[data-cycle-party]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const l = ledgerOf(el.dataset.cycleParty);
+        if(!l) return;
+        l.partyType = l.partyType==='customer' ? 'supplier' : l.partyType==='supplier' ? '' : 'customer';
+        if(!l.partyType) delete l.partyType;
+        await saveLedgers();
+        toast(l.partyType ? `Marked as ${l.partyType}` : 'Unmarked as a party');
         render();
       });
     });
