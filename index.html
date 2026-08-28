@@ -2618,6 +2618,8 @@ function render(){
     ${modal==='recurring' ? recurringModal() : ''}
     ${modal==='backup' ? backupModal() : ''}
     ${modal==='partyDetail' ? partyDetailModal() : ''}
+    ${modal==='assetsHelp' ? assetsHelpModal() : ''}
+    ${modal==='partiesHelp' ? partiesHelpModal() : ''}
     ${qaWidget()}
   `;
   attachHandlers();
@@ -3255,6 +3257,44 @@ function reconcileHelpModal(){
   `;
 }
 
+function assetsHelpModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;">
+        <div class="panel-head"><h2>How the Fixed Asset Register works</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.75;">
+            Click <strong style="color:var(--ink);">+ Add Fixed Asset</strong> and fill in the <strong style="color:var(--ink);">Cost</strong>, <strong style="color:var(--ink);">Salvage Value</strong> (what it'll be worth at the end of its life, if anything), <strong style="color:var(--ink);">Purchase Date</strong> and <strong style="color:var(--ink);">Useful Life</strong> in years. You also link it to a ledger under the "Fixed Assets" group — that ledger's balance IS the asset's book value, so make sure the asset was originally recorded there (e.g. via a Purchase or Payment voucher) before you register it here.<br><br>
+            Pick a <strong style="color:var(--ink);">Method</strong>:<br>
+            • <strong style="color:var(--ink);">Straight Line (SLM)</strong> — the same amount depreciates every year: (Cost − Salvage) ÷ Life. The first year is prorated by how many days you've actually owned it.<br>
+            • <strong style="color:var(--ink);">Written Down Value (WDV)</strong> — a fixed percentage of the asset's remaining book value depreciates each year, so the depreciation amount shrinks over time.<br><br>
+            The table shows each asset's current <strong style="color:var(--ink);">Book Value</strong> (read live from its ledger) and how much depreciation is <strong style="color:var(--ink);">due for the current financial year</strong>. Hit <strong style="color:var(--ink);">Post Dep.</strong> to record it — this posts a Journal voucher (Dr Depreciation Expense / Cr the asset's ledger), which lowers both the book value and the year's profit. Once posted for a year it's marked <strong style="color:var(--ink);">✓ Posted</strong> and can't be posted again for that same year, so you won't accidentally double-count it.
+          </p>
+          <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+            Nothing here happens automatically in the background — depreciation is only posted when you click the button, so your books stay exactly as you left them until you choose to run it.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function partiesHelpModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;">
+        <div class="panel-head"><h2>How Parties &amp; Ageing works</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.75;">
+            First, tag a ledger as a <strong style="color:var(--ink);">Customer</strong> or <strong style="color:var(--ink);">Supplier</strong> — go to the Accounts tab and click the party badge next to any ledger to cycle it (Not a party → Customer → Supplier). Once tagged, it shows up here automatically.<br><br>
+            This tab lists every invoice-type voucher for that party (Sales for customers, Purchases for suppliers) that isn't fully paid off yet, and works out how many days old each one is. Payments are matched to invoices <strong style="color:var(--ink);">oldest-first (FIFO)</strong> — so if a customer has three unpaid invoices and makes one payment, it clears the oldest invoice first, then the next, and so on. A payment received before any invoice exists is held as an advance and applied to the next invoice.<br><br>
+            Each row is bucketed into <strong style="color:var(--ink);">0-30 / 31-60 / 61-90 / 90+ days</strong> so you can see at a glance what's overdue and by how much. Click any row to open the full invoice-by-invoice breakdown for that party, including exactly how much of each invoice is still outstanding.<br><br>
+            <strong style="color:var(--ink);">Receivables</strong> (top) is money customers owe you; <strong style="color:var(--ink);">Payables</strong> (bottom) is money you owe suppliers. Both totals update live as you record Sales, Purchases, Receipts and Payments in the Day Book — there's nothing separate to save here.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
 function recurringModal(){
   const today = new Date().toISOString().slice(0,10);
   const dueCount = dueRecurringTemplates(today).length;
@@ -4800,10 +4840,16 @@ function renderView(){
   }
 }
 
-function masthead(title, sub){
+function masthead(title, sub, helpKey){
   const d = new Date();
   return `<div class="masthead">
-    <div><h1>${title}</h1><div class="sub">${sub||''}</div></div>
+    <div>
+      <div style="display:flex;align-items:baseline;gap:8px;">
+        <h1>${title}</h1>
+        ${helpKey ? `<button class="btn secondary small" data-open-help="${helpKey}" type="button" title="How does this work?" style="padding:2px 9px;font-size:11px;border-radius:20px;">ⓘ How this works</button>` : ''}
+      </div>
+      <div class="sub">${sub||''}</div>
+    </div>
     <div class="datebadge">${d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</div>
   </div>`;
 }
@@ -6843,7 +6889,7 @@ function assetDraftForm(){
 function viewAssets(){
   const currentFY = fyLabelForDate(new Date().toISOString().slice(0,10));
   return `
-    ${masthead('Fixed Asset Register',`Track assets and post depreciation for FY ${currentFY}`)}
+    ${masthead('Fixed Asset Register',`Track assets and post depreciation for FY ${currentFY}`,'assets')}
     <div class="panel">
       <div class="panel-body" style="padding:0;">
         ${state.fixedAssets.length ? `<table>
@@ -6901,7 +6947,7 @@ function viewParties(){
   const totalPayable = r2(suppRows.reduce((s,r)=>s+r.summary.total,0));
 
   return `
-    ${masthead('Parties','Customers & suppliers — outstanding balances by age')}
+    ${masthead('Parties','Customers & suppliers — outstanding balances by age','parties')}
     <div class="section-title">Receivables (Customers) — Outstanding ₹${fmt(totalReceivable)}</div>
     <div class="panel"><div class="panel-body" style="padding:0;">${partyAgeingTable(custRows, customers.length ? 'No outstanding receivables — every customer invoice is settled.' : 'No ledgers tagged as customers yet. Tag one from the Accounts tab.')}</div></div>
 
@@ -6947,6 +6993,13 @@ function attachHandlers(){
     recurringDraft = null;
     modal = 'recurring';
     render();
+  });
+
+  document.querySelectorAll('[data-open-help]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      modal = el.dataset.openHelp + 'Help';
+      render();
+    });
   });
 
   if(modal==='backup'){
