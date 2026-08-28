@@ -2271,6 +2271,7 @@ function render(){
     ${modal==='totalAssetsDetail' ? totalAssetsDetailModal() : ''}
     ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
     ${modal==='quickAddLedger' ? quickAddLedgerModal() : ''}
+    ${modal==='reconcileHelp' ? reconcileHelpModal() : ''}
     ${qaWidget()}
   `;
   attachHandlers();
@@ -2862,6 +2863,32 @@ function helpModal(){
             ` : `<button class="btn secondary small" id="contactSupportOpenBtn" type="button">💬 Contact Support</button>`}
           </div>
           ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function reconcileHelpModal(){
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;">
+        <div class="panel-head"><h2>How Bank Reconciliation works</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.75;">
+            Pick a <strong style="color:var(--ink);">bank ledger</strong>, then enter the <strong style="color:var(--ink);">statement date</strong> and the <strong style="color:var(--ink);">closing balance</strong> printed on your actual bank statement for that date.<br><br>
+            The table below fills in with every voucher that's touched this bank account up to that date. Go through your real statement and tick <strong style="color:var(--ink);">Cleared</strong> next to each one the bank has actually processed. Anything you leave unticked is treated as still outstanding — money your books already show but the bank hasn't caught up on yet.<br><br>
+            The summary panel then works out:<br>
+            • Balance as per Bank Statement (what you typed in)<br>
+            • <strong style="color:var(--ink);">+</strong> deposits/receipts in your books the bank hasn't credited yet<br>
+            • <strong style="color:var(--ink);">−</strong> payments/cheques in your books the bank hasn't presented yet<br>
+            • = Balance as per Books (calculated) — this should match your ledger's real balance<br><br>
+            If it matches, you'll see <strong style="color:var(--ink);">✓ Reconciled</strong>. If there's a gap, the <strong style="color:var(--ink);">Unreconciled Difference</strong> tells you something still needs explaining — usually a bank charge, interest, or a direct debit/credit that's on the statement but not yet entered as a voucher, or occasionally just a wrong tick above.<br><br>
+            Once it looks right, hit <strong style="color:var(--ink);">💾 Save Reconciliation</strong> to log this statement date, balance and difference into the history table — a running record you can check back on later, month by month.
+          </p>
+          <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+            This is a manual tick-off tool, not automatic bank-feed matching — you confirm each item against your real statement. The cleared/uncleared status is stored separately from the voucher itself, so editing a voucher later never wipes out its reconciliation history.
+          </p>
         </div>
       </div>
     </div>
@@ -6088,6 +6115,7 @@ function viewReconcile(){
           </select>
         </div>
         <div class="field"><label>Statement Date</label><input type="date" id="reconcileDate" value="${asOfDate}"></div>
+        <button class="btn secondary small" id="reconcileHelpBtn" type="button" title="How does this work?" style="align-self:center;">ⓘ How this works</button>
         <div class="field"><label>Statement Closing Balance (₹)</label><input type="number" step="0.01" id="reconcileBalance" placeholder="As shown on your bank statement" value="${escapeAttr(String(reconcileDraft.balance))}"></div>
         <button class="btn" id="saveReconcileBtn" type="button" ${hasBalance?'':'disabled'}>💾 Save Reconciliation</button>
       </div>
@@ -6690,6 +6718,10 @@ function attachHandlers(){
     });
     document.getElementById('reconcileDate')?.addEventListener('change', e=>{
       reconcileDraft.date = e.target.value;
+      render();
+    });
+    document.getElementById('reconcileHelpBtn')?.addEventListener('click', ()=>{
+      modal = 'reconcileHelp';
       render();
     });
     document.getElementById('reconcileBalance')?.addEventListener('input', e=>{
