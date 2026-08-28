@@ -1937,7 +1937,7 @@ function cashFlowData(){
       if(cls==='investing') investing+=net;
       else if(cls==='financing') financing+=net;
       else operating+=net;
-      detail[cls].push({date:v.date, type:v.type, narration:v.narration||v.type, ledger:l.name, amount:net});
+      detail[cls].push({date:v.date, type:v.type, narration:v.narration||v.type, ledger:l.name, ledgerId:l.id, amount:net});
     }
   }
   const openingCash = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank').reduce((s,l)=>s+(l.opening||0),0);
@@ -3036,7 +3036,7 @@ function incomeDetailModal(){
         <div class="panel-body" style="padding:0;">
           <table>
             <tr><th>Ledger</th><th class="num">Amount</th></tr>
-            ${d.ledgers.map(l=>`<tr><td>${l.name}</td><td class="num">₹${fmt(d.sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">No ledgers in this category yet.</td></tr>`}
+            ${d.ledgers.map(l=>`<tr data-ledger-detail="${l.id}" style="cursor:pointer;"><td>${l.name}</td><td class="num">₹${fmt(d.sign*ledgerBalance(l.id))}</td></tr>`).join('') || `<tr><td colspan="2" class="empty">No ledgers in this category yet.</td></tr>`}
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Total</td><td class="num">₹${fmt(d.total)}</td></tr>
           </table>
         </div>
@@ -6565,7 +6565,7 @@ function reportTrialBalance(){
     <div class="panel"><div class="panel-body" style="padding:0;">
       <table>
         <tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th></tr>
-        ${tb.map(r=>`<tr><td>${r.l.name}</td><td class="num">${r.b>0?fmt(r.b):''}</td><td class="num">${r.b<0?fmt(r.b):''}</td></tr>`).join('')}
+        ${tb.map(r=>`<tr data-ledger-detail="${r.l.id}" style="cursor:pointer;"><td>${r.l.name}</td><td class="num">${r.b>0?fmt(r.b):''}</td><td class="num">${r.b<0?fmt(r.b):''}</td></tr>`).join('')}
         <tr style="font-weight:600;border-top:2px solid var(--ink);"><td>Total</td><td class="num">₹${fmt(tbDr)}</td><td class="num">₹${fmt(tbCr)}</td></tr>
       </table>
     </div></div>
@@ -6828,7 +6828,7 @@ function reportCashFlow(){
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.operating.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
+          ${cf.detail.operating.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Operating Activities</td><td class="num">₹${fmt(cf.operating)}</td></tr>
         </table>
       </div>
@@ -6838,7 +6838,7 @@ function reportCashFlow(){
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.investing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
+          ${cf.detail.investing.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Investing Activities</td><td class="num">₹${fmt(cf.investing)}</td></tr>
         </table>
       </div>
@@ -6848,7 +6848,7 @@ function reportCashFlow(){
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.financing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
+          ${cf.detail.financing.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Financing Activities</td><td class="num">₹${fmt(cf.financing)}</td></tr>
         </table>
       </div>
