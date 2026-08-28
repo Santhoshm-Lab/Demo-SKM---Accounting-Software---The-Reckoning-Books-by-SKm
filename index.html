@@ -408,6 +408,7 @@ let state = {
   fixedAssets: [], // [{id, name, ledgerId, cost, purchaseDate, usefulLifeYears, method, salvageValue, postedFYs, active}]
 };
 let view = 'dashboard';
+let activeFY = null; // FY label (e.g. '2025-26') the user has chosen to view for the open company; null = "All Years" (no filter, the original all-time behaviour)
 let vform = null; // active voucher form draft
 let quickLedgerFocus = null; // remembers which ledger field to fill after creating a ledger from within the voucher form: {type:'entry', index} | {type:'single', which:'A'|'B'}
 let calState = { year: new Date().getFullYear(), month: new Date().getMonth(), selected: new Date().toISOString().slice(0,10) };
@@ -531,17 +532,23 @@ function humanDate(dateStr){
 // preceding FY's figures as a comparative. prevPl/prevBs come back null for a company with nothing
 // on the books before the current FY (a brand-new company) — callers use that to skip the
 // comparative column entirely rather than show a meaningless 0 vs 0.
-function currentAndPriorFYData(){
+// overrideFY lets a caller pin this to a specific financial year (e.g. the one the user chose
+// via the FY picker) instead of always using today's actual FY. When the pinned FY is the real
+// current (still-open) year, figures still run up to today, same as before; when it's a past,
+// already-closed year, figures run to that year's own FY-end date instead of today.
+function currentAndPriorFYData(overrideFY){
   const today = new Date().toISOString().slice(0,10);
-  const currentFY = fyLabelForDate(today);
-  const priorFYStartYear = parseInt(currentFY.slice(0,4),10) - 1;
-  const priorFY = `${priorFYStartYear}-${String((priorFYStartYear+1)%100).padStart(2,'0')}`;
+  const actualCurrentFY = fyLabelForDate(today);
+  const currentFY = overrideFY || actualCurrentFY;
+  const priorFY = priorFYLabel(currentFY);
   const curBounds = fyBoundsForLabel(currentFY);
   const priorBounds = fyBoundsForLabel(priorFY);
+  const isHistorical = currentFY !== actualCurrentFY;
+  const asOfDate = isHistorical ? curBounds.end : today;
 
-  const pl = scheduleIIIProfitLossData(curBounds.start, today);
-  const cumProfitToday = scheduleIIIProfitLossData(null, today).profitForPeriod;
-  const bs = scheduleIIIBalanceSheetData(cumProfitToday, today);
+  const pl = scheduleIIIProfitLossData(curBounds.start, asOfDate);
+  const cumProfitAsOf = scheduleIIIProfitLossData(null, asOfDate).profitForPeriod;
+  const bs = scheduleIIIBalanceSheetData(cumProfitAsOf, asOfDate);
 
   const hasPriorData = state.vouchers.some(v=>v.date < curBounds.start);
   let prevPl = null, prevBs = null;
@@ -550,11 +557,11 @@ function currentAndPriorFYData(){
     const cumProfitPriorEnd = scheduleIIIProfitLossData(null, priorBounds.end).profitForPeriod;
     prevBs = scheduleIIIBalanceSheetData(cumProfitPriorEnd, priorBounds.end);
   }
-  const periodLabel = `${humanDate(curBounds.start)} to ${humanDate(today)}`;
-  const asOfLabel = humanDate(today);
+  const periodLabel = `${humanDate(curBounds.start)} to ${humanDate(asOfDate)}`;
+  const asOfLabel = humanDate(asOfDate);
   const prevPeriodLabel = hasPriorData ? `${humanDate(priorBounds.start)} to ${humanDate(priorBounds.end)}` : '';
   const prevAsOfLabel = hasPriorData ? humanDate(priorBounds.end) : '';
-  return { currentFY, priorFY, curBounds, priorBounds, pl, bs, prevPl, prevBs, hasPriorData, periodLabel, asOfLabel, prevPeriodLabel, prevAsOfLabel };
+  return { currentFY, priorFY, curBounds, priorBounds, pl, bs, prevPl, prevBs, hasPriorData, periodLabel, asOfLabel, prevPeriodLabel, prevAsOfLabel, isHistorical };
 }
 function itemsSummary(v){
   if(!v.items || !v.items.length) return '';
@@ -882,6 +889,7 @@ async function restoreHistorySnapshot(snap){
         return;
       }
       currentCompany = c; await loadState();
+      activeFY = null; // don't carry an FY filter over from whatever company was open before
     }
     screen = 'app';
     view = snap.view || 'dashboard';
@@ -1159,6 +1167,22 @@ async function loadState(){
   }
   if(!state.ledgers.length) state.ledgers = DEFAULT_LEDGERS.slice();
   if(ensureCoreLedgers()) await saveLedgers();
+}
+// Shared "open this company" flow — used from the main company-selection screen, right after
+// creating a brand-new company, and from the admin's read-only "view company" action. Loads the
+// company's data and, if its vouchers span more than one financial year, stops short of the
+// dashboard and shows the FY picker modal first so the user chooses what "this company's books"
+// means for the Day Book and Reports before looking at anything.
+async function enterCompanyApp(company, opts={}){
+  currentCompany = company;
+  if(opts.adminViewOnly) adminViewOnlyCompanyId = company.id;
+  await loadState();
+  activeFY = null;
+  view = 'dashboard';
+  screen = 'app';
+  modal = distinctFYsInVouchers().length > 1 ? 'fyPicker' : null;
+  render();
+  pushHistory();
 }
 function ensureCoreLedgers(){
   let changed = false;
@@ -2068,7 +2092,7 @@ function buildReportsWorkbook(){
 
   XLSX.utils.book_append_sheet(wb, buildTrialBalanceSheet(), 'Trial Balance');
 
-  const fyData = currentAndPriorFYData();
+  const fyData = currentAndPriorFYData(activeFY);
   XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(fyData.pl, currentCompany.name, fyData.periodLabel, fyData.prevPl, fyData.prevPeriodLabel), 'Income Statement');
   XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(fyData.bs, currentCompany.name, fyData.asOfLabel, fyData.prevBs, fyData.prevAsOfLabel), 'Balance Sheet');
 
@@ -2100,7 +2124,7 @@ function exportTrialBalanceToExcel(){
 }
 function exportPLToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const fyData = currentAndPriorFYData();
+  const fyData = currentAndPriorFYData(activeFY);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(fyData.pl, currentCompany.name, fyData.periodLabel, fyData.prevPl, fyData.prevPeriodLabel), 'Income Statement');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
@@ -2109,7 +2133,7 @@ function exportPLToExcel(){
 }
 function exportBalanceSheetToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const fyData = currentAndPriorFYData();
+  const fyData = currentAndPriorFYData(activeFY);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(fyData.bs, currentCompany.name, fyData.asOfLabel, fyData.prevBs, fyData.prevAsOfLabel), 'Balance Sheet');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
@@ -2620,6 +2644,7 @@ function render(){
     ${modal==='partyDetail' ? partyDetailModal() : ''}
     ${modal==='assetsHelp' ? assetsHelpModal() : ''}
     ${modal==='partiesHelp' ? partiesHelpModal() : ''}
+    ${modal==='fyPicker' ? fyPickerModal() : ''}
     ${qaWidget()}
   `;
   attachHandlers();
@@ -3185,6 +3210,33 @@ function incomeStatementDetailModal(){
             <tr><td>Income Tax Expense</td><td class="num">(₹${fmt(is.taxExpense)})</td></tr>
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit for the Period</td><td class="num ${is.profitForPeriod>=0?'pos':'neg'}">₹${fmt(is.profitForPeriod)}</td></tr>
           </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function fyPickerModal(){
+  if(!currentCompany) return '';
+  const fys = distinctFYsInVouchers();
+  const todayFY = fyLabelForDate(new Date().toISOString().slice(0,10));
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:440px;">
+        <div class="panel-head"><h2>Select Financial Year</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body">
+          <p class="muted" style="font-size:12.5px;line-height:1.7;margin-top:0;">
+            <strong style="color:var(--ink);">${escapeHtml(currentCompany.name)}</strong> has vouchers across ${fys.length} financial years. Which one would you like to see the Day Book and Reports for? You can change this any time from the badge next to the date.
+          </p>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+            ${fys.map(fy=>`
+              <button class="btn secondary" data-select-fy="${fy}" type="button" style="text-align:left;display:flex;justify-content:space-between;align-items:center;">
+                <span>FY ${fy}</span>
+                ${fy===todayFY?'<span class="pill pos">Current</span>':''}
+              </button>`).join('')}
+            <button class="btn secondary" data-select-fy="__all__" type="button" style="text-align:left;margin-top:2px;">
+              📚 All Years <span class="muted">— every voucher, no filter</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -3935,12 +3987,7 @@ function renderGateway(){
       const id = el.dataset.selectCo;
       const c = companies.find(x=>x.id===id);
       if(!c || !canAccessCompany(c)) return;
-      currentCompany = c;
-      await loadState();
-      screen = 'app';
-      view = 'dashboard';
-      render();
-      pushHistory();
+      await enterCompanyApp(c);
     });
   });
   document.getElementById('coName').addEventListener('input', e=>{
@@ -3999,12 +4046,7 @@ function renderGateway(){
     companies.push(company);
     await saveCompanyMeta(company);
     coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
-    currentCompany = company;
-    await loadState();
-    screen = 'app';
-    view = 'dashboard';
-    render();
-    pushHistory();
+    await enterCompanyApp(company);
   });
 
   document.getElementById('dismissAnnouncementBtn')?.addEventListener('click', ()=>{
@@ -4355,14 +4397,7 @@ function renderGateway(){
         const cid = el.dataset.viewCompany;
         const c = companies.find(x=>x.id===cid);
         if(!c) return;
-        adminViewOnlyCompanyId = cid;
-        currentCompany = c;
-        modal = null;
-        await loadState();
-        screen = 'app';
-        view = 'dashboard';
-        render();
-        pushHistory();
+        await enterCompanyApp(c, {adminViewOnly:true});
       });
     });
     document.querySelectorAll('[data-reassign-company]').forEach(el=>{
@@ -4842,6 +4877,8 @@ function renderView(){
 
 function masthead(title, sub, helpKey){
   const d = new Date();
+  const fys = state.vouchers ? distinctFYsInVouchers() : [];
+  const showFYBadge = fys.length > 1;
   return `<div class="masthead">
     <div>
       <div style="display:flex;align-items:baseline;gap:8px;">
@@ -4850,7 +4887,10 @@ function masthead(title, sub, helpKey){
       </div>
       <div class="sub">${sub||''}</div>
     </div>
-    <div class="datebadge">${d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      ${showFYBadge ? `<button class="datebadge" id="fyBadgeBtn" type="button" style="cursor:pointer;border:1px solid var(--border-strong);" title="Change financial year">${activeFY ? `FY ${activeFY}` : 'All Years'} ▾</button>` : ''}
+      <div class="datebadge">${d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</div>
+    </div>
   </div>`;
 }
 
@@ -5692,6 +5732,15 @@ function nextFYLabel(label){
   const startYear = parseInt(label.slice(0,4),10) + 1;
   return `${startYear}-${String((startYear+1)%100).padStart(2,'0')}`;
 }
+function priorFYLabel(label){
+  const startYear = parseInt(label.slice(0,4),10) - 1;
+  return `${startYear}-${String((startYear+1)%100).padStart(2,'0')}`;
+}
+// Every financial year that has at least one voucher dated in it, most recent first.
+function distinctFYsInVouchers(){
+  const set = new Set(state.vouchers.map(v=>fyLabelForDate(v.date)));
+  return Array.from(set).sort().reverse();
+}
 // Calendar start/end dates for a FY label (e.g. '2026-27'), anchored on the company's fyStart month+day.
 function fyBoundsForLabel(fyLabel){
   const startYear = parseInt(fyLabel.slice(0,4),10);
@@ -5905,10 +5954,14 @@ function gstPreview(g){
 }
 
 function viewDaybook(){
-  const rows = state.vouchers.slice().reverse();
+  let rows = state.vouchers.slice().reverse();
+  if(activeFY){
+    const b = fyBoundsForLabel(activeFY);
+    rows = rows.filter(v=> v.date >= b.start && v.date <= b.end);
+  }
   const dueRecurringCount = dueRecurringTemplates(new Date().toISOString().slice(0,10)).length;
   return `
-    ${masthead('Day Book','All vouchers, most recent first')}
+    ${masthead('Day Book', activeFY ? `Vouchers for FY ${activeFY}, most recent first` : 'All vouchers, most recent first')}
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
       <button class="btn secondary small" id="openRecurringBtn" type="button">🔁 Recurring Vouchers${dueRecurringCount?` — ${dueRecurringCount} due`:''}</button>
     </div>
@@ -6423,7 +6476,7 @@ function reportTrialBalance(){
   `;
 }
 function reportIncomeStatement(){
-  const fy = currentAndPriorFYData();
+  const fy = currentAndPriorFYData(activeFY);
   const pl = fy.pl, pp = fy.prevPl, hasPrev = fy.hasPriorData;
   const money = n => `₹${fmt(n)}`;
   const paren = n => `(₹${fmt(n)})`;
@@ -6471,7 +6524,7 @@ function reportBalanceSheet(){
   const ratios = ratioAnalysisData(is, ifrsBs);
   const notes = balanceSheetInterpretation(ifrsBs, ratios);
 
-  const fy = currentAndPriorFYData();
+  const fy = currentAndPriorFYData(activeFY);
   const bs = fy.bs, pb = fy.prevBs, hasPrev = fy.hasPriorData;
   const liabilities = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
   const cols = hasPrev ? 3 : 2;
@@ -6998,6 +7051,21 @@ function attachHandlers(){
   document.querySelectorAll('[data-open-help]').forEach(el=>{
     el.addEventListener('click', ()=>{
       modal = el.dataset.openHelp + 'Help';
+      render();
+    });
+  });
+
+  document.getElementById('fyBadgeBtn')?.addEventListener('click', ()=>{
+    modal = 'fyPicker';
+    render();
+  });
+
+  document.querySelectorAll('[data-select-fy]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const fy = el.dataset.selectFy;
+      activeFY = fy==='__all__' ? null : fy;
+      modal = null;
+      toast(activeFY ? `Now viewing FY ${activeFY}` : 'Now viewing all years');
       render();
     });
   });
