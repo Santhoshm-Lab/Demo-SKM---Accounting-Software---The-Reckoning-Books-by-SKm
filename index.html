@@ -490,6 +490,16 @@ function fmtTimestamp(iso){
     return new Date(iso).toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
   }catch(e){ return '—'; }
 }
+function reportAsOfDateLabel(){
+  return new Date().toLocaleDateString('en-IN', {day:'2-digit', month:'long', year:'numeric'});
+}
+function reportPeriodLabel(){
+  const start = (currentCompany && (currentCompany.booksFrom||currentCompany.fyStart)) || defaultFYStart();
+  let startLabel;
+  try{ startLabel = new Date(start).toLocaleDateString('en-IN', {day:'2-digit', month:'long', year:'numeric'}); }
+  catch(e){ startLabel = start; }
+  return `${startLabel} to ${reportAsOfDateLabel()}`;
+}
 function itemsSummary(v){
   if(!v.items || !v.items.length) return '';
   const text = v.items.map(it=>`${it.qty}× ${it.name}`).join(', ');
@@ -1199,6 +1209,121 @@ function balanceSheetIFRSData(profit){
     currentLiabilities, currentLiabTotal, totalEquityAndLiab };
 }
 
+/* ---------------- Schedule III (Division I) statement data ----------------
+   Maps this app's chart-of-accounts groups onto the face-of-Balance-Sheet and
+   face-of-Statement-of-Profit-and-Loss line items prescribed by Schedule III
+   (Division I — companies applying the Accounting Standards (AS) Rules, 2006)
+   to the Companies Act, 2013, including the items added by the 2021 amendment
+   (e.g. the MSME/Others split within Trade Payables). Classification below is a
+   best-effort mapping driven by account group plus ledger name / GST type — this
+   app's flat chart of accounts does not itself carry Schedule III sub-heads, and
+   note-level disclosures that need extra data this app doesn't track (MSME
+   vendor flags, ageing schedules, share reconciliation, promoter shareholding,
+   the Additional Regulatory Information block, etc.) are intentionally left out
+   of the face of the statement rather than shown with fabricated figures. */
+function scheduleIIIProfitLossData(){
+  const revenueLedgers = state.ledgers.filter(l=>l.group==='sales');
+  const revenueFromOperations = revenueLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+
+  const otherIncomeLedgers = state.ledgers.filter(l=>l.group==='dinc');
+  const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+
+  const totalIncome = revenueFromOperations + otherIncome;
+
+  const purchaseLedgers = state.ledgers.filter(l=>l.group==='purch');
+  const purchasesOfStockInTrade = purchaseLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const expenseLedgers = state.ledgers.filter(l=>l.group==='dexp' || l.group==='iexp');
+  const employeeLedgers = expenseLedgers.filter(l=>/salary|wages|staff|employee|bonus|provident/i.test(l.name));
+  const depreciationLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && /depreciat|amorti/i.test(l.name));
+  const financeCostLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && !depreciationLedgers.includes(l) && /interest|bank charge|finance cost/i.test(l.name));
+  const otherExpenseLedgers = expenseLedgers.filter(l=>!employeeLedgers.includes(l) && !depreciationLedgers.includes(l) && !financeCostLedgers.includes(l));
+
+  const employeeBenefitsExpense = employeeLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const depreciationExpense = depreciationLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const financeCosts = financeCostLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const otherExpenses = otherExpenseLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+
+  const totalExpenses = purchasesOfStockInTrade + employeeBenefitsExpense + depreciationExpense + financeCosts + otherExpenses;
+
+  const profitBeforeExceptionalAndTax = totalIncome - totalExpenses;
+  const exceptionalItems = 0;
+  const profitBeforeTax = profitBeforeExceptionalAndTax - exceptionalItems;
+  const currentTax = 0, deferredTax = 0; // income tax not separately tracked in this system
+  const taxExpense = currentTax + deferredTax;
+  const profitForPeriod = profitBeforeTax - taxExpense;
+
+  return { revenueLedgers, revenueFromOperations, otherIncomeLedgers, otherIncome, totalIncome,
+    purchaseLedgers, purchasesOfStockInTrade,
+    employeeLedgers, employeeBenefitsExpense,
+    depreciationLedgers, depreciationExpense,
+    financeCostLedgers, financeCosts,
+    otherExpenseLedgers, otherExpenses,
+    totalExpenses, profitBeforeExceptionalAndTax, exceptionalItems, profitBeforeTax,
+    currentTax, deferredTax, taxExpense, profitForPeriod };
+}
+function scheduleIIIBalanceSheetData(profit){
+  // Non-current assets — Property, Plant and Equipment
+  const ppe = state.ledgers.filter(l=>l.group==='fa');
+  const ppeTotal = ppe.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const nonCurrentAssetsTotal = ppeTotal;
+
+  // Current assets — split the 'Current Assets' group into Inventories / Trade Receivables / Other Current Assets
+  const caLedgers = state.ledgers.filter(l=>l.group==='ca');
+  const otherCurrentAssetLedgers = caLedgers.filter(l=>l.gstType && l.gstType.startsWith('input'));
+  const inventoryLedgers = caLedgers.filter(l=>!otherCurrentAssetLedgers.includes(l) && /stock|inventor/i.test(l.name));
+  const tradeReceivableLedgers = caLedgers.filter(l=>!otherCurrentAssetLedgers.includes(l) && !inventoryLedgers.includes(l));
+  const cashLedgers = state.ledgers.filter(l=>l.group==='cash' || l.group==='bank');
+
+  const inventoriesTotal = inventoryLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const tradeReceivablesTotal = tradeReceivableLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const cashTotal = cashLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const otherCurrentAssetsTotal = otherCurrentAssetLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const currentAssetsTotal = inventoriesTotal + tradeReceivablesTotal + cashTotal + otherCurrentAssetsTotal;
+
+  const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
+
+  // Shareholders' funds
+  const shareCapitalLedgers = state.ledgers.filter(l=>l.group==='cap');
+  const shareCapitalTotal = shareCapitalLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const reservesAndSurplus = profit; // Surplus i.e. balance in Statement of Profit and Loss — no separate opening reserves tracked
+  const shareholdersFundsTotal = shareCapitalTotal + reservesAndSurplus;
+
+  // Non-current liabilities — Long-term Borrowings
+  const longTermBorrowings = state.ledgers.filter(l=>l.group==='loan');
+  const longTermBorrowingsTotal = longTermBorrowings.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const nonCurrentLiabTotal = longTermBorrowingsTotal;
+
+  // Current liabilities — split 'Current Liabilities' into Trade Payables (MSME/Others, per the 2021 amendment) / Other Current Liabilities
+  const curlLedgers = state.ledgers.filter(l=>l.group==='curl');
+  const tradePayableLedgers = curlLedgers.filter(l=>!(l.gstType && l.gstType.startsWith('output')) && /payable|creditor|supplier|vendor/i.test(l.name));
+  const otherCurrentLiabLedgers = curlLedgers.filter(l=>!tradePayableLedgers.includes(l));
+  const msmeTradePayableLedgers = tradePayableLedgers.filter(l=>l.isMSME);
+  const otherTradePayableLedgers = tradePayableLedgers.filter(l=>!l.isMSME);
+  const tradePayablesTotal = tradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const msmeTradePayablesTotal = msmeTradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const otherTradePayablesTotal = otherTradePayableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const otherCurrentLiabTotal = otherCurrentLiabLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const currentLiabTotal = tradePayablesTotal + otherCurrentLiabTotal;
+
+  const totalEquityAndLiab = shareholdersFundsTotal + nonCurrentLiabTotal + currentLiabTotal;
+
+  return {
+    ppe, ppeTotal, nonCurrentAssetsTotal,
+    inventoryLedgers, inventoriesTotal,
+    tradeReceivableLedgers, tradeReceivablesTotal,
+    cashLedgers, cashTotal,
+    otherCurrentAssetLedgers, otherCurrentAssetsTotal,
+    currentAssetsTotal, totalAssets,
+    shareCapitalLedgers, shareCapitalTotal, reservesAndSurplus, shareholdersFundsTotal,
+    longTermBorrowings, longTermBorrowingsTotal, nonCurrentLiabTotal,
+    tradePayableLedgers, tradePayablesTotal, msmeTradePayableLedgers, msmeTradePayablesTotal,
+    otherTradePayableLedgers, otherTradePayablesTotal,
+    otherCurrentLiabLedgers, otherCurrentLiabTotal,
+    currentLiabTotal, totalEquityAndLiab,
+  };
+}
+
 function ratioAnalysisData(is, bs){
   const currentAssets = bs.currentAssetsTotal;
   const currentLiab = bs.currentLiabTotal;
@@ -1313,6 +1438,124 @@ function buildBalanceSheetIFRSSheet(bs){
   ];
   return XLSX.utils.aoa_to_sheet(rows);
 }
+
+/* Schedule III (Division I) — Balance Sheet, in the Part I face-of-statement layout,
+   including the Trade Payables MSME/Others split added by the 2021 amendment. */
+function buildScheduleIIIBalanceSheetSheet(bs, companyName, asOfDate){
+  const rows = [
+    [companyName || 'Company Name'],
+    ['Balance Sheet as at ' + asOfDate],
+    ['(Pursuant to Schedule III, Division I to the Companies Act, 2013 — figures in ₹)'],
+    [],
+    ['Particulars', 'Note', 'Figures as at end of current reporting period'],
+    ['I. EQUITY AND LIABILITIES'],
+    ["(1) Shareholders' Funds"],
+    ['      (a) Share Capital', '', r2(bs.shareCapitalTotal)],
+    ...bs.shareCapitalLedgers.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['      (b) Reserves and Surplus', '', r2(bs.reservesAndSurplus)],
+    ["Total Shareholders' Funds", '', r2(bs.shareholdersFundsTotal)],
+    [],
+    ['(2) Share Application Money Pending Allotment', '', 0],
+    [],
+    ['(3) Non-Current Liabilities'],
+    ['      (a) Long-term Borrowings', '', r2(bs.longTermBorrowingsTotal)],
+    ...bs.longTermBorrowings.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['      (b) Deferred Tax Liabilities (Net)', '', 0],
+    ['      (c) Other Long-term Liabilities', '', 0],
+    ['      (d) Long-term Provisions', '', 0],
+    ['Total Non-Current Liabilities', '', r2(bs.nonCurrentLiabTotal)],
+    [],
+    ['(4) Current Liabilities'],
+    ['      (a) Short-term Borrowings', '', 0],
+    ['      (b) Trade Payables', '', r2(bs.tradePayablesTotal)],
+    ['            (A) total outstanding dues of micro enterprises and small enterprises', '', r2(bs.msmeTradePayablesTotal)],
+    ...bs.msmeTradePayableLedgers.map(l=>['                  '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['            (B) total outstanding dues of creditors other than micro enterprises and small enterprises', '', r2(bs.otherTradePayablesTotal)],
+    ...bs.otherTradePayableLedgers.map(l=>['                  '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['      (c) Other Current Liabilities', '', r2(bs.otherCurrentLiabTotal)],
+    ...bs.otherCurrentLiabLedgers.map(l=>['            '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['      (d) Short-term Provisions', '', 0],
+    ['Total Current Liabilities', '', r2(bs.currentLiabTotal)],
+    [],
+    ['TOTAL (EQUITY AND LIABILITIES)', '', r2(bs.totalEquityAndLiab)],
+    [],
+    ['II. ASSETS'],
+    ['Non-current Assets'],
+    ['      (a) Property, Plant and Equipment', '', r2(bs.ppeTotal)],
+    ...bs.ppe.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      (b) Non-current Investments', '', 0],
+    ['      (c) Deferred Tax Assets (Net)', '', 0],
+    ['      (d) Long-term Loans and Advances', '', 0],
+    ['      (e) Other Non-current Assets', '', 0],
+    ['Total Non-Current Assets', '', r2(bs.nonCurrentAssetsTotal)],
+    [],
+    ['Current Assets'],
+    ['      (a) Current Investments', '', 0],
+    ['      (b) Inventories', '', r2(bs.inventoriesTotal)],
+    ...bs.inventoryLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      (c) Trade Receivables', '', r2(bs.tradeReceivablesTotal)],
+    ...bs.tradeReceivableLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      (d) Cash and Cash Equivalents', '', r2(bs.cashTotal)],
+    ...bs.cashLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      (e) Short-term Loans and Advances', '', 0],
+    ['      (f) Other Current Assets', '', r2(bs.otherCurrentAssetsTotal)],
+    ...bs.otherCurrentAssetLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['Total Current Assets', '', r2(bs.currentAssetsTotal)],
+    [],
+    ['TOTAL ASSETS', '', r2(bs.totalAssets)],
+    [],
+    ['Note: This statement presents the face-of-Balance-Sheet line items prescribed by Schedule III (Division I) to the'],
+    ['Companies Act, 2013 (as amended in 2021). Note-level disclosures that require data this system does not separately'],
+    ['track — MSME ageing schedules, share capital reconciliation, promoter shareholding, the Additional Regulatory'],
+    ['Information block, etc. — are not included.'],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+/* Schedule III (Division I) — Statement of Profit and Loss, Part II face-of-statement layout. */
+function buildScheduleIIIPLSheet(pl, companyName, periodLabel){
+  const rows = [
+    [companyName || 'Company Name'],
+    ['Statement of Profit and Loss for the period ended ' + periodLabel],
+    ['(Pursuant to Schedule III, Division I to the Companies Act, 2013 — figures in ₹)'],
+    [],
+    ['Particulars', 'Note', 'Figures for current reporting period'],
+    ['I. Revenue from Operations', '', r2(pl.revenueFromOperations)],
+    ...pl.revenueLedgers.map(l=>['      '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['II. Other Income', '', r2(pl.otherIncome)],
+    ...pl.otherIncomeLedgers.map(l=>['      '+l.name, '', r2(-ledgerBalance(l.id))]),
+    ['III. Total Income (I + II)', '', r2(pl.totalIncome)],
+    [],
+    ['IV. Expenses'],
+    ['      Purchases of Stock-in-Trade', '', r2(pl.purchasesOfStockInTrade)],
+    ...pl.purchaseLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      Changes in Inventories of Finished Goods, Work-in-Progress and Stock-in-Trade', '', 0],
+    ['      Employee Benefits Expense', '', r2(pl.employeeBenefitsExpense)],
+    ...pl.employeeLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      Finance Costs', '', r2(pl.financeCosts)],
+    ...pl.financeCostLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      Depreciation and Amortisation Expense', '', r2(pl.depreciationExpense)],
+    ...pl.depreciationLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['      Other Expenses', '', r2(pl.otherExpenses)],
+    ...pl.otherExpenseLedgers.map(l=>['            '+l.name, '', r2(ledgerBalance(l.id))]),
+    ['Total Expenses (IV)', '', r2(pl.totalExpenses)],
+    [],
+    ['V. Profit Before Exceptional and Extraordinary Items and Tax (III - IV)', '', r2(pl.profitBeforeExceptionalAndTax)],
+    ['VI. Exceptional Items', '', r2(pl.exceptionalItems)],
+    ['VII. Profit Before Tax (V - VI)', '', r2(pl.profitBeforeTax)],
+    ['VIII. Tax Expense'],
+    ['      (1) Current Tax', '', r2(pl.currentTax)],
+    ['      (2) Deferred Tax', '', r2(pl.deferredTax)],
+    ['IX. Profit for the Period', '', r2(pl.profitForPeriod)],
+    [],
+    ['X. Earnings Per Equity Share'],
+    ['      (1) Basic', '', '—'],
+    ['      (2) Diluted', '', '—'],
+    [],
+    ['Note: Income tax is not separately tracked from GST in this system, so Current Tax / Deferred Tax show as nil;'],
+    ['Earnings Per Share is not computed as share count and face value are not tracked.'],
+  ];
+  return XLSX.utils.aoa_to_sheet(rows);
+}
 function buildRatiosSheet(ratios){
   const rows = [
     ['Ratio Analysis'],[],
@@ -1375,12 +1618,14 @@ function buildReportsWorkbook(){
 
   XLSX.utils.book_append_sheet(wb, buildTrialBalanceSheet(), 'Trial Balance');
 
+  const pl = scheduleIIIProfitLossData();
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(pl, currentCompany.name, reportPeriodLabel()), 'Income Statement');
+
+  const sbs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(sbs, currentCompany.name, reportAsOfDateLabel()), 'Balance Sheet');
+
   const is = incomeStatementData();
-  XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(is), 'Income Statement');
-
   const bs = balanceSheetIFRSData(is.profitForPeriod);
-  XLSX.utils.book_append_sheet(wb, buildBalanceSheetIFRSSheet(bs), 'Balance Sheet');
-
   const ratios = ratioAnalysisData(is, bs);
   XLSX.utils.book_append_sheet(wb, buildRatiosSheet(ratios), 'Ratio Analysis');
 
@@ -1407,22 +1652,22 @@ function exportTrialBalanceToExcel(){
 }
 function exportPLToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const is = incomeStatementData();
+  const pl = scheduleIIIProfitLossData();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(is), 'Income Statement');
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIPLSheet(pl, currentCompany.name, reportPeriodLabel()), 'Income Statement');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
-  XLSX.writeFile(wb, `${safeName}_Income_Statement_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast('Income Statement exported to Excel');
+  XLSX.writeFile(wb, `${safeName}_Income_Statement_ScheduleIII_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Income Statement (Schedule III) exported to Excel');
 }
 function exportBalanceSheetToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
-  const is = incomeStatementData();
-  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const pl = scheduleIIIProfitLossData();
+  const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildBalanceSheetIFRSSheet(bs), 'Balance Sheet');
+  XLSX.utils.book_append_sheet(wb, buildScheduleIIIBalanceSheetSheet(bs, currentCompany.name, reportAsOfDateLabel()), 'Balance Sheet');
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
-  XLSX.writeFile(wb, `${safeName}_Balance_Sheet_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast('Balance Sheet exported to Excel');
+  XLSX.writeFile(wb, `${safeName}_Balance_Sheet_ScheduleIII_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('Balance Sheet (Schedule III) exported to Excel');
 }
 function exportRatiosToExcel(){
   if(typeof XLSX === 'undefined'){ toast('Excel export library did not load — check your connection'); return; }
@@ -1882,14 +2127,15 @@ function editCompanyModal(){
   `;
 }
 function incomeDetailModal(){
-  const is = incomeStatementData();
+  const pl = scheduleIIIProfitLossData();
   const map = {
-    revenue:      { label:'Revenue',                 ledgers: is.revenueLedgers,      sign:-1, total: is.revenue },
-    costOfSales:  { label:'Cost of Sales',            ledgers: is.costOfSalesLedgers,  sign: 1, total: is.costOfSales },
-    otherIncome:  { label:'Other Income',             ledgers: is.otherIncomeLedgers,  sign:-1, total: is.otherIncome },
-    distribution: { label:'Distribution Costs',       ledgers: is.distributionLedgers, sign: 1, total: is.distributionCosts },
-    admin:        { label:'Administrative Expenses',  ledgers: is.adminLedgers,        sign: 1, total: is.adminExpenses },
-    finance:      { label:'Finance Costs',            ledgers: is.financeLedgers,      sign: 1, total: is.financeCosts },
+    revenueFromOperations: { label:'Revenue from Operations',              ledgers: pl.revenueLedgers,      sign:-1, total: pl.revenueFromOperations },
+    otherIncome:           { label:'Other Income',                         ledgers: pl.otherIncomeLedgers,  sign:-1, total: pl.otherIncome },
+    purchases:             { label:'Purchases of Stock-in-Trade',          ledgers: pl.purchaseLedgers,     sign: 1, total: pl.purchasesOfStockInTrade },
+    employeeBenefits:      { label:'Employee Benefits Expense',            ledgers: pl.employeeLedgers,     sign: 1, total: pl.employeeBenefitsExpense },
+    financeCosts:          { label:'Finance Costs',                       ledgers: pl.financeCostLedgers,  sign: 1, total: pl.financeCosts },
+    depreciation:          { label:'Depreciation and Amortisation Expense',ledgers: pl.depreciationLedgers, sign: 1, total: pl.depreciationExpense },
+    otherExpenses:         { label:'Other Expenses',                       ledgers: pl.otherExpenseLedgers, sign: 1, total: pl.otherExpenses },
   };
   const d = map[isDetailCategory];
   if(!d) return '';
@@ -2187,7 +2433,7 @@ function helpModal(){
             • <strong style="color:var(--ink);">Day Book / Calendar</strong> — browse, edit, or delete past vouchers.<br>
             • <strong style="color:var(--ink);">Ledgers</strong> — view running balances per account.<br>
             • <strong style="color:var(--ink);">Accounts</strong> — manage your chart of accounts and GST rates.<br>
-            • <strong style="color:var(--ink);">Reports</strong> — Trial Balance, Profit &amp; Loss, Balance Sheet — exportable to Excel.<br>
+            • <strong style="color:var(--ink);">Reports</strong> — Trial Balance, Income Statement and Balance Sheet in Schedule III (Division I) format, Ratio Analysis, Cash Flow — exportable to Excel.<br>
             • <strong style="color:var(--ink);">GST</strong> — output/input tax summary and a downloadable GST statement.<br><br>
             Use <strong style="color:var(--ink);">Company</strong> to switch companies, and <strong style="color:var(--ink);">Edit</strong> to update this company's name, financial year, or GSTIN.
           </p>
@@ -4827,7 +5073,14 @@ function viewCOA(){
               <option value="28">28%</option>
             </select>
           </div>
+          <div class="field" style="max-width:220px;"><label>MSME Supplier?</label>
+            <select id="newLedgerMSME">
+              <option value="0">No / Not applicable</option>
+              <option value="1">Yes — Micro/Small/Medium Enterprise</option>
+            </select>
+          </div>
         </div>
+        <p class="muted" style="font-size:11px;margin:6px 0 0;">MSME Supplier only matters for Current Liabilities ledgers — it drives the MSME/Others split under Trade Payables on the Schedule III Balance Sheet.</p>
         <button class="btn" id="addLedgerBtn">Add Ledger</button>
       </div>
     </div>
@@ -4836,11 +5089,14 @@ function viewCOA(){
       <div class="panel">
         <div class="panel-body" style="padding:0;">
           <table>
-            <tr><th>Ledger</th><th>Group</th><th>GST</th><th class="num">Balance</th></tr>
+            <tr><th>Ledger</th><th>Group</th><th>GST</th><th>MSME</th><th class="num">Balance</th></tr>
             ${state.ledgers.filter(l=>groupOf(l.group).cat===cat).map(l=>{
               const b = ledgerBalance(l.id);
-              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
-            }).join('') || `<tr><td colspan="4" class="empty">No ledgers in this category yet.</td></tr>`}
+              const msmeCell = l.group==='curl'
+                ? `<span data-toggle-msme="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${l.isMSME?'✓ MSME':'Mark MSME'}</span>`
+                : '—';
+              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="muted">${msmeCell}</td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
+            }).join('') || `<tr><td colspan="5" class="empty">No ledgers in this category yet.</td></tr>`}
           </table>
         </div>
       </div>
@@ -5037,8 +5293,8 @@ function viewReports(){
 function reportsLanding(){
   const cards = [
     {id:'trialBalance', icon:'⚖️', title:'Trial Balance', desc:'Every ledger\'s closing debit or credit balance, side by side.'},
-    {id:'incomeStatement', icon:'📈', title:'Income Statement (IFRS)', desc:'Statement of Profit or Loss — revenue through to profit for the period.'},
-    {id:'balanceSheet', icon:'🏛️', title:'Balance Sheet (IFRS)', desc:'Statement of Financial Position, with a plain-language interpretation.'},
+    {id:'incomeStatement', icon:'📈', title:'Income Statement (Schedule III)', desc:'Statement of Profit and Loss per Schedule III, Division I to the Companies Act, 2013.'},
+    {id:'balanceSheet', icon:'🏛️', title:'Balance Sheet (Schedule III)', desc:'Balance Sheet per Schedule III, Division I (2021 amendment), with a plain-language interpretation.'},
     {id:'ratios', icon:'📊', title:'Ratio Analysis (Detailed)', desc:'Liquidity, solvency, profitability and efficiency ratios, visualised.'},
     {id:'cashFlow', icon:'💧', title:'Cash Flow Statement', desc:'Detailed, direct-method operating, investing and financing cash flows.'},
   ];
@@ -5077,73 +5333,116 @@ function reportTrialBalance(){
   `;
 }
 function reportIncomeStatement(){
-  const is = incomeStatementData();
+  const pl = scheduleIIIProfitLossData();
   return `
-    ${reportHeader('Income Statement (IFRS) — Statement of Profit or Loss', 'exportPLBtn')}
+    ${reportHeader('Income Statement (Schedule III, Division I) — Statement of Profit and Loss', 'exportPLBtn')}
+    <p class="muted" style="font-size:11.5px;margin-top:-8px;">For the period ${reportPeriodLabel()}</p>
     <div class="panel"><div class="panel-body" style="padding:0;">
       <table>
-        <tr data-is-detail="revenue" style="cursor:pointer;"><td>Revenue</td><td class="num">₹${fmt(is.revenue)}</td></tr>
-        <tr data-is-detail="costOfSales" style="cursor:pointer;"><td>Cost of Sales</td><td class="num dr">(₹${fmt(is.costOfSales)})</td></tr>
-        ${reportRow('Gross Profit', `₹${fmt(is.grossProfit)}`, {bold:true})}
-        <tr data-is-detail="otherIncome" style="cursor:pointer;"><td>Other Income</td><td class="num">₹${fmt(is.otherIncome)}</td></tr>
-        <tr data-is-detail="distribution" style="cursor:pointer;"><td>Distribution Costs</td><td class="num dr">(₹${fmt(is.distributionCosts)})</td></tr>
-        <tr data-is-detail="admin" style="cursor:pointer;"><td>Administrative Expenses</td><td class="num dr">(₹${fmt(is.adminExpenses)})</td></tr>
-        ${reportRow('Operating Profit', `₹${fmt(is.operatingProfit)}`, {bold:true})}
-        <tr data-is-detail="finance" style="cursor:pointer;"><td>Finance Costs</td><td class="num dr">(₹${fmt(is.financeCosts)})</td></tr>
-        ${reportRow('Profit Before Tax', `₹${fmt(is.profitBeforeTax)}`, {bold:true})}
-        ${reportRow('Income Tax Expense', `(₹${fmt(is.taxExpense)})`, {cls:'dr'})}
-        ${reportRow('Profit for the Period', `₹${fmt(is.profitForPeriod)}`, {bold:true, cls: is.profitForPeriod>=0?'cr':'dr'})}
+        <tr data-is-detail="revenueFromOperations" style="cursor:pointer;"><td>I. Revenue from Operations</td><td class="num">₹${fmt(pl.revenueFromOperations)}</td></tr>
+        <tr data-is-detail="otherIncome" style="cursor:pointer;"><td>II. Other Income</td><td class="num">₹${fmt(pl.otherIncome)}</td></tr>
+        ${reportRow('III. Total Income (I + II)', `₹${fmt(pl.totalIncome)}`, {bold:true})}
+        <tr data-is-detail="purchases" style="cursor:pointer;"><td>&nbsp;&nbsp;Purchases of Stock-in-Trade</td><td class="num dr">(₹${fmt(pl.purchasesOfStockInTrade)})</td></tr>
+        <tr><td>&nbsp;&nbsp;Changes in Inventories of Finished Goods, WIP and Stock-in-Trade</td><td class="num">₹0.00</td></tr>
+        <tr data-is-detail="employeeBenefits" style="cursor:pointer;"><td>&nbsp;&nbsp;Employee Benefits Expense</td><td class="num dr">(₹${fmt(pl.employeeBenefitsExpense)})</td></tr>
+        <tr data-is-detail="financeCosts" style="cursor:pointer;"><td>&nbsp;&nbsp;Finance Costs</td><td class="num dr">(₹${fmt(pl.financeCosts)})</td></tr>
+        <tr data-is-detail="depreciation" style="cursor:pointer;"><td>&nbsp;&nbsp;Depreciation and Amortisation Expense</td><td class="num dr">(₹${fmt(pl.depreciationExpense)})</td></tr>
+        <tr data-is-detail="otherExpenses" style="cursor:pointer;"><td>&nbsp;&nbsp;Other Expenses</td><td class="num dr">(₹${fmt(pl.otherExpenses)})</td></tr>
+        ${reportRow('IV. Total Expenses', `₹${fmt(pl.totalExpenses)}`, {bold:true})}
+        ${reportRow('V. Profit Before Exceptional Items and Tax (III − IV)', `₹${fmt(pl.profitBeforeExceptionalAndTax)}`, {bold:true})}
+        ${reportRow('VI. Exceptional Items', `₹${fmt(pl.exceptionalItems)}`)}
+        ${reportRow('VII. Profit Before Tax (V − VI)', `₹${fmt(pl.profitBeforeTax)}`, {bold:true})}
+        ${reportRow('VIII. Tax Expense — Current Tax', `(₹${fmt(pl.currentTax)})`, {cls:'dr'})}
+        ${reportRow('VIII. Tax Expense — Deferred Tax', `(₹${fmt(pl.deferredTax)})`, {cls:'dr'})}
+        ${reportRow('IX. Profit for the Period', `₹${fmt(pl.profitForPeriod)}`, {bold:true, cls: pl.profitForPeriod>=0?'cr':'dr'})}
       </table>
     </div></div>
-    <p class="muted" style="font-size:11px;">Click any line above to see the individual ledger accounts behind it. Distribution Costs = Direct Expenses group · Administrative Expenses = Indirect Expenses excluding interest/bank charges · Finance Costs = Interest/Bank Charges ledgers detected by name · Income Tax not separately tracked in this system (GST is reported separately in the GST tab).</p>
+    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021. Click any line above to see the individual ledger accounts behind it. Employee Benefits Expense / Depreciation &amp; Amortisation / Finance Costs are detected from ledger names; everything else in the Direct/Indirect Expenses groups falls under Other Expenses. Income tax is not tracked separately from GST in this system (see the GST tab), so Current Tax and Deferred Tax show as nil. Earnings Per Share is not shown, as share count and face value are not tracked.</p>
   `;
 }
 function reportBalanceSheet(){
+  // Totals for ratios/interpretation come from the same ledgers regrouped the simple way —
+  // the numbers tie out to the Schedule III figures below, just without the sub-classification.
   const is = incomeStatementData();
-  const bs = balanceSheetIFRSData(is.profitForPeriod);
-  const ratios = ratioAnalysisData(is, bs);
+  const ifrsBs = balanceSheetIFRSData(is.profitForPeriod);
+  const ratios = ratioAnalysisData(is, ifrsBs);
+  const notes = balanceSheetInterpretation(ifrsBs, ratios);
+
+  const pl = scheduleIIIProfitLossData();
+  const bs = scheduleIIIBalanceSheetData(pl.profitForPeriod);
   const liabilities = bs.nonCurrentLiabTotal + bs.currentLiabTotal;
-  const notes = balanceSheetInterpretation(bs, ratios);
+
   return `
-    ${reportHeader('Balance Sheet (IFRS) — Statement of Financial Position', 'exportBSBtn')}
+    ${reportHeader('Balance Sheet (Schedule III, Division I)', 'exportBSBtn')}
+    <p class="muted" style="font-size:11.5px;margin-top:-8px;">As at ${reportAsOfDateLabel()}</p>
     <div class="panel">
-      <div class="panel-head"><h2>Assets</h2></div>
+      <div class="panel-head"><h2>I. Equity and Liabilities</h2></div>
       <div class="panel-body" style="padding:0;">
         <table>
-          <tr><th colspan="2">Non-current Assets</th></tr>
-          ${reportLedgerRows(bs.nonCurrentAssets, 1)}
-          ${reportRow('Total Non-current Assets', `₹${fmt(bs.nonCurrentAssetsTotal)}`, {bold:true})}
+          <tr><th colspan="2">(1) Shareholders' Funds</th></tr>
+          <tr><td>&nbsp;&nbsp;(a) Share Capital</td><td class="num">₹${fmt(bs.shareCapitalTotal)}</td></tr>
+          ${reportLedgerRows(bs.shareCapitalLedgers, -1)}
+          <tr><td>&nbsp;&nbsp;(b) Reserves and Surplus</td><td class="num">₹${fmt(bs.reservesAndSurplus)}</td></tr>
+          ${reportRow("Total Shareholders' Funds", `₹${fmt(bs.shareholdersFundsTotal)}`, {bold:true})}
+          <tr><th colspan="2">(2) Share Application Money Pending Allotment</th></tr>
+          <tr><td>&nbsp;</td><td class="num">₹0.00</td></tr>
+          <tr><th colspan="2">(3) Non-Current Liabilities</th></tr>
+          <tr><td>&nbsp;&nbsp;(a) Long-term Borrowings</td><td class="num">₹${fmt(bs.longTermBorrowingsTotal)}</td></tr>
+          ${reportLedgerRows(bs.longTermBorrowings, -1)}
+          <tr><td>&nbsp;&nbsp;(b) Deferred Tax Liabilities (Net)</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(c) Other Long-term Liabilities</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(d) Long-term Provisions</td><td class="num">₹0.00</td></tr>
+          ${reportRow('Total Non-Current Liabilities', `₹${fmt(bs.nonCurrentLiabTotal)}`, {bold:true})}
+          <tr><th colspan="2">(4) Current Liabilities</th></tr>
+          <tr><td>&nbsp;&nbsp;(a) Short-term Borrowings</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(b) Trade Payables</td><td class="num">₹${fmt(bs.tradePayablesTotal)}</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;(A) Dues of micro and small enterprises</td><td class="num">₹${fmt(bs.msmeTradePayablesTotal)}</td></tr>
+          ${reportLedgerRows(bs.msmeTradePayableLedgers, -1)}
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;(B) Dues of creditors other than micro/small enterprises</td><td class="num">₹${fmt(bs.otherTradePayablesTotal)}</td></tr>
+          ${reportLedgerRows(bs.otherTradePayableLedgers, -1)}
+          <tr><td>&nbsp;&nbsp;(c) Other Current Liabilities</td><td class="num">₹${fmt(bs.otherCurrentLiabTotal)}</td></tr>
+          ${reportLedgerRows(bs.otherCurrentLiabLedgers, -1)}
+          <tr><td>&nbsp;&nbsp;(d) Short-term Provisions</td><td class="num">₹0.00</td></tr>
+          ${reportRow('Total Current Liabilities', `₹${fmt(bs.currentLiabTotal)}`, {bold:true})}
+          ${reportRow('TOTAL (EQUITY AND LIABILITIES)', `₹${fmt(bs.totalEquityAndLiab)}`, {bold:true})}
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>II. Assets</h2></div>
+      <div class="panel-body" style="padding:0;">
+        <table>
+          <tr><th colspan="2">Non-Current Assets</th></tr>
+          <tr><td>&nbsp;&nbsp;(a) Property, Plant and Equipment</td><td class="num">₹${fmt(bs.ppeTotal)}</td></tr>
+          ${reportLedgerRows(bs.ppe, 1)}
+          <tr><td>&nbsp;&nbsp;(b) Non-current Investments</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(c) Deferred Tax Assets (Net)</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(d) Long-term Loans and Advances</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(e) Other Non-current Assets</td><td class="num">₹0.00</td></tr>
+          ${reportRow('Total Non-Current Assets', `₹${fmt(bs.nonCurrentAssetsTotal)}`, {bold:true})}
           <tr><th colspan="2">Current Assets</th></tr>
-          ${reportLedgerRows(bs.currentAssets, 1)}
+          <tr><td>&nbsp;&nbsp;(a) Current Investments</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(b) Inventories</td><td class="num">₹${fmt(bs.inventoriesTotal)}</td></tr>
+          ${reportLedgerRows(bs.inventoryLedgers, 1)}
+          <tr><td>&nbsp;&nbsp;(c) Trade Receivables</td><td class="num">₹${fmt(bs.tradeReceivablesTotal)}</td></tr>
+          ${reportLedgerRows(bs.tradeReceivableLedgers, 1)}
+          <tr><td>&nbsp;&nbsp;(d) Cash and Cash Equivalents</td><td class="num">₹${fmt(bs.cashTotal)}</td></tr>
+          ${reportLedgerRows(bs.cashLedgers, 1)}
+          <tr><td>&nbsp;&nbsp;(e) Short-term Loans and Advances</td><td class="num">₹0.00</td></tr>
+          <tr><td>&nbsp;&nbsp;(f) Other Current Assets</td><td class="num">₹${fmt(bs.otherCurrentAssetsTotal)}</td></tr>
+          ${reportLedgerRows(bs.otherCurrentAssetLedgers, 1)}
           ${reportRow('Total Current Assets', `₹${fmt(bs.currentAssetsTotal)}`, {bold:true})}
           ${reportRow('TOTAL ASSETS', `₹${fmt(bs.totalAssets)}`, {bold:true})}
         </table>
       </div>
     </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Equity and Liabilities</h2></div>
-      <div class="panel-body" style="padding:0;">
-        <table>
-          <tr><th colspan="2">Equity</th></tr>
-          ${reportLedgerRows(bs.equityLedgers, -1)}
-          ${reportRow('&nbsp;&nbsp;Retained Earnings (Profit for the Period)', `₹${fmt(bs.totalEquity-bs.equityBase)}`)}
-          ${reportRow('Total Equity', `₹${fmt(bs.totalEquity)}`, {bold:true})}
-          <tr><th colspan="2">Non-current Liabilities</th></tr>
-          ${reportLedgerRows(bs.nonCurrentLiabilities, -1)}
-          ${reportRow('Total Non-current Liabilities', `₹${fmt(bs.nonCurrentLiabTotal)}`, {bold:true})}
-          <tr><th colspan="2">Current Liabilities</th></tr>
-          ${reportLedgerRows(bs.currentLiabilities, -1)}
-          ${reportRow('Total Current Liabilities', `₹${fmt(bs.currentLiabTotal)}`, {bold:true})}
-          ${reportRow('TOTAL EQUITY AND LIABILITIES', `₹${fmt(bs.totalEquityAndLiab)}`, {bold:true})}
-        </table>
-      </div>
-    </div>
     <p class="muted" style="font-size:11.5px;">Total Assets ${Math.abs(bs.totalAssets-bs.totalEquityAndLiab)<0.01?'matches':'does NOT match'} Total Equity and Liabilities (₹${fmt(bs.totalAssets)} vs ₹${fmt(bs.totalEquityAndLiab)}). A mismatch usually means an opening balance or entry was recorded on the wrong side.</p>
+    <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021 — including the Trade Payables MSME/Others split. Mark a Current Liabilities ledger as an MSME supplier from the Chart of Accounts to route it into (A) instead of (B). Lines shown at ₹0.00 are heads this system doesn't separately track (deferred tax, provisions, investments, loans and advances, short-term borrowings) rather than confirmed nil balances — review before filing. Note-level disclosures (ageing schedules, share reconciliation, promoter shareholding, Additional Regulatory Information) are not included.</p>
 
     <div class="section-title" style="margin-top:20px;">Financing Mix</div>
     <div class="panel"><div class="panel-body">
       ${svgStackedBar([
-        {label:'Equity', value: Math.max(0,bs.totalEquity), color:'#4F8EF7'},
+        {label:'Equity', value: Math.max(0,bs.shareholdersFundsTotal), color:'#4F8EF7'},
         {label:'Liabilities', value: Math.max(0,liabilities), color:'#D64545'},
       ])}
     </div></div>
@@ -5707,13 +6006,25 @@ function attachHandlers(){
       const openingRaw = Number(document.getElementById('newLedgerOpening').value)||0;
       const sign = Number(document.getElementById('newLedgerType').value);
       const gstRaw = document.getElementById('newLedgerGST').value;
+      const msmeRaw = document.getElementById('newLedgerMSME')?.value;
       if(!name){ toast('Enter a ledger name'); return; }
       const ledger = { id: uid('l'), name, group, opening: openingRaw*sign };
       if(gstRaw !== '') ledger.gstRate = Number(gstRaw);
+      if(msmeRaw === '1') ledger.isMSME = true;
       state.ledgers.push(ledger);
       await saveLedgers();
       toast('Ledger added');
       render();
+    });
+    document.querySelectorAll('[data-toggle-msme]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const l = ledgerOf(el.dataset.toggleMsme);
+        if(!l) return;
+        l.isMSME = !l.isMSME;
+        await saveLedgers();
+        toast(l.isMSME ? 'Marked as MSME supplier' : 'Unmarked as MSME supplier');
+        render();
+      });
     });
     attachStockItemFormHandlers();
     document.querySelectorAll('[data-delete-item]').forEach(b=>{
