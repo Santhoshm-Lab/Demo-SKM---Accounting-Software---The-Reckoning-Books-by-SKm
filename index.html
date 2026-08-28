@@ -76,8 +76,8 @@
   .stat[data-open-kpi]:hover{box-shadow:0 6px 18px rgba(20,30,25,0.10);transform:translateY(-1px);border-color:var(--border-strong);}
   .stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:8px;font-weight:700;}
   .stat .val{font-family:inherit;font-variant-numeric:tabular-nums;font-size:21px;font-weight:800;letter-spacing:-.01em;color:var(--ink);}
-  .stat .val.dr{color:var(--debit);}
-  .stat .val.cr{color:var(--credit);}
+  .stat .val.neg{color:var(--debit);}
+  .stat .val.pos{color:var(--credit);}
 
   .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:18px;overflow:hidden;box-shadow:0 1px 3px rgba(20,30,25,0.05);}
   .panel-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);}
@@ -90,11 +90,11 @@
   tr:last-child td{border-bottom:none;}
   tr:hover td{background:#FAFBFA;}
   .num{font-family:inherit;font-variant-numeric:tabular-nums;font-weight:600;text-align:right;white-space:nowrap;}
-  .num.dr{color:var(--debit);}
-  .num.cr{color:var(--credit);}
+  .num.neg{color:var(--debit);}
+  .num.pos{color:var(--credit);}
   .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:10.5px;font-family:inherit;font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:.02em;}
-  .pill.dr{background:var(--debit-bg);color:var(--debit);}
-  .pill.cr{background:var(--credit-bg);color:var(--credit);}
+  .pill.neg{background:var(--debit-bg);color:var(--debit);}
+  .pill.pos{background:var(--credit-bg);color:var(--credit);}
   .muted{color:var(--ink-faint);}
   .empty{padding:28px;text-align:center;color:var(--ink-faint);font-size:12.5px;}
 
@@ -3017,8 +3017,8 @@ function itemStockModal(){
             ${rows.map(r=>`<tr>
               <td class="muted">${r.date}</td>
               <td>${r.type} — ${r.narration}</td>
-              <td class="num cr">${r.dir>0?fmt(r.qty):''}</td>
-              <td class="num dr">${r.dir<0?fmt(r.qty):''}</td>
+              <td class="num">${r.dir>0?fmt(r.qty):''}</td>
+              <td class="num">${r.dir<0?fmt(r.qty):''}</td>
               <td class="num">${fmt(r.running)} ${item.unit||''}</td>
             </tr>`).join('') || `<tr><td colspan="5" class="empty">No stock movement recorded yet.</td></tr>`}
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="4">Closing Stock</td><td class="num">${fmt(summary.closing)} ${item.unit||''}</td></tr>
@@ -3166,24 +3166,24 @@ function incomeStatementDetailModal(){
             <tr style="font-weight:700;"><td>Total Revenue</td><td class="num">₹${fmt(is.revenue)}</td></tr>
             <tr><th colspan="2">Cost of Sales</th></tr>
             ${rows(is.costOfSalesLedgers,1)}
-            <tr style="font-weight:700;"><td>Total Cost of Sales</td><td class="num dr">(₹${fmt(is.costOfSales)})</td></tr>
+            <tr style="font-weight:700;"><td>Total Cost of Sales</td><td class="num">(₹${fmt(is.costOfSales)})</td></tr>
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Gross Profit</td><td class="num">₹${fmt(is.grossProfit)}</td></tr>
             <tr><th colspan="2">Other Income</th></tr>
             ${rows(is.otherIncomeLedgers,-1)}
             <tr style="font-weight:700;"><td>Total Other Income</td><td class="num">₹${fmt(is.otherIncome)}</td></tr>
             <tr><th colspan="2">Distribution Costs</th></tr>
             ${rows(is.distributionLedgers,1)}
-            <tr style="font-weight:700;"><td>Total Distribution Costs</td><td class="num dr">(₹${fmt(is.distributionCosts)})</td></tr>
+            <tr style="font-weight:700;"><td>Total Distribution Costs</td><td class="num">(₹${fmt(is.distributionCosts)})</td></tr>
             <tr><th colspan="2">Administrative Expenses</th></tr>
             ${rows(is.adminLedgers,1)}
-            <tr style="font-weight:700;"><td>Total Administrative Expenses</td><td class="num dr">(₹${fmt(is.adminExpenses)})</td></tr>
+            <tr style="font-weight:700;"><td>Total Administrative Expenses</td><td class="num">(₹${fmt(is.adminExpenses)})</td></tr>
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Operating Profit</td><td class="num">₹${fmt(is.operatingProfit)}</td></tr>
             <tr><th colspan="2">Finance Costs</th></tr>
             ${rows(is.financeLedgers,1)}
-            <tr style="font-weight:700;"><td>Total Finance Costs</td><td class="num dr">(₹${fmt(is.financeCosts)})</td></tr>
+            <tr style="font-weight:700;"><td>Total Finance Costs</td><td class="num">(₹${fmt(is.financeCosts)})</td></tr>
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit Before Tax</td><td class="num">₹${fmt(is.profitBeforeTax)}</td></tr>
-            <tr><td>Income Tax Expense</td><td class="num dr">(₹${fmt(is.taxExpense)})</td></tr>
-            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit for the Period</td><td class="num ${is.profitForPeriod>=0?'cr':'dr'}">₹${fmt(is.profitForPeriod)}</td></tr>
+            <tr><td>Income Tax Expense</td><td class="num">(₹${fmt(is.taxExpense)})</td></tr>
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit for the Period</td><td class="num ${is.profitForPeriod>=0?'pos':'neg'}">₹${fmt(is.profitForPeriod)}</td></tr>
           </table>
         </div>
       </div>
@@ -3822,7 +3822,7 @@ function renderGateway(){
       <div class="gateway-box">
         <div class="gw-title">Main Window — Select Company</div>
         ${(()=>{ const myCompanies = visibleCompanies(); return myCompanies.length ? `<ul class="gateway-list">
-          ${myCompanies.map((c,i)=>`<li data-select-co="${c.id}"><span><span class="num">${i+1}.</span>${c.name}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:6px;">Sample</span>':''}</span></li>`).join('')}
+          ${myCompanies.map((c,i)=>`<li data-select-co="${c.id}"><span><span class="num">${i+1}.</span>${c.name}${c.id===DEMO_COMPANY_ID?' <span class="pill pos" style="margin-left:6px;">Sample</span>':''}</span></li>`).join('')}
         </ul>` : `<div class="gateway-empty">No companies yet. Create one to begin →</div>`; })()}
         <div class="gateway-hint">Select a company to load its books, or create a new one.</div>
       </div>
@@ -4535,8 +4535,8 @@ function adminOverviewTab(){
     <div class="grid" style="grid-template-columns:repeat(4,1fr);">
       <div class="stat"><div class="label">Total Users</div><div class="val">${stats.totalUsers}</div></div>
       <div class="stat"><div class="label">Total Companies</div><div class="val">${stats.totalCompanies}</div></div>
-      <div class="stat"><div class="label">Blocked Accounts</div><div class="val ${stats.blocked?'dr':''}">${stats.blocked}</div></div>
-      <div class="stat"><div class="label">New This Week</div><div class="val ${stats.newThisWeek?'cr':''}">${stats.newThisWeek}</div></div>
+      <div class="stat"><div class="label">Blocked Accounts</div><div class="val ${stats.blocked?'neg':''}">${stats.blocked}</div></div>
+      <div class="stat"><div class="label">New This Week</div><div class="val ${stats.newThisWeek?'pos':''}">${stats.newThisWeek}</div></div>
     </div>
 
     <div class="section-title" style="margin-top:6px;">Announcement Banner</div>
@@ -4576,8 +4576,8 @@ function adminAnalyticsTab(){
   const maxCompanyVouchers = Math.max(1, ...a.topCompanies.map(c=>c.count));
   return `
     <div class="grid" style="grid-template-columns:repeat(2,1fr);">
-      <div class="stat"><div class="label">Active Companies (30d)</div><div class="val cr">${a.active}</div></div>
-      <div class="stat"><div class="label">Dormant Companies</div><div class="val ${a.dormant?'dr':''}">${a.dormant}</div></div>
+      <div class="stat"><div class="label">Active Companies (30d)</div><div class="val pos">${a.active}</div></div>
+      <div class="stat"><div class="label">Dormant Companies</div><div class="val ${a.dormant?'neg':''}">${a.dormant}</div></div>
     </div>
 
     <div class="section-title" style="margin-top:6px;">Signups — last 14 days</div>
@@ -4592,7 +4592,7 @@ function adminAnalyticsTab(){
 }
 function adminSupportTab(){
   const filtered = ticketStatusFilter==='all' ? supportTickets : supportTickets.filter(t=>t.status===ticketStatusFilter);
-  const statusPill = (s)=> s==='resolved' ? 'cr' : (s==='in_progress' ? '' : 'dr');
+  const statusPill = (s)=> s==='resolved' ? 'pos' : (s==='in_progress' ? '' : 'neg');
   const statusLabel = (s)=> s==='in_progress' ? 'In Progress' : (s==='resolved' ? 'Resolved' : 'Open');
   return `
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
@@ -4736,7 +4736,7 @@ function adminUsersTab(){
                 <button class="btn secondary small" id="cancelPlanBtn" type="button">Cancel</button>
               </div>
             ` : `
-              <span class="pill ${u.plan==='lifetime'||u.plan==='paid'&&!isPlanExpired(u)?'cr':(isPlanExpired(u)?'dr':'')}">${planLabel(u)}</span>
+              <span class="pill ${u.plan==='lifetime'||u.plan==='paid'&&!isPlanExpired(u)?'pos':(isPlanExpired(u)?'neg':'')}">${planLabel(u)}</span>
               ${u.plan==='paid' && u.planExpiry ? `<div class="muted" style="font-size:10px;margin-top:2px;">until ${escapeHtml(u.planExpiry)}</div>` : ''}
               <div><button class="btn secondary small" data-edit-plan="${escapeAttr(u.id)}" type="button" style="margin-top:4px;">Change</button></div>
             `}
@@ -4779,7 +4779,7 @@ function adminCompaniesTab(){
       <tr><th>#</th><th>Company</th><th>Owner</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Actions</th></tr>
       ${companies.map((c,i)=>`<tr>
         <td class="muted">${i+1}</td>
-        <td>${escapeHtml(c.name)}${c.id===DEMO_COMPANY_ID?' <span class="pill cr" style="margin-left:4px;">Sample</span>':''}</td>
+        <td>${escapeHtml(c.name)}${c.id===DEMO_COMPANY_ID?' <span class="pill pos" style="margin-left:4px;">Sample</span>':''}</td>
         <td class="muted">${escapeHtml(ownerLabelFor(c))}</td>
         <td class="num">${(c.ledgers||[]).length}</td>
         <td class="num">${(c.vouchers||[]).length}</td>
@@ -4864,10 +4864,10 @@ function viewDashboard(){
   return `
     ${masthead('Dashboard','Overview of the books')}
     <div class="grid">
-      <div class="stat" data-open-kpi="cash"><div class="label">Cash &amp; Bank</div><div class="val ${cash>=0?'dr':'cr'}">₹${fmt(cash)}</div></div>
-      <div class="stat" data-open-kpi="assets"><div class="label">Total Assets</div><div class="val dr">₹${fmt(assets)}</div></div>
-      <div class="stat" data-open-kpi="liab"><div class="label">Liabilities + Capital</div><div class="val cr">₹${fmt(liab)}</div></div>
-      <div class="stat" data-open-kpi="profit"><div class="label">${profit>=0?'Net Profit':'Net Loss'}</div><div class="val ${profit>=0?'cr':'dr'}">₹${fmt(profit)}</div></div>
+      <div class="stat" data-open-kpi="cash"><div class="label">Cash &amp; Bank</div><div class="val ${cash>=0?'pos':'neg'}">₹${fmt(cash)}</div></div>
+      <div class="stat" data-open-kpi="assets"><div class="label">Total Assets</div><div class="val ${assets>=0?'pos':'neg'}">₹${fmt(assets)}</div></div>
+      <div class="stat" data-open-kpi="liab"><div class="label">Liabilities + Capital</div><div class="val ${liab>=0?'pos':'neg'}">₹${fmt(liab)}</div></div>
+      <div class="stat" data-open-kpi="profit"><div class="label">${profit>=0?'Net Profit':'Net Loss'}</div><div class="val ${profit>=0?'pos':'neg'}">₹${fmt(profit)}</div></div>
     </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
@@ -5247,8 +5247,8 @@ function importModal(){
                 <tr>
                   <td>${escapeHtml(g.label)}</td>
                   <td class="num">${g.count}</td>
-                  <td class="num dr">${g.drTotal ? '₹'+fmt(g.drTotal) : '—'}</td>
-                  <td class="num cr">${g.crTotal ? '₹'+fmt(g.crTotal) : '—'}</td>
+                  <td class="num">${g.drTotal ? '₹'+fmt(g.drTotal) : '—'}</td>
+                  <td class="num">${g.crTotal ? '₹'+fmt(g.crTotal) : '—'}</td>
                   <td>
                     <select data-group-ledger="${i}" style="min-width:180px;">
                       <option value="__suspense__" ${!g.ledgerId?'selected':''}>Suspense Account (auto)</option>
@@ -6007,7 +6007,7 @@ function viewLedgers(){
               const b = ledgerBalance(l.id);
               return `<div class="linklike" data-select-ledger="${l.id}" style="display:flex;justify-content:space-between;padding:9px 10px;border-radius:3px;${sel===l.id?'background:var(--paper);':''}text-decoration:none;cursor:pointer;">
                 <span>${l.name}</span>
-                <span class="num ${b>=0?'dr':'cr'}" style="font-size:12px;">${fmt(b)}</span>
+                <span class="num ${b>=0?'pos':'neg'}" style="font-size:12px;">${fmt(b)} ${balanceLabel(b)}</span>
               </div>`;
             }).join('')}
           </div>
@@ -6040,19 +6040,19 @@ function ledgerStatement(ledgerId){
         <h2>${l.name}</h2>
         <div style="display:flex;align-items:center;gap:8px;">
           <button class="btn small secondary" data-open-pie="${ledgerId}" type="button">📊 Pie Chart</button>
-          <span class="pill ${bal>=0?'dr':'cr'}">${fmt(bal)} ${balanceLabel(bal)}</span>
+          <span class="pill ${bal>=0?'pos':'neg'}">${fmt(bal)} ${balanceLabel(bal)}</span>
         </div>
       </div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Particulars</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr>
-          <tr><td class="muted">—</td><td class="muted">Opening Balance</td><td class="num">${l.opening>0?fmt(l.opening):''}</td><td class="num">${l.opening<0?fmt(l.opening):''}</td><td class="num ${l.opening>=0?'dr':'cr'}">${fmt(l.opening)} ${balanceLabel(l.opening)}</td></tr>
+          <tr><td class="muted">—</td><td class="muted">Opening Balance</td><td class="num">${l.opening>0?fmt(l.opening):''}</td><td class="num">${l.opening<0?fmt(l.opening):''}</td><td class="num ${l.opening>=0?'pos':'neg'}">${fmt(l.opening)} ${balanceLabel(l.opening)}</td></tr>
           ${rows.map(r=>`<tr>
             <td class="muted">${r.date}</td>
             <td>${r.particulars}</td>
             <td class="num">${r.dr?fmt(r.dr):''}</td>
             <td class="num">${r.cr?fmt(r.cr):''}</td>
-            <td class="num ${r.running>=0?'dr':'cr'}">${fmt(r.running)} ${balanceLabel(r.running)}</td>
+            <td class="num ${r.running>=0?'pos':'neg'}">${fmt(r.running)} ${balanceLabel(r.running)}</td>
           </tr>`).join('')}
           ${!rows.length ? `<tr><td colspan="5" class="empty">No transactions on this ledger yet.</td></tr>`:''}
         </table>
@@ -6185,7 +6185,7 @@ function viewCOA(){
                 ? `<span data-toggle-msme="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${l.isMSME?'✓ MSME':'Mark MSME'}</span>`
                 : '—';
               const partyLabel = l.partyType==='customer' ? '✓ Customer' : l.partyType==='supplier' ? '✓ Supplier' : 'Not a party';
-              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="muted">${msmeCell}</td><td class="muted"><span data-cycle-party="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${partyLabel}</span></td><td class="num ${b>=0?'dr':'cr'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
+              return `<tr><td>${l.name}</td><td class="muted">${groupOf(l.group).name}</td><td class="muted">${l.gstRate!=null?l.gstRate+'%':'—'}</td><td class="muted">${msmeCell}</td><td class="muted"><span data-cycle-party="${l.id}" class="linklike" style="cursor:pointer;font-size:11.5px;">${partyLabel}</span></td><td class="num ${b>=0?'pos':'neg'}">${fmt(b)} ${balanceLabel(b)}</td></tr>`;
             }).join('') || `<tr><td colspan="6" class="empty">No ledgers in this category yet.</td></tr>`}
           </table>
         </div>
@@ -6233,10 +6233,10 @@ function viewInventory(){
   return `
     ${masthead('Inventory','Stock summary, movement history, and adjustments')}
     <div class="grid">
-      <div class="stat"><div class="label">Total Stock Value</div><div class="val dr">₹${fmt(totalValue)}</div></div>
+      <div class="stat"><div class="label">Total Stock Value</div><div class="val ${totalValue>=0?'pos':'neg'}">₹${fmt(totalValue)}</div></div>
       <div class="stat"><div class="label">Total Items</div><div class="val">${state.items.length}</div></div>
-      <div class="stat"><div class="label">Low Stock</div><div class="val ${lowStock>0?'dr':''}">${lowStock}</div></div>
-      <div class="stat"><div class="label">Out of Stock</div><div class="val ${outOfStock>0?'dr':''}">${outOfStock}</div></div>
+      <div class="stat"><div class="label">Low Stock</div><div class="val ${lowStock>0?'neg':''}">${lowStock}</div></div>
+      <div class="stat"><div class="label">Out of Stock</div><div class="val ${outOfStock>0?'neg':''}">${outOfStock}</div></div>
     </div>
 
     <div class="section-title">Add New Item</div>
@@ -6254,12 +6254,12 @@ function viewInventory(){
             ${groupItems.map(({item,summary})=>{
               const out = summary.closing<=0;
               const low = !out && item.reorderLevel!=null && summary.closing<=item.reorderLevel;
-              const statusBadge = out ? `<span class="pill dr">Out of Stock</span>` : low ? `<span class="pill dr">Low Stock</span>` : `<span class="pill cr">OK</span>`;
+              const statusBadge = out ? `<span class="pill neg">Out of Stock</span>` : low ? `<span class="pill neg">Low Stock</span>` : `<span class="pill pos">OK</span>`;
               return `<tr>
                 <td data-stock-detail="${item.id}" style="cursor:pointer;">${item.name}<div class="muted" style="font-size:10.5px;">${item.unit||''}${item.hsn?' · HSN '+item.hsn:''}</div></td>
                 <td class="num">${fmt(summary.opening)}</td>
-                <td class="num cr">${summary.inward?fmt(summary.inward):'—'}</td>
-                <td class="num dr">${summary.outward?fmt(summary.outward):'—'}</td>
+                <td class="num">${summary.inward?fmt(summary.inward):'—'}</td>
+                <td class="num">${summary.outward?fmt(summary.outward):'—'}</td>
                 <td class="num" style="font-weight:700;">${fmt(summary.closing)} ${item.unit||''}</td>
                 <td class="num">${item.rate!=null?'₹'+fmt(item.rate):'—'}</td>
                 <td class="num">₹${fmt(summary.value)}</td>
@@ -6432,9 +6432,9 @@ function reportIncomeStatement(){
     const prevCell = hasPrev ? `<td class="num ${opts.cls||''}">${prev}</td>` : '';
     return `<tr ${style}><td>${label}</td><td class="num ${opts.cls||''}">${cur}</td>${prevCell}</tr>`;
   };
-  const pdrow = (id, label, cur, prev, dr) => {
+  const pdrow = (id, label, cur, prev) => {
     const prevCell = hasPrev ? `<td class="num">${prev}</td>` : '';
-    return `<tr data-is-detail="${id}" style="cursor:pointer;"><td>${label}</td><td class="num ${dr?'dr':''}">${cur}</td>${prevCell}</tr>`;
+    return `<tr data-is-detail="${id}" style="cursor:pointer;"><td>${label}</td><td class="num">${cur}</td>${prevCell}</tr>`;
   };
   return `
     ${reportHeader('Income Statement (Schedule III, Division I) — Statement of Profit and Loss', 'exportPLBtn')}
@@ -6455,9 +6455,9 @@ function reportIncomeStatement(){
         ${prow('V. Profit Before Exceptional Items and Tax (III − IV)', money(pl.profitBeforeExceptionalAndTax), hasPrev?money(pp.profitBeforeExceptionalAndTax):'', {bold:true})}
         ${prow('VI. Exceptional Items', money(pl.exceptionalItems), hasPrev?money(pp.exceptionalItems):'')}
         ${prow('VII. Profit Before Tax (V − VI)', money(pl.profitBeforeTax), hasPrev?money(pp.profitBeforeTax):'', {bold:true})}
-        ${prow('VIII. Tax Expense — Current Tax', paren(pl.currentTax), hasPrev?paren(pp.currentTax):'', {cls:'dr'})}
-        ${prow('VIII. Tax Expense — Deferred Tax', paren(pl.deferredTax), hasPrev?paren(pp.deferredTax):'', {cls:'dr'})}
-        ${prow('IX. Profit for the Period', money(pl.profitForPeriod), hasPrev?money(pp.profitForPeriod):'', {bold:true, cls: pl.profitForPeriod>=0?'cr':'dr'})}
+        ${prow('VIII. Tax Expense — Current Tax', paren(pl.currentTax), hasPrev?paren(pp.currentTax):'')}
+        ${prow('VIII. Tax Expense — Deferred Tax', paren(pl.deferredTax), hasPrev?paren(pp.deferredTax):'')}
+        ${prow('IX. Profit for the Period', money(pl.profitForPeriod), hasPrev?money(pp.profitForPeriod):'', {bold:true, cls: pl.profitForPeriod>=0?'pos':'neg'})}
       </table>
     </div></div>
     <p class="muted" style="font-size:11px;">Presented per Schedule III (Division I) to the Companies Act, 2013, as amended in 2021.${hasPrev?' Figures are for the current financial year to date, with the immediately preceding financial year shown alongside for comparison, as Schedule III requires.':" This is the company's first financial year on the books, so there is no prior year yet to compare against."} Click any line above to see the individual ledger accounts behind it (all-time, not just this year). Employee Benefits Expense / Depreciation &amp; Amortisation / Finance Costs are detected from ledger names; everything else in the Direct/Indirect Expenses groups falls under Other Expenses. Income tax is not tracked separately from GST in this system (see the GST tab), so Current Tax and Deferred Tax show as nil. Earnings Per Share is not shown, as share count and face value are not tracked.</p>
@@ -6669,31 +6669,31 @@ function reportCashFlow(){
   return `
     ${reportHeader('Cash Flow Statement (Detailed, Direct Method)', 'exportCFBtn')}
     <div class="panel">
-      <div class="panel-head"><h2>Operating Activities</h2><span class="pill ${cf.operating>=0?'cr':'dr'}">₹${fmt(cf.operating)}</span></div>
+      <div class="panel-head"><h2>Operating Activities</h2><span class="pill ${cf.operating>=0?'pos':'neg'}">₹${fmt(cf.operating)}</span></div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.operating.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
+          ${cf.detail.operating.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Operating Activities</td><td class="num">₹${fmt(cf.operating)}</td></tr>
         </table>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h2>Investing Activities</h2><span class="pill ${cf.investing>=0?'cr':'dr'}">₹${fmt(cf.investing)}</span></div>
+      <div class="panel-head"><h2>Investing Activities</h2><span class="pill ${cf.investing>=0?'pos':'neg'}">₹${fmt(cf.investing)}</span></div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.investing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
+          ${cf.detail.investing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Investing Activities</td><td class="num">₹${fmt(cf.investing)}</td></tr>
         </table>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h2>Financing Activities</h2><span class="pill ${cf.financing>=0?'cr':'dr'}">₹${fmt(cf.financing)}</span></div>
+      <div class="panel-head"><h2>Financing Activities</h2><span class="pill ${cf.financing>=0?'pos':'neg'}">₹${fmt(cf.financing)}</span></div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.financing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'cr':'dr'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
+          ${cf.detail.financing.map(d=>`<tr><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Financing Activities</td><td class="num">₹${fmt(cf.financing)}</td></tr>
         </table>
       </div>
@@ -6732,7 +6732,7 @@ function viewGST(){
         </table>
         <div style="padding:12px 16px;border-top:1px solid var(--rule);display:flex;justify-content:flex-end;gap:10px;align-items:center;">
           <span class="muted" style="font-size:12.5px;">Net GST ${netGST>=0?'Payable':'Refundable / Carried Forward'}</span>
-          <span class="pill ${netGST>=0?'dr':'cr'}" style="font-size:13px;">₹${fmt(netGST)}</span>
+          <span class="pill ${netGST>=0?'pos':'neg'}" style="font-size:13px;">₹${fmt(netGST)}</span>
         </div>
       </div>
     </div>
@@ -6806,15 +6806,15 @@ function viewReconcile(){
     </div>
 
     <div class="panel">
-      <div class="panel-head"><h2>Summary — ${escapeHtml(ledger.name)}</h2><span class="pill ${!hasBalance ? '' : (summary.reconciled?'cr':'dr')}">${hasBalance ? (summary.reconciled?'✓ Reconciled':'⚠ Difference ₹'+fmt(Math.abs(summary.difference))) : 'Enter statement balance'}</span></div>
+      <div class="panel-head"><h2>Summary — ${escapeHtml(ledger.name)}</h2><span class="pill ${!hasBalance ? '' : (summary.reconciled?'pos':'neg')}">${hasBalance ? (summary.reconciled?'✓ Reconciled':'⚠ Difference ₹'+fmt(Math.abs(summary.difference))) : 'Enter statement balance'}</span></div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><td>Balance as per Bank Statement (${reconcileDateLabel(asOfDate)})</td><td class="num">₹${fmt(statementBalance)}</td></tr>
-          <tr><td>Add: Deposits/Receipts in books not yet credited by bank (${summary.outstandingDeposits.length})</td><td class="num cr">+ ₹${fmt(summary.outstandingDrTotal)}</td></tr>
-          <tr><td>Less: Payments/Cheques in books not yet presented (${summary.outstandingPayments.length})</td><td class="num dr">− ₹${fmt(summary.outstandingCrTotal)}</td></tr>
+          <tr><td>Add: Deposits/Receipts in books not yet credited by bank (${summary.outstandingDeposits.length})</td><td class="num">+ ₹${fmt(summary.outstandingDrTotal)}</td></tr>
+          <tr><td>Less: Payments/Cheques in books not yet presented (${summary.outstandingPayments.length})</td><td class="num">− ₹${fmt(summary.outstandingCrTotal)}</td></tr>
           <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>= Balance as per Books (calculated)</td><td class="num">₹${fmt(summary.computedBookBalance)}</td></tr>
           <tr><td class="muted">Actual Balance as per Books (Ledger)</td><td class="num muted">₹${fmt(summary.bookBalance)}</td></tr>
-          <tr style="font-weight:700;"><td>Unreconciled Difference</td><td class="num ${Math.abs(summary.difference)<0.005?'':'dr'}">₹${fmt(summary.difference)}</td></tr>
+          <tr style="font-weight:700;"><td>Unreconciled Difference</td><td class="num ${Math.abs(summary.difference)<0.005?'':'neg'}">₹${fmt(summary.difference)}</td></tr>
         </table>
       </div>
       <p class="muted" style="font-size:11.5px;padding:0 16px 12px;">${!hasBalance ? 'Enter the closing balance from your bank statement above to see how it lines up with the books.' : (Math.abs(summary.difference)<0.005 ? 'This account is fully reconciled as of the statement date — every difference is explained by items still outstanding below.' : 'A non-zero difference usually means something is on the bank statement but not yet in your books (bank charges, interest, a direct debit/credit) — or a transaction below is ticked the wrong way.')}</p>
@@ -6830,8 +6830,8 @@ function viewReconcile(){
             <td class="muted">${r.date}</td>
             <td class="muted">${escapeHtml(r.type)}</td>
             <td>${escapeHtml(r.narration||'—')}</td>
-            <td class="num cr">${r.dr?'₹'+fmt(r.dr):''}</td>
-            <td class="num dr">${r.cr?'₹'+fmt(r.cr):''}</td>
+            <td class="num">${r.dr?'₹'+fmt(r.dr):''}</td>
+            <td class="num">${r.cr?'₹'+fmt(r.cr):''}</td>
             <td style="text-align:center;"><input type="checkbox" data-clear-voucher="${r.voucherId}" ${r.cleared?'checked':''}></td>
           </tr>`).join('') || `<tr><td colspan="6" class="empty">No transactions on this account up to this date yet.</td></tr>`}
         </table>
@@ -6844,7 +6844,7 @@ function viewReconcile(){
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Statement Date</th><th class="num">Statement Bal.</th><th class="num">Book Bal.</th><th class="num">Difference</th><th>Saved</th></tr>
-          ${history.map(h=>`<tr><td class="muted">${h.date}</td><td class="num">₹${fmt(h.statementBalance)}</td><td class="num">₹${fmt(h.bookBalance)}</td><td class="num ${Math.abs(h.difference)<0.005?'':'dr'}">₹${fmt(h.difference)}</td><td class="muted" style="font-size:11px;">${fmtTimestamp(h.createdAt)}</td></tr>`).join('')}
+          ${history.map(h=>`<tr><td class="muted">${h.date}</td><td class="num">₹${fmt(h.statementBalance)}</td><td class="num">₹${fmt(h.bookBalance)}</td><td class="num ${Math.abs(h.difference)<0.005?'':'neg'}">₹${fmt(h.difference)}</td><td class="muted" style="font-size:11px;">${fmtTimestamp(h.createdAt)}</td></tr>`).join('')}
         </table>
       </div>
     </div>` : ''}
@@ -6931,8 +6931,8 @@ function partyAgeingTable(rows, emptyMsg){
       <td>${escapeHtml(r.ledger.name)}</td>
       <td class="num">${r.summary.buckets['0-30']?'₹'+fmt(r.summary.buckets['0-30']):'—'}</td>
       <td class="num">${r.summary.buckets['31-60']?'₹'+fmt(r.summary.buckets['31-60']):'—'}</td>
-      <td class="num ${r.summary.buckets['61-90']?'dr':''}">${r.summary.buckets['61-90']?'₹'+fmt(r.summary.buckets['61-90']):'—'}</td>
-      <td class="num ${r.summary.buckets['90+']?'dr':''}">${r.summary.buckets['90+']?'₹'+fmt(r.summary.buckets['90+']):'—'}</td>
+      <td class="num ${r.summary.buckets['61-90']?'neg':''}">${r.summary.buckets['61-90']?'₹'+fmt(r.summary.buckets['61-90']):'—'}</td>
+      <td class="num ${r.summary.buckets['90+']?'neg':''}">${r.summary.buckets['90+']?'₹'+fmt(r.summary.buckets['90+']):'—'}</td>
       <td class="num" style="font-weight:700;">₹${fmt(r.summary.total)}</td>
     </tr>`).join('')}
   </table>`;
