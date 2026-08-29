@@ -101,8 +101,11 @@
   .viz-legend-swatch{width:10px;height:10px;border-radius:2px;display:inline-block;flex-shrink:0;}
   .viz-legend-swatch.viz-line{width:14px;height:2px;border-radius:1px;}
   .viz-kpi-row{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px;}
+  .viz-kpi-row.cols4{grid-template-columns:repeat(4,1fr);}
   .viz-kpi{background:var(--surface-strong);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;transition:box-shadow .15s,transform .15s;}
   .viz-kpi:hover{box-shadow:0 4px 12px rgba(20,30,25,0.08);transform:translateY(-1px);}
+  .viz-kpi.static{cursor:default;}
+  .viz-kpi.static:hover{box-shadow:none;transform:none;}
   .viz-kpi .viz-kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;margin-bottom:6px;}
   .viz-kpi .viz-kpi-val{font-family:inherit;font-variant-numeric:tabular-nums;font-size:17px;font-weight:800;color:var(--ink);letter-spacing:-.01em;}
   .viz-kpi .viz-kpi-val.pos{color:var(--credit);}
@@ -260,6 +263,7 @@
     .main{padding:14px;}
     .entry-row{grid-template-columns:1fr;}
     .row{flex-direction:column;}
+    .viz-kpi-row.cols4{grid-template-columns:repeat(2,1fr);}
     /* Below tablet width, drop the sidebar back to a horizontal, wrapping strip along the top —
        a vertical column of 9 items eats too much width on a phone screen. */
     .body-shell{flex-direction:column;}
@@ -541,6 +545,7 @@ let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reco
 let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
+let cfDetailBucket = null;   // which Cash Flow bucket (operating/investing/financing) was clicked, for the detail modal
 let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
 let pieChartLedgerId = null; // which ledger's pie chart to show
 // Which series are hidden (clicked off) in the new interactive Dashboard trend visuals — keyed by
@@ -2102,15 +2107,20 @@ function scheduleIIIBalanceSheetData(profit, asOfDate){
   };
 }
 
-function ratioAnalysisData(is, bs){
+// asOfDate is optional: omit it (every pre-existing call site does) for the usual "as of today"
+// reading via ledgerBalance(); pass a financial year's closing date to get that year's cash/
+// receivables/payables via ledgerBalanceAsOf() instead — used by ratioFYSeries() below so a past
+// FY's Quick/Cash Ratio and DSO/DPO reflect that FY's balances, not today's.
+function ratioAnalysisData(is, bs, asOfDate){
+  const bal = id => asOfDate ? ledgerBalanceAsOf(id, asOfDate) : ledgerBalance(id);
   const currentAssets = bs.currentAssetsTotal;
   const currentLiab = bs.currentLiabTotal;
-  const cashAndBank = state.ledgers.filter(l=>['cash','bank'].includes(bucketOf(l))).reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const cashAndBank = state.ledgers.filter(l=>['cash','bank'].includes(bucketOf(l))).reduce((s,l)=>s+bal(l.id),0);
 
   const receivableLedgers = state.ledgers.filter(l=>bucketOf(l)==='ca' && !l.gstType);
-  const receivables = receivableLedgers.reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const receivables = receivableLedgers.reduce((s,l)=>s+bal(l.id),0);
   const payableLedgers = state.ledgers.filter(l=>bucketOf(l)==='curl' && !l.gstType);
-  const payables = payableLedgers.reduce((s,l)=>s-ledgerBalance(l.id),0);
+  const payables = payableLedgers.reduce((s,l)=>s-bal(l.id),0);
 
   const quickAssets = cashAndBank + receivables;
 
@@ -2171,6 +2181,127 @@ function cashFlowData(){
   const closingCash = openingCash+netChange;
   const actualCash = state.ledgers.filter(l=>bucketOf(l)==='cash'||bucketOf(l)==='bank').reduce((s,l)=>s+ledgerBalance(l.id),0);
   return { operating, investing, financing, netChange, openingCash, closingCash, actualCash, detail };
+}
+// Gross cash in / gross cash out (rather than the netted-per-bucket figures cashFlowData() already
+// gives) — the "total cash in" / "total cash out" figures the KPI cards need, life-to-date. By
+// construction cashIn - cashOut always equals cf.netChange, so this is a free cross-check too.
+function cashFlowKPITotals(cf){
+  let cashIn=0, cashOut=0;
+  ['operating','investing','financing'].forEach(k=>{
+    cf.detail[k].forEach(d=>{ if(d.amount>=0) cashIn+=d.amount; else cashOut+=-d.amount; });
+  });
+  return { cashIn, cashOut, netChange: cashIn-cashOut };
+}
+// Calendar-month buckets (oldest → newest, capped to the most recent maxMonths) of the same
+// Operating/Investing/Financing split cashFlowData() computes life-to-date, plus gross cash-in and
+// cash-out per month — feeds the Cash Flow Waterfall/Clustered-Column/Line visuals next to the
+// report. Falls back to an empty list when there are no cash/bank-touching vouchers yet.
+function cashFlowMonthlySeries(maxMonths){
+  maxMonths = maxMonths || 12;
+  const byMonth = {};
+  for(const v of state.vouchers){
+    if(v.type==='Contra') continue;
+    for(const e of v.entries){
+      const l = ledgerOf(e.ledgerId);
+      if(!l || (bucketOf(l)!=='cash' && bucketOf(l)!=='bank')) continue;
+      const net = (e.dr||0)-(e.cr||0);
+      if(Math.abs(net)<0.001) continue;
+      const key = v.date.slice(0,7); // 'YYYY-MM'
+      if(!byMonth[key]) byMonth[key] = { month:key, operating:0, investing:0, financing:0, cashIn:0, cashOut:0 };
+      const cls = cashFlowClassify(v);
+      byMonth[key][cls] += net;
+      if(net>=0) byMonth[key].cashIn += net; else byMonth[key].cashOut += -net;
+    }
+  }
+  const keys = Object.keys(byMonth).sort();
+  return keys.map(k=>byMonth[k]).slice(-maxMonths);
+}
+// '2026-04' -> 'Apr '26' — the short month label the Cash Flow Clustered Column / Line charts use
+// for each cashFlowMonthlySeries() bucket.
+function cfMonthLabel(monthKey){
+  try{ return new Date(monthKey+'-01T00:00:00').toLocaleDateString('en-IN',{month:'short',year:'2-digit'}); }
+  catch(e){ return monthKey; }
+}
+// Period-scoped twin of incomeStatementData() — same buckets, same field names, but flows measured
+// strictly WITHIN [fromDate,toDate] via ledgerFlowBetween() instead of life-to-date via
+// ledgerBalance(). Used to build one financial year's worth of the Ratio Analysis trend charts;
+// calling it with the full life-to-date range reproduces incomeStatementData() exactly.
+function incomeStatementDataForPeriod(fromDate, toDate){
+  const revenueLedgers = state.ledgers.filter(l=>bucketOf(l)==='sales');
+  const revenue = revenueLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const otherIncomeLedgers = state.ledgers.filter(l=>bucketOf(l)==='dinc');
+  const otherIncome = otherIncomeLedgers.reduce((s,l)=>s-ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const costOfSalesLedgers = state.ledgers.filter(l=>bucketOf(l)==='purch');
+  const costOfSales = costOfSalesLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const grossProfit = revenue - costOfSales;
+
+  const distributionLedgers = state.ledgers.filter(l=>bucketOf(l)==='dexp');
+  const distributionCosts = distributionLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+
+  const allIndirect = state.ledgers.filter(l=>bucketOf(l)==='iexp');
+  const financeLedgers = allIndirect.filter(l=>/interest|bank charge/i.test(l.name));
+  const adminLedgers = allIndirect.filter(l=>!/interest|bank charge/i.test(l.name));
+  const financeCosts = financeLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+  const adminExpenses = adminLedgers.reduce((s,l)=>s+ledgerFlowBetween(l.id, fromDate, toDate),0);
+
+  const operatingProfit = grossProfit + otherIncome - distributionCosts - adminExpenses;
+  const profitBeforeTax = operatingProfit - financeCosts;
+  const taxExpense = 0;
+  const profitForPeriod = profitBeforeTax - taxExpense;
+
+  return { revenue, revenueLedgers, otherIncome, otherIncomeLedgers, costOfSales, costOfSalesLedgers, grossProfit,
+    distributionLedgers, distributionCosts, adminLedgers, adminExpenses, financeLedgers, financeCosts,
+    operatingProfit, profitBeforeTax, taxExpense, profitForPeriod };
+}
+// Point-in-time twin of balanceSheetIFRSData() — same buckets, same field names, but every balance
+// is read as of a specific date via ledgerBalanceAsOf() instead of today via ledgerBalance().
+// Pairs with incomeStatementDataForPeriod() above so ratioAnalysisData(is,bs) can be fed one
+// financial year's figures at a time for the Ratio Analysis trend charts.
+function balanceSheetIFRSDataAsOf(profit, asOfDate){
+  const nonCurrentAssets = state.ledgers.filter(l=>['fa','inv','misc'].includes(bucketOf(l)));
+  const nonCurrentAssetsTotal = nonCurrentAssets.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+
+  const currentAssets = state.ledgers.filter(l=>['cash','bank','ca','susp'].includes(bucketOf(l)));
+  const currentAssetsTotal = currentAssets.reduce((s,l)=>s+ledgerBalanceAsOf(l.id, asOfDate),0);
+  const totalAssets = nonCurrentAssetsTotal + currentAssetsTotal;
+
+  const equityLedgers = state.ledgers.filter(l=>bucketOf(l)==='cap');
+  const equityBase = equityLedgers.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+  const totalEquity = equityBase + profit;
+
+  const nonCurrentLiabilities = state.ledgers.filter(l=>bucketOf(l)==='loan');
+  const nonCurrentLiabTotal = nonCurrentLiabilities.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+
+  const currentLiabilities = state.ledgers.filter(l=>bucketOf(l)==='curl');
+  const currentLiabTotal = currentLiabilities.reduce((s,l)=>s-ledgerBalanceAsOf(l.id, asOfDate),0);
+
+  const totalEquityAndLiab = totalEquity + nonCurrentLiabTotal + currentLiabTotal;
+
+  return { nonCurrentAssets, nonCurrentAssetsTotal, currentAssets, currentAssetsTotal, totalAssets,
+    equityLedgers, equityBase, totalEquity, nonCurrentLiabilities, nonCurrentLiabTotal,
+    currentLiabilities, currentLiabTotal, totalEquityAndLiab };
+}
+// Up to maxYears financial years (oldest → newest) of every ratioAnalysisData() figure, for the
+// Ratio Analysis trend line charts — mirrors dashboardIncomeFYSeries()'s "fall back to the current
+// FY when there's no multi-year history yet" behaviour.
+function ratioFYSeries(maxYears){
+  maxYears = maxYears || 6;
+  const fys = distinctFYsInVouchers().slice().reverse(); // oldest → newest
+  const todayFY = fyLabelForDate(new Date().toISOString().slice(0,10));
+  const list = fys.length ? fys.slice(-maxYears) : [todayFY];
+  return list.map(fy=>{
+    const b = fyBoundsForLabel(fy);
+    // `is` is that FY's OWN period P&L (Revenue/Gross/Operating/Net Margin, turnover — how the FY
+    // performed on its own, which is exactly what a year-over-year trend line should show). The
+    // Balance Sheet feeding it, though, always has to be a CUMULATIVE snapshot — retained earnings
+    // carried in Total Equity include every prior year's profit too, not just this FY's — so its
+    // `profit` figure is deliberately life-to-date-as-of-this-FY's-end, not is.profitForPeriod.
+    const is = incomeStatementDataForPeriod(b.start, b.end);
+    const cumulativeProfit = incomeStatementDataForPeriod(null, b.end).profitForPeriod;
+    const bs = balanceSheetIFRSDataAsOf(cumulativeProfit, b.end);
+    const ratios = ratioAnalysisData(is, bs, b.end);
+    return { fy, ...ratios };
+  });
 }
 
 function buildIncomeStatementSheet(is){
@@ -2959,6 +3090,7 @@ function render(){
     ${modal==='cashBankDetail' ? cashBankDetailModal() : ''}
     ${modal==='totalAssetsDetail' ? totalAssetsDetailModal() : ''}
     ${modal==='liabCapitalDetail' ? liabCapitalDetailModal() : ''}
+    ${modal==='cfBucketDetail' ? cashFlowBucketDetailModal() : ''}
     ${modal==='quickAddLedger' ? quickAddLedgerModal() : ''}
     ${modal==='reconcileHelp' ? reconcileHelpModal() : ''}
     ${modal==='recurring' ? recurringModal() : ''}
@@ -3535,6 +3667,31 @@ function incomeStatementDetailModal(){
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit Before Tax</td><td class="num">₹${fmt(is.profitBeforeTax)}</td></tr>
             <tr><td>Income Tax Expense</td><td class="num">(₹${fmt(is.taxExpense)})</td></tr>
             <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Profit for the Period</td><td class="num ${is.profitForPeriod>=0?'pos':'neg'}">₹${fmt(is.profitForPeriod)}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+// The elaborate, ledger-by-ledger breakdown behind one of the Cash Flow Statement's three summary
+// rows (Operating/Investing/Financing) — opened by clicking that row, or a bar of the Cash Flow
+// Waterfall. cfDetailBucket picks which of cashFlowData().detail's three arrays to show; every row
+// still drills further into that ledger's own statement, exactly like the old inline tables did.
+function cashFlowBucketDetailModal(){
+  const cf = cashFlowData();
+  const bucket = ['operating','investing','financing'].includes(cfDetailBucket) ? cfDetailBucket : 'operating';
+  const labels = { operating:'Operating Activities', investing:'Investing Activities', financing:'Financing Activities' };
+  const items = cf.detail[bucket] || [];
+  const total = cf[bucket];
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:560px;">
+        <div class="panel-head"><h2>Cash Flow — ${labels[bucket]}</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="panel-body" style="max-height:75vh;overflow-y:auto;padding:0;">
+          <table>
+            <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
+            ${items.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${escapeHtml(d.narration)}</td><td class="muted">${escapeHtml(d.ledger)}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No ${labels[bucket].toLowerCase()} cash movements yet.</td></tr>`}
+            <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from ${labels[bucket]}</td><td class="num">₹${fmt(total)}</td></tr>
           </table>
         </div>
       </div>
@@ -5411,7 +5568,14 @@ function wireVizInteractivity(){
     el.addEventListener('blur', hideChartTooltip);
   });
   document.querySelectorAll('[data-open-detail]').forEach(el=>{
-    el.addEventListener('click', ()=>{ modal = el.dataset.openDetail; render(); });
+    el.addEventListener('click', ()=>{
+      // A generic bridge for any modal that needs to know WHICH thing was clicked, not just that
+      // something was — today only the Cash Flow bucket detail modal uses it (data-detail-arg
+      // carries 'operating'/'investing'/'financing'), but any future data-open-detail modal can
+      // read cfDetailBucket the same way without another purpose-built handler.
+      if(el.dataset.detailArg) cfDetailBucket = el.dataset.detailArg;
+      modal = el.dataset.openDetail; render();
+    });
   });
   document.querySelectorAll('[data-ledger-detail]').forEach(el=>{
     el.addEventListener('click', ()=>{ ledgerDetailId = el.dataset.ledgerDetail; modal = 'ledgerDetail'; render(); });
@@ -5519,22 +5683,18 @@ function treemapLayout(items, x, y, w, h){
 }
 
 /* ---------------- Chart builders (inline SVG) ---------------- */
-// Revenue → Cost of Sales → Gross Profit → Other Income → Distribution/Admin → Operating Profit →
-// Finance Costs → Net Profit, as a floating-bar waterfall. Green = adds to profit, red = subtracts,
-// blue = a running subtotal. Life-to-date figures (incomeStatementData()), matching the existing
-// Income Statement card right above it — clicking any bar opens the exact same full breakdown.
-function svgWaterfallChart(is){
-  const steps = [
-    {label:'Revenue', value:is.revenue, kind:'flow'},
-    {label:'Cost of Sales', value:-is.costOfSales, kind:'flow'},
-    {label:'Gross Profit', value:is.grossProfit, kind:'total'},
-    {label:'Other Income', value:is.otherIncome, kind:'flow'},
-    {label:'Distribution Costs', value:-is.distributionCosts, kind:'flow'},
-    {label:'Admin Expenses', value:-is.adminExpenses, kind:'flow'},
-    {label:'Operating Profit', value:is.operatingProfit, kind:'total'},
-    {label:'Finance Costs', value:-is.financeCosts, kind:'flow'},
-    {label:is.profitForPeriod>=0?'Net Profit':'Net Loss', value:is.profitForPeriod, kind:'total'},
-  ];
+// Generic floating-bar waterfall: caller supplies `steps` as [{label, value, kind:'flow'|'total'}, …]
+// — a 'flow' bar floats from the running cumulative total by `value`; a 'total' bar resets to and
+// draws from zero (a subtotal/checkpoint). Green = adds, red = subtracts, blue = a running subtotal.
+// `opts.openDetail` (default 'incomeStatementDetail') names the modal every bar's click-through
+// opens; `opts.detailArg`, if set, is stamped onto each bar as data-detail-arg so
+// wireVizInteractivity() can route the click to a specific sub-view of that modal (e.g. which Cash
+// Flow bucket). `opts.tipSubFlow`/`opts.tipSubTotal` override the hover-tooltip explainer text.
+function svgWaterfallChart(steps, opts){
+  opts = opts||{};
+  const openDetail = opts.openDetail || 'incomeStatementDetail';
+  const tipSubFlow = opts.tipSubFlow || 'Click to see every ledger behind this statement';
+  const tipSubTotal = opts.tipSubTotal || 'Running subtotal';
   const W=620,H=280,padL=8,padR=8,padT=20,padB=56;
   const n=steps.length, bw=(W-padL-padR)/n, barW=bw*0.62;
   let cum=0;
@@ -5560,7 +5720,8 @@ function svgWaterfallChart(is){
     const sign = b.kind==='total' ? '' : (b.value>=0?'+':'−');
     const labelLines = wrapLabel2(b.label, 11);
     const labelSvg = labelLines.map((line,li)=>`<text x="${(x+barW/2).toFixed(1)}" y="${(H0+16+li*10).toFixed(1)}" font-size="8.5" font-weight="600" fill="var(--ink-soft)" text-anchor="middle">${escapeHtml(line)}</text>`).join('');
-    return `<g class="viz-mark" data-tip-title="${escapeAttr(b.label)}" data-tip-value="${sign}₹${fmt(Math.abs(b.value))}" data-tip-sub="${b.kind==='total'?'Running subtotal':'Click to see every ledger behind this statement'}" data-tip-color="${color}" data-open-detail="incomeStatementDetail" tabindex="0">
+    const barOpenDetail = b.openDetail || openDetail;
+    return `<g class="viz-mark" data-tip-title="${escapeAttr(b.label)}" data-tip-value="${sign}₹${fmt(Math.abs(b.value))}" data-tip-sub="${b.kind==='total'?tipSubTotal:tipSubFlow}" data-tip-color="${color}" data-open-detail="${barOpenDetail}"${(b.detailArg||opts.detailArg)?` data-detail-arg="${escapeAttr(b.detailArg||opts.detailArg)}"`:''} tabindex="0">
       <rect x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${hgt.toFixed(1)}" rx="3" fill="${color}"></rect>
       <text x="${(x+barW/2).toFixed(1)}" y="${(Math.min(yTop,yBot)-6).toFixed(1)}" font-size="9.5" font-weight="700" fill="var(--ink)" text-anchor="middle">${sign}₹${fmtShort(Math.abs(b.value))}</text>
       ${labelSvg}
@@ -5657,6 +5818,83 @@ function svgIncomeComboChart(series){
       svg += `<circle class="viz-mark" cx="${xPos(i).toFixed(1)}" cy="${yMargin(s.netMargin).toFixed(1)}" r="5" fill="${VIZ_COLORS[1]}" stroke="var(--surface)" stroke-width="1.5" data-tip-title="Net Profit Margin — FY ${escapeAttr(s.fy)}" data-tip-value="${s.netMargin.toFixed(1)}%" data-tip-color="${VIZ_COLORS[1]}" tabindex="0"></circle>`;
     });
   }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
+}
+// Generic clustered/grouped column chart: one group of bars per category, all series sharing a
+// single ₹/unit axis (deliberately single-axis — every series here is the same unit, so there's no
+// dual-axis case to justify, unlike the Income Trend/Combo charts above). `categories` is
+// [{key,label}, …]; `series` is [{key,label,color,values:{[categoryKey]:number}}, …].
+function svgClusteredColumnChart(categories, series, opts){
+  opts = opts||{};
+  const W=620,H=260,padL=48,padR=16,padT=16,padB=32;
+  const n=categories.length||1, H0=H-padB, groupW=(W-padL-padR)/n;
+  const barGap=3, groupPad=groupW*0.16;
+  const barsPerGroup = series.length||1;
+  const barW = Math.max(2,(groupW-groupPad*2-barGap*(barsPerGroup-1))/barsPerGroup);
+  const allVals = [0];
+  categories.forEach(c=> series.forEach(s=> allVals.push(s.values[c.key]||0)));
+  const maxVal = Math.max(...allVals)*1.12 || 1;
+  const yScale = v => (v/maxVal)*(H0-padT);
+  let svg='';
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const val = maxVal*t/ticks, yy = H0-yScale(val);
+    svg += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" class="viz-gridline"></line>`;
+    svg += `<text x="${padL-6}" y="${(yy+3).toFixed(1)}" text-anchor="end" class="viz-axis-label">₹${fmtShort(val)}</text>`;
+  }
+  categories.forEach((c,ci)=>{
+    const groupX = padL + ci*groupW + groupPad;
+    svg += `<text x="${(groupX+(groupW-groupPad*2)/2).toFixed(1)}" y="${H0+18}" text-anchor="middle" class="viz-axis-label">${escapeHtml(c.label)}</text>`;
+    series.forEach((s,si)=>{
+      if(opts.hiddenKey && opts.hiddenKey(s.key)) return;
+      const val = s.values[c.key]||0;
+      const x = groupX + si*(barW+barGap);
+      const h = Math.max(1, yScale(val));
+      const y = H0-h;
+      svg += `<rect class="viz-mark" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2.5" fill="${s.color}" data-tip-title="${escapeAttr(s.label)} — ${escapeAttr(c.label)}" data-tip-value="₹${fmt(val)}" data-tip-color="${s.color}" tabindex="0"></rect>`;
+    });
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
+}
+// Generic single-axis multi-line trend chart — every line shares one unit (₹, ×, or %), so unlike
+// the Income Trend combo above there's no dual-axis to justify; used for the Cash Flow "Operating
+// Cash Flow Trend" line and the Ratio Analysis trend charts. `categories` is [{key,label}, …];
+// `lines` is [{key,label,color,dashed,values:{[categoryKey]:number}, fmt:(v)=>string}, …].
+function svgMultiLineChart(categories, lines, opts){
+  opts = opts||{};
+  const W=620,H=260,padL=54,padR=16,padT=16,padB=32;
+  const n=categories.length, H0=H-padB;
+  const xPos = i => n<=1 ? padL+(W-padL-padR)/2 : padL + i*(W-padL-padR)/(n-1);
+  const visibleLines = lines.filter(l=> !(opts.hiddenKey && opts.hiddenKey(l.key)));
+  const allVals=[0];
+  visibleLines.forEach(l=> categories.forEach(c=> allVals.push(l.values[c.key]||0)));
+  const vMin = Math.min(0, ...allVals);
+  const vMax = Math.max(...allVals,0.0001)*1.15;
+  const range = (vMax-vMin)||1;
+  const y = v => H0 - ((v-vMin)/range)*(H0-padT);
+  const unit = opts.unit || '';
+  const axisFmt = opts.axisFmt || (v=>v.toFixed(0)+unit);
+  let svg='';
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const yy = padT + t*(H0-padT)/ticks;
+    svg += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" class="viz-gridline"></line>`;
+    svg += `<text x="${padL-6}" y="${(yy+3).toFixed(1)}" text-anchor="end" class="viz-axis-label">${axisFmt(vMin+range*(1-t/ticks))}</text>`;
+  }
+  categories.forEach((c,i)=>{ svg += `<text x="${xPos(i).toFixed(1)}" y="${H0+18}" text-anchor="middle" class="viz-axis-label">${escapeHtml(c.label)}</text>`; });
+  if(vMin<0 && vMax>0){
+    svg += `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W-padR}" y2="${y(0).toFixed(1)}" class="viz-axis-line"></line>`;
+  }
+  visibleLines.forEach(l=>{
+    const vals = categories.map(c=>l.values[c.key]||0);
+    const path = vals.map((v,i)=>`${i===0?'M':'L'} ${xPos(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
+    svg += `<path d="${path}" fill="none" stroke="${l.color}" stroke-width="2.25" ${l.dashed?'stroke-dasharray="5,4"':''}></path>`;
+    vals.forEach((v,i)=>{
+      const tip = l.fmt ? l.fmt(v) : (v.toFixed(2)+unit);
+      svg += `<circle class="viz-mark" cx="${xPos(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4.5" fill="${l.color}" stroke="var(--surface)" stroke-width="1.5" data-tip-title="${escapeAttr(l.label)} — ${escapeAttr(categories[i].label)}" data-tip-value="${escapeAttr(tip)}" data-tip-color="${l.color}" tabindex="0"></circle>`;
+    });
+  });
+  if(!visibleLines.length) return `<div class="empty">No series selected — click a legend item to turn one back on.</div>`;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
 }
 // Ledger-level expense treemap — block size = amount, grouped and colored by the same four
@@ -5765,6 +6003,10 @@ function svgAssetDonut(slices, total){
 }
 // Semicircular gauge for the Current Ratio, colored risk/health zones plus a needle — hover
 // anywhere on it for the exact ratio and its formula.
+// Semicircular gauge, generic: pass opts.title/opts.formula/opts.suffix/opts.zones/opts.max to
+// reuse for any single "value against a safe zone" ratio (Quick Ratio, Cash Ratio, Debt-to-Equity,
+// …) — every existing call site (the Dashboard's Current Ratio gauge) passes no opts and keeps its
+// exact original look and tooltip.
 function svgGaugeChart(value, opts){
   opts = opts||{};
   // Scale headroom to the actual value — a current ratio of 2 or 3 is common, but a cash-rich
@@ -5777,6 +6019,9 @@ function svgGaugeChart(value, opts){
     {to:3, color:'var(--credit)'},
     {to:max, color:'#4F8EF7'},
   ];
+  const title = opts.title || 'Current Ratio';
+  const formula = opts.formula || 'Current Assets ÷ Current Liabilities · 1.5×–3× is generally considered healthy';
+  const suffix = opts.suffix != null ? opts.suffix : '×';
   const W=240,H=150,cx=120,cy=132,r=98;
   const v = Math.max(0, Math.min(value==null?0:value, max));
   const angleFor = x => Math.PI - (x/max)*Math.PI;
@@ -5791,16 +6036,16 @@ function svgGaugeChart(value, opts){
   }).join('');
   const needleAngle = angleFor(v);
   const nx = cx+(r-22)*Math.cos(needleAngle), ny = cy-(r-22)*Math.sin(needleAngle);
-  const valueLabel = value==null ? '—' : value.toFixed(2)+'×';
+  const valueLabel = value==null ? '—' : value.toFixed(2)+suffix;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">
-    <g class="viz-mark" data-tip-title="Current Ratio" data-tip-value="${valueLabel}" data-tip-sub="Current Assets ÷ Current Liabilities · 1.5×–3× is generally considered healthy" tabindex="0">
+    <g class="viz-mark" data-tip-title="${escapeAttr(title)}" data-tip-value="${valueLabel}" data-tip-sub="${escapeAttr(formula)}" tabindex="0">
       ${zoneArcs}
       <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(2)}" y2="${ny.toFixed(2)}" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"></line>
       <circle cx="${cx}" cy="${cy}" r="5" fill="var(--ink)"></circle>
     </g>
     <text x="${cx}" y="${cy-30}" text-anchor="middle" font-size="19" font-weight="800" fill="var(--ink)">${valueLabel}</text>
     <text x="${cx-r}" y="${cy+16}" text-anchor="start" font-size="9" fill="var(--ink-faint)">0</text>
-    <text x="${cx+r}" y="${cy+16}" text-anchor="end" font-size="9" fill="var(--ink-faint)">${max}×</text>
+    <text x="${cx+r}" y="${cy+16}" text-anchor="end" font-size="9" fill="var(--ink-faint)">${max}${suffix}</text>
   </svg>`;
 }
 function balanceSheetKPICards(ratios){
@@ -5819,15 +6064,54 @@ function balanceSheetKPICards(ratios){
     </div>
   `;
 }
+// Total cash in / total cash out / net change / closing balance — the four "big numbers at the top
+// of a dashboard" the Cash Flow visuals ask for, life-to-date. Cash In/Out and Net Change are plain
+// KPI reads (no single existing modal covers "every inflow across all three buckets"), so they stay
+// non-clickable but still carry a hover tooltip explaining what they add up; Closing Cash reuses the
+// same Cash & Bank drill-down every other Cash/Bank figure in this app already opens.
+function cashFlowKPICards(cf){
+  const totals = cashFlowKPITotals(cf);
+  return `
+    <div class="viz-kpi-row cols4">
+      <div class="viz-kpi static" data-tip-title="Total Cash In" data-tip-value="₹${fmt(totals.cashIn)}" data-tip-sub="Every inflow across Operating, Investing &amp; Financing" tabindex="0">
+        <div class="viz-kpi-label">Total Cash In</div>
+        <div class="viz-kpi-val pos">₹${fmt(totals.cashIn)}</div>
+      </div>
+      <div class="viz-kpi static" data-tip-title="Total Cash Out" data-tip-value="₹${fmt(totals.cashOut)}" data-tip-sub="Every outflow across Operating, Investing &amp; Financing" tabindex="0">
+        <div class="viz-kpi-label">Total Cash Out</div>
+        <div class="viz-kpi-val neg">₹${fmt(totals.cashOut)}</div>
+      </div>
+      <div class="viz-kpi static" data-tip-title="Net Change in Cash" data-tip-value="₹${fmt(cf.netChange)}" data-tip-sub="Total Cash In − Total Cash Out" tabindex="0">
+        <div class="viz-kpi-label">Net Change</div>
+        <div class="viz-kpi-val ${cf.netChange>=0?'pos':'neg'}">₹${fmt(cf.netChange)}</div>
+      </div>
+      <div class="viz-kpi" data-open-detail="cashBankDetail" data-tip-title="Closing Cash Balance" data-tip-value="₹${fmt(cf.closingCash)}" data-tip-sub="Opening cash + net change · click for the Cash &amp; Bank ledgers" tabindex="0">
+        <div class="viz-kpi-label">Closing Cash</div>
+        <div class="viz-kpi-val ${cf.closingCash>=0?'pos':'neg'}">₹${fmt(cf.closingCash)}</div>
+      </div>
+    </div>
+  `;
+}
 
 /* ---------------- Card wrappers (dropped into viewDashboard() below the existing two cards) ---------------- */
 function incomeWaterfallCard(){
   const is = incomeStatementData();
+  const steps = [
+    {label:'Revenue', value:is.revenue, kind:'flow'},
+    {label:'Cost of Sales', value:-is.costOfSales, kind:'flow'},
+    {label:'Gross Profit', value:is.grossProfit, kind:'total'},
+    {label:'Other Income', value:is.otherIncome, kind:'flow'},
+    {label:'Distribution Costs', value:-is.distributionCosts, kind:'flow'},
+    {label:'Admin Expenses', value:-is.adminExpenses, kind:'flow'},
+    {label:'Operating Profit', value:is.operatingProfit, kind:'total'},
+    {label:'Finance Costs', value:-is.financeCosts, kind:'flow'},
+    {label:is.profitForPeriod>=0?'Net Profit':'Net Loss', value:is.profitForPeriod, kind:'total'},
+  ];
   return `
     <div class="panel viz-panel">
       <div class="panel-head"><h2>Profit Bridge</h2><span class="viz-sub">Waterfall · life-to-date</span></div>
       <div class="panel-body">
-        ${svgWaterfallChart(is)}
+        ${svgWaterfallChart(steps)}
         <p class="muted" style="font-size:10.5px;margin:2px 0 0;">Click any bar to see the underlying ledgers.</p>
       </div>
     </div>
@@ -7320,7 +7604,7 @@ function svgHBarChart(items, opts={}){
     const y = topPad + i*rowH;
     const w = Math.max(2, (Math.abs(it.value||0)/maxVal) * chartW);
     const color = it.color || 'var(--accent1)';
-    return `<g>
+    return `<g class="viz-mark" data-tip-title="${escapeAttr(it.label)}" data-tip-value="${escapeAttr(it.display)}" data-tip-color="${color}"${it.sub?` data-tip-sub="${escapeAttr(it.sub)}"`:''} tabindex="0">
       <text x="0" y="${y+barH/2+4}" font-size="11.5" font-weight="600" fill="var(--ink-soft)">${escapeHtml(it.label)}</text>
       <rect x="${labelW}" y="${y}" width="${chartW}" height="${barH}" rx="4" fill="var(--surface-strong)"></rect>
       <rect x="${labelW}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${color}"></rect>
@@ -7344,7 +7628,8 @@ function svgStackedBar(segments, opts={}){
   let x = 0;
   const rects = segments.map(seg=>{
     const w = Math.max(0,seg.value||0)/total*width;
-    const r = `<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${height}" fill="${seg.color}"></rect>`;
+    const pct = (Math.max(0,seg.value||0)/total*100).toFixed(1);
+    const r = `<g class="viz-mark" data-tip-title="${escapeAttr(seg.label)}" data-tip-value="₹${fmt(seg.value)}" data-tip-sub="${pct}% of the total" data-tip-color="${seg.color}" tabindex="0"><rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${height}" fill="${seg.color}"></rect></g>`;
     x += w;
     return r;
   }).join('');
@@ -7585,12 +7870,83 @@ function reportBalanceSheet(){
     </div></div>
   `;
 }
+// Current/Quick/Debt-to-Equity ratios (all ×) across up to six financial years — "Line Graphs: Show
+// how a ratio changes over time." Deliberately its own single-unit (×) chart, split from the %
+// margins below, rather than a dual-axis combo.
+function ratioLiquidityLeverageTrendCard(series){
+  const categories = series.map(s=>({key:s.fy, label:'FY '+s.fy}));
+  const lines = [
+    {key:'ratioCurrentTrend', label:'Current Ratio', color:VIZ_COLORS[0], values:Object.fromEntries(series.map(s=>[s.fy, s.currentRatio||0])), fmt:v=>fmtRatio(v)+'×'},
+    {key:'ratioQuickTrend', label:'Quick Ratio', color:VIZ_COLORS[1], values:Object.fromEntries(series.map(s=>[s.fy, s.quickRatio||0])), fmt:v=>fmtRatio(v)+'×'},
+    {key:'ratioDebtEquityTrend', label:'Debt-to-Equity', color:VIZ_COLORS[3], dashed:true, values:Object.fromEntries(series.map(s=>[s.fy, s.debtToEquity||0])), fmt:v=>fmtRatio(v)+'×'},
+  ];
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Liquidity &amp; Leverage Trend</h2><span class="viz-sub">Line · ${series.length>1?`Last ${series.length} FYs`:'Current FY'}</span></div>
+      <div class="panel-body">
+        ${svgMultiLineChart(categories, lines, {axisFmt:v=>fmtRatio(v)+'×', hiddenKey:k=>dashVizHiddenSeries[k]})}
+        ${vizLegend(lines.map(l=>({key:l.key,label:l.label,color:l.color,dashed:l.dashed})))}
+      </div>
+    </div>
+  `;
+}
+// Gross/Operating/Net profit margin (all %) across up to six financial years.
+function ratioProfitabilityTrendCard(series){
+  const categories = series.map(s=>({key:s.fy, label:'FY '+s.fy}));
+  const lines = [
+    {key:'ratioGrossTrend', label:'Gross Margin', color:VIZ_COLORS[0], values:Object.fromEntries(series.map(s=>[s.fy, s.grossMargin||0])), fmt:v=>fmtPct(v)},
+    {key:'ratioOperatingTrend', label:'Operating Margin', color:VIZ_COLORS[1], values:Object.fromEntries(series.map(s=>[s.fy, s.operatingMargin||0])), fmt:v=>fmtPct(v)},
+    {key:'ratioNetTrend', label:'Net Margin', color:VIZ_COLORS[2], values:Object.fromEntries(series.map(s=>[s.fy, s.netMargin||0])), fmt:v=>fmtPct(v)},
+  ];
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Profitability Margin Trend</h2><span class="viz-sub">Line · ${series.length>1?`Last ${series.length} FYs`:'Current FY'}</span></div>
+      <div class="panel-body">
+        ${svgMultiLineChart(categories, lines, {axisFmt:v=>v.toFixed(0)+'%', hiddenKey:k=>dashVizHiddenSeries[k]})}
+        ${vizLegend(lines.map(l=>({key:l.key,label:l.label,color:l.color})))}
+      </div>
+    </div>
+  `;
+}
+// Current/Quick/Cash Ratio, each as its own semicircular gauge against a safe-zone target — "Gauge
+// Charts: Display single metrics against a target or safe zone."
+function ratioLiquidityGaugeCard(ratios){
+  const quickMax = Math.max(2, Math.ceil((ratios.quickRatio||0)*1.15));
+  const cashMax = Math.max(1.5, Math.ceil((ratios.cashRatio||0)*1.15*10)/10);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Liquidity Gauges</h2><span class="viz-sub">Gauge · vs safe zone · as of today</span></div>
+      <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:190px;text-align:center;">
+          ${svgGaugeChart(ratios.currentRatio, {})}
+          <div style="font-size:10.5px;color:var(--ink-faint);margin-top:2px;">Current Ratio</div>
+        </div>
+        <div style="flex:1;min-width:190px;text-align:center;">
+          ${svgGaugeChart(ratios.quickRatio, {title:'Quick Ratio', formula:'(Cash + Receivables) ÷ Current Liabilities · 1.0× or above is generally considered safe', max:quickMax, zones:[{to:1,color:'var(--debit)'},{to:1.5,color:'#F2994A'},{to:quickMax,color:'var(--credit)'}]})}
+          <div style="font-size:10.5px;color:var(--ink-faint);margin-top:2px;">Quick Ratio</div>
+        </div>
+        <div style="flex:1;min-width:190px;text-align:center;">
+          ${svgGaugeChart(ratios.cashRatio, {title:'Cash Ratio', formula:'Cash &amp; Bank ÷ Current Liabilities · 0.5× or above is generally considered strong', max:cashMax, zones:[{to:0.2,color:'var(--debit)'},{to:0.5,color:'#F2994A'},{to:cashMax,color:'var(--credit)'}]})}
+          <div style="font-size:10.5px;color:var(--ink-faint);margin-top:2px;">Cash Ratio</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
 function reportRatioAnalysis(){
   const is = incomeStatementData();
   const bs = balanceSheetIFRSData(is.profitForPeriod);
   const ratios = ratioAnalysisData(is, bs);
+  const fySeries = ratioFYSeries(6);
   return `
     ${reportHeader('Ratio Analysis (Detailed)', 'exportRatiosBtn')}
+    <h2 style="font-family:inherit;font-weight:800;font-size:15px;margin:0 0 12px;letter-spacing:-.01em;color:var(--ink);">Ratio Trends &amp; Liquidity Health</h2>
+    <div class="viz-grid">
+      ${ratioLiquidityLeverageTrendCard(fySeries)}
+      ${ratioProfitabilityTrendCard(fySeries)}
+    </div>
+    ${ratioLiquidityGaugeCard(ratios)}
+    <h2 style="font-family:inherit;font-weight:800;font-size:15px;margin:22px 0 12px;letter-spacing:-.01em;color:var(--ink);">Ratios in Detail</h2>
     <div class="row" style="align-items:flex-start;">
       <div style="flex:1;">
         <div class="panel">
@@ -7677,40 +8033,92 @@ function reportRatioAnalysis(){
     </div>
   `;
 }
+// Opening Cash → Operating → Investing → Financing → Closing Cash, as a floating-bar waterfall.
+// Opening/Closing bars open the Cash & Bank ledger detail; the three activity bars each open exactly
+// the bucket they represent in the new Cash Flow bucket-detail modal (data-detail-arg).
+function cashFlowWaterfallCard(cf){
+  const steps = [
+    {label:'Opening Cash', value:cf.openingCash, kind:'total', openDetail:'cashBankDetail'},
+    {label:'Operating', value:cf.operating, kind:'flow', detailArg:'operating'},
+    {label:'Investing', value:cf.investing, kind:'flow', detailArg:'investing'},
+    {label:'Financing', value:cf.financing, kind:'flow', detailArg:'financing'},
+    {label:'Closing Cash', value:cf.closingCash, kind:'total', openDetail:'cashBankDetail'},
+  ];
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Cash Flow Bridge</h2><span class="viz-sub">Waterfall · life-to-date</span></div>
+      <div class="panel-body">
+        ${svgWaterfallChart(steps, {openDetail:'cfBucketDetail', tipSubFlow:'Click to see every ledger in this bucket', tipSubTotal:'Click for the Cash &amp; Bank ledgers'})}
+        <p class="muted" style="font-size:10.5px;margin:2px 0 0;">Opening cash, plus Operating/Investing/Financing activity, to Closing cash. Click any bar to drill in.</p>
+      </div>
+    </div>
+  `;
+}
+// Gross cash in vs gross cash out, month by month — the "Compares cash inflows versus cash outflows
+// side-by-side" clustered column chart.
+function cashFlowClusteredColumnCard(monthly){
+  const categories = monthly.map(m=>({key:m.month, label:cfMonthLabel(m.month)}));
+  const series = [
+    {key:'cfCashIn', label:'Cash In', color:VIZ_COLORS[0], values:Object.fromEntries(monthly.map(m=>[m.month,m.cashIn]))},
+    {key:'cfCashOut', label:'Cash Out', color:VIZ_COLORS[4], values:Object.fromEntries(monthly.map(m=>[m.month,m.cashOut]))},
+  ];
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Cash In vs Cash Out</h2><span class="viz-sub">Clustered Column · ${monthly.length>1?`Last ${monthly.length} months`:'This month'}</span></div>
+      <div class="panel-body">
+        ${monthly.length ? svgClusteredColumnChart(categories, series, {hiddenKey:k=>dashVizHiddenSeries[k]}) : `<div class="empty">No cash movements recorded yet.</div>`}
+        ${vizLegend(series.map(s=>({key:s.key,label:s.label,color:s.color})))}
+      </div>
+    </div>
+  `;
+}
+// Net Operating Cash Flow, month by month — "Tracks Operating Cash Flow Trends over time to see if
+// core business operations generate steady money."
+function cashFlowOperatingTrendCard(monthly){
+  const categories = monthly.map(m=>({key:m.month, label:cfMonthLabel(m.month)}));
+  const lines = [
+    {key:'cfOperatingTrend', label:'Operating Cash Flow', color:VIZ_COLORS[1], values:Object.fromEntries(monthly.map(m=>[m.month,m.operating])), fmt:v=>'₹'+fmt(v)},
+  ];
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Operating Cash Flow Trend</h2><span class="viz-sub">Line · ${monthly.length>1?`Last ${monthly.length} months`:'This month'}</span></div>
+      <div class="panel-body">
+        ${monthly.length ? svgMultiLineChart(categories, lines, {axisFmt:v=>'₹'+fmtShort(v), hiddenKey:k=>dashVizHiddenSeries[k]}) : `<div class="empty">No operating cash movements yet.</div>`}
+        ${vizLegend(lines.map(l=>({key:l.key,label:l.label,color:l.color})))}
+        <p class="muted" style="font-size:10.5px;margin:8px 0 0;">Steady or rising bars/points mean core operations are generating consistent cash.</p>
+      </div>
+    </div>
+  `;
+}
+// A single clickable summary row for one Cash Flow bucket — replaces the old always-expanded
+// transaction table; clicking (or clicking the matching Waterfall bar) opens
+// cashFlowBucketDetailModal() with the full ledger-by-ledger breakdown.
+function cashFlowBucketSummaryPanel(title, bucketKey, cf){
+  const total = cf[bucketKey];
+  const count = cf.detail[bucketKey].length;
+  return `
+    <div class="panel">
+      <div class="panel-head"><h2>${title}</h2><span class="pill ${total>=0?'pos':'neg'}">₹${fmt(total)}</span></div>
+      <div class="panel-body">
+        <div class="viz-kpi" data-open-detail="cfBucketDetail" data-detail-arg="${bucketKey}" data-tip-title="${escapeAttr(title)}" data-tip-value="₹${fmt(total)}" data-tip-sub="${count} transaction${count===1?'':'s'} · click to see every ledger" tabindex="0">
+          <div class="viz-kpi-label">Net Cash from ${title}</div>
+          <div class="viz-kpi-val ${total>=0?'pos':'neg'}">₹${fmt(total)}</div>
+        </div>
+        <p class="muted" style="font-size:10.5px;margin:8px 0 0;">${count} transaction${count===1?'':'s'} · click to elaborate the accounts behind this total →</p>
+      </div>
+    </div>
+  `;
+}
 function reportCashFlow(){
   const cf = cashFlowData();
   const cashMatches = Math.abs(cf.closingCash - cf.actualCash) < 0.01;
+  const monthly = cashFlowMonthlySeries(12);
   return `
-    ${reportHeader('Cash Flow Statement (Detailed, Direct Method)', 'exportCFBtn')}
-    <div class="panel">
-      <div class="panel-head"><h2>Operating Activities</h2><span class="pill ${cf.operating>=0?'pos':'neg'}">₹${fmt(cf.operating)}</span></div>
-      <div class="panel-body" style="padding:0;">
-        <table>
-          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.operating.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No operating cash movements yet.</td></tr>`}
-          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Operating Activities</td><td class="num">₹${fmt(cf.operating)}</td></tr>
-        </table>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Investing Activities</h2><span class="pill ${cf.investing>=0?'pos':'neg'}">₹${fmt(cf.investing)}</span></div>
-      <div class="panel-body" style="padding:0;">
-        <table>
-          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.investing.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No investing cash movements yet.</td></tr>`}
-          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Investing Activities</td><td class="num">₹${fmt(cf.investing)}</td></tr>
-        </table>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Financing Activities</h2><span class="pill ${cf.financing>=0?'pos':'neg'}">₹${fmt(cf.financing)}</span></div>
-      <div class="panel-body" style="padding:0;">
-        <table>
-          <tr><th>Date</th><th>Voucher</th><th>Ledger</th><th class="num">Amount</th></tr>
-          ${cf.detail.financing.map(d=>`<tr data-ledger-detail="${d.ledgerId}" style="cursor:pointer;"><td class="muted">${d.date}</td><td>${d.type} — ${d.narration}</td><td class="muted">${d.ledger}</td><td class="num ${d.amount>=0?'pos':'neg'}">₹${fmt(d.amount)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No financing cash movements yet.</td></tr>`}
-          <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="3">Net Cash from Financing Activities</td><td class="num">₹${fmt(cf.financing)}</td></tr>
-        </table>
-      </div>
+    ${reportHeader('Cash Flow Statement (Direct Method)', 'exportCFBtn')}
+    <div class="row" style="align-items:stretch;">
+      <div style="flex:1;">${cashFlowBucketSummaryPanel('Operating Activities', 'operating', cf)}</div>
+      <div style="flex:1;">${cashFlowBucketSummaryPanel('Investing Activities', 'investing', cf)}</div>
+      <div style="flex:1;">${cashFlowBucketSummaryPanel('Financing Activities', 'financing', cf)}</div>
     </div>
     <div class="panel">
       <div class="panel-head"><h2>Reconciliation</h2></div>
@@ -7723,6 +8131,19 @@ function reportCashFlow(){
       </div>
     </div>
     <p class="muted" style="font-size:11.5px;">${cashMatches ? '✓ Closing cash matches actual Cash + Bank ledger balances.' : `⚠ Closing cash (₹${fmt(cf.closingCash)}) does not match actual Cash + Bank balances (₹${fmt(cf.actualCash)}) — check for unusual voucher entries.`} Contra vouchers between Cash and Bank are excluded since they don't change the combined cash position. Classification: Fixed Asset lines → Investing; Capital/Loan lines → Financing; everything else → Operating.</p>
+
+    <h2 style="font-family:inherit;font-weight:800;font-size:15px;margin:22px 0 12px;letter-spacing:-.01em;color:var(--ink);">Cash Flow Visuals</h2>
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Cash Flow at a Glance</h2><span class="viz-sub">KPI Cards · life-to-date</span></div>
+      <div class="panel-body">
+        ${cashFlowKPICards(cf)}
+      </div>
+    </div>
+    <div class="viz-grid">
+      ${cashFlowWaterfallCard(cf)}
+      ${cashFlowClusteredColumnCard(monthly)}
+      ${cashFlowOperatingTrendCard(monthly)}
+    </div>
   `;
 }
 
@@ -8736,6 +9157,10 @@ function attachHandlers(){
         render();
       });
     });
+    // Cash Flow / Ratio Analysis's new Power BI-style visuals (waterfall, clustered column, trend
+    // lines, gauges, KPI cards) reuse the same hover-tooltip / click-through / legend-toggle layer
+    // the Dashboard's visuals already run on.
+    wireVizInteractivity();
   }
 
   if(view==='gst'){
