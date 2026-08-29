@@ -84,6 +84,36 @@
   .panel-head h2{font-family:inherit;font-size:14px;font-weight:800;margin:0;letter-spacing:-.01em;color:var(--ink);}
   .panel-body{padding:16px 18px;}
 
+  /* ---------------- Interactive dashboard visuals (Power BI–style charts) ---------------- */
+  .viz-grid{display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:12px;}
+  .viz-panel .panel-head{gap:10px;}
+  .viz-panel .panel-head .viz-sub{font-size:10.5px;color:var(--ink-faint);font-weight:600;}
+  .viz-mark{cursor:pointer;transition:opacity .12s,filter .12s;}
+  .viz-mark:hover{opacity:.82;filter:brightness(0.96);}
+  .viz-mark:focus-visible{outline:2px solid var(--accent1);outline-offset:1px;}
+  .viz-axis-label{font-size:9.5px;fill:var(--ink-faint);font-weight:700;}
+  .viz-axis-line{stroke:var(--border);stroke-width:1;}
+  .viz-gridline{stroke:var(--border);stroke-width:1;stroke-dasharray:2,3;}
+  .viz-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border);}
+  .viz-legend-item{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:11px;font-weight:600;color:var(--ink-soft);background:none;border:none;padding:2px 0;font-family:inherit;}
+  .viz-legend-item:hover{color:var(--ink);}
+  .viz-legend-item.viz-off{opacity:.4;text-decoration:line-through;}
+  .viz-legend-swatch{width:10px;height:10px;border-radius:2px;display:inline-block;flex-shrink:0;}
+  .viz-legend-swatch.viz-line{width:14px;height:2px;border-radius:1px;}
+  .viz-kpi-row{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px;}
+  .viz-kpi{background:var(--surface-strong);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;transition:box-shadow .15s,transform .15s;}
+  .viz-kpi:hover{box-shadow:0 4px 12px rgba(20,30,25,0.08);transform:translateY(-1px);}
+  .viz-kpi .viz-kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;margin-bottom:6px;}
+  .viz-kpi .viz-kpi-val{font-family:inherit;font-variant-numeric:tabular-nums;font-size:17px;font-weight:800;color:var(--ink);letter-spacing:-.01em;}
+  .viz-kpi .viz-kpi-val.pos{color:var(--credit);}
+  .viz-kpi .viz-kpi-val.neg{color:var(--debit);}
+  #chartTooltip{position:fixed;z-index:9999;pointer-events:none;background:var(--ink);color:#fff;padding:8px 11px;border-radius:8px;font-size:11px;line-height:1.55;box-shadow:0 8px 22px rgba(0,0,0,0.22);opacity:0;transform:translateY(4px) scale(.98);transition:opacity .1s ease-out,transform .1s ease-out;max-width:250px;font-family:'Inter',sans-serif;}
+  #chartTooltip.show{opacity:1;transform:translateY(0) scale(1);}
+  #chartTooltip .tt-title{font-weight:800;margin-bottom:3px;color:#fff;}
+  #chartTooltip .tt-row{display:flex;justify-content:space-between;gap:14px;align-items:center;}
+  #chartTooltip .tt-swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;flex-shrink:0;}
+  #chartTooltip .tt-muted{color:rgba(255,255,255,0.65);font-size:10px;margin-top:3px;}
+
   table{width:100%;border-collapse:collapse;font-size:12.5px;}
   th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);font-weight:700;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface-strong);}
   td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top;color:var(--ink);}
@@ -513,6 +543,10 @@ let errorLog = [];              // cache of client-side error log entries, loade
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
 let pieChartLedgerId = null; // which ledger's pie chart to show
+// Which series are hidden (clicked off) in the new interactive Dashboard trend visuals — keyed by
+// a series key like 'revenue'/'cogs'/'margin'. Persists only for the session (like every other
+// piece of UI draft state in this app), reset is not needed since it's just a display toggle.
+let dashVizHiddenSeries = {};
 let stockDetailItemId = null;  // which item's stock movement modal to show
 let stockAdjustItemId = null;  // which item's adjust-stock modal to show
 let importState = null;    // wizard state for the Import Accounting Data modal
@@ -5218,6 +5252,21 @@ function viewDashboard(){
       <div style="flex:1;">${balanceSheetVisualCard()}</div>
       <div style="flex:1;">${incomeStatementVisualCard()}</div>
     </div>
+
+    <div class="section-title">Income Statement Visuals</div>
+    <div class="viz-grid">
+      ${incomeWaterfallCard()}
+      ${incomeTrendCard()}
+      ${incomeComboCard()}
+      ${expenseTreemapCard()}
+    </div>
+
+    <div class="section-title">Balance Sheet Visuals</div>
+    <div class="viz-grid">
+      ${balanceSheetStackedCard()}
+      ${assetDonutCard()}
+      ${balanceSheetKPIGaugeCard()}
+    </div>
   `;
 }
 function legendRow(label, value, colorHex){
@@ -5263,6 +5312,613 @@ function incomeStatementVisualCard(){
     </div>
   `;
 }
+
+/* ============================================================================================
+   Interactive Dashboard Visuals — Power BI–style charts shown alongside the two cards above.
+   Every figure here is derived from the SAME data functions the Reports tab and the cards above
+   already rely on (incomeStatementData(), balanceSheetIFRSData(), ratioAnalysisData(),
+   scheduleIIIProfitLossData()) — nothing is computed twice with different logic — so a number
+   shown in a chart always matches the number you land on after drilling into it. Every chart is
+   hand-drawn inline SVG (this app has no charting library beyond Three.js for the two 3D bars
+   above) with three interaction layers, wired by wireVizInteractivity() below:
+     1. Hover tooltip on every mark  — any element carrying data-tip-title/value/[sub/color].
+     2. Click-through to detail      — data-open-detail (reuses the existing *DetailModal
+                                        functions), or data-ledger-detail (reuses the existing
+                                        per-ledger statement modal, e.g. from the Reports tab).
+     3. Clickable legends            — data-viz-toggle hides/shows one series, like clicking a
+                                        Power BI legend entry.
+   ============================================================================================ */
+// A validated (colorblind-safe, run through this app's dataviz palette checker), already-in-use
+// categorical order — the first five entries of the existing PIE_COLORS palette (see
+// ledgerTypeBreakdown's pie chart above) — reused here so every chart on the Dashboard, old and
+// new, draws from one consistent set of category colors.
+const VIZ_COLORS = ['#2CA01C','#4F8EF7','#F2994A','#A78BFA','#D64545'];
+
+function fmtShort(n){
+  const v = Math.abs(n)||0;
+  if(v>=10000000) return (v/10000000).toFixed(v>=100000000?0:1)+'Cr';
+  if(v>=100000) return (v/100000).toFixed(v>=1000000?0:1)+'L';
+  if(v>=1000) return (v/1000).toFixed(1)+'k';
+  return Math.round(v).toString();
+}
+function shortenLabel(s, maxChars){
+  maxChars = maxChars || 16;
+  if(maxChars<4) maxChars=4;
+  return (s||'').length>maxChars ? s.slice(0,maxChars-1)+'…' : (s||'');
+}
+// Wraps a category label onto up to 2 lines at the word-split that best balances line lengths
+// (rather than one long truncated line) — used for the Waterfall chart's per-bar labels, which sit
+// in narrow, evenly-spaced columns where a single long line would run into its neighbors.
+function wrapLabel2(s, maxCharsPerLine){
+  maxCharsPerLine = maxCharsPerLine || 10;
+  const words = (s||'').split(' ');
+  if(words.length===1) return [shortenLabel(s, maxCharsPerLine)];
+  let best=null, bestScore=Infinity;
+  for(let i=1;i<words.length;i++){
+    const l1 = words.slice(0,i).join(' '), l2 = words.slice(i).join(' ');
+    const score = Math.max(l1.length, l2.length);
+    if(score<bestScore){ bestScore=score; best=[l1,l2]; }
+  }
+  return best.map(l=>shortenLabel(l, maxCharsPerLine));
+}
+
+/* ---------------- Tooltip layer (shared by every chart below) ----------------
+   A single floating div, created lazily and reused across every hover — cheap enough to move on
+   mousemove without going through this app's normal state-mutation + render() cycle, which is
+   reserved for actual clicks (legend toggles, drill-through) below. */
+function ensureChartTooltipEl(){
+  let el = document.getElementById('chartTooltip');
+  if(!el){ el = document.createElement('div'); el.id = 'chartTooltip'; document.body.appendChild(el); }
+  return el;
+}
+function positionChartTooltip(evt){
+  const el = document.getElementById('chartTooltip');
+  if(!el) return;
+  const pad = 14;
+  let x = evt.clientX + pad, y = evt.clientY + pad;
+  const rect = el.getBoundingClientRect();
+  if(x + rect.width > window.innerWidth - 8) x = evt.clientX - rect.width - pad;
+  if(y + rect.height > window.innerHeight - 8) y = evt.clientY - rect.height - pad;
+  if(x<4) x=4;
+  if(y<4) y=4;
+  el.style.left = x+'px';
+  el.style.top = y+'px';
+}
+function showChartTooltipFor(el, evt){
+  const tt = ensureChartTooltipEl();
+  const title = el.getAttribute('data-tip-title')||'';
+  const value = el.getAttribute('data-tip-value')||'';
+  const sub = el.getAttribute('data-tip-sub')||'';
+  const color = el.getAttribute('data-tip-color')||'';
+  tt.innerHTML = `<div class="tt-title">${escapeHtml(title)}</div><div class="tt-row">${color?`<span class="tt-swatch" style="background:${color};"></span>`:''}<span>${escapeHtml(value)}</span></div>${sub?`<div class="tt-muted">${escapeHtml(sub)}</div>`:''}`;
+  tt.classList.add('show');
+  positionChartTooltip(evt);
+}
+function hideChartTooltip(){
+  const el = document.getElementById('chartTooltip');
+  if(el) el.classList.remove('show');
+}
+// Wires the three interaction layers described above onto whatever the dashboard just rendered.
+// Called once after every dashboard render (see the view==='dashboard' wiring block) — independent
+// of renderDashboardCharts(), which bails out early when Three.js hasn't loaded and would otherwise
+// silently take these plain-SVG charts' interactivity down with it.
+function wireVizInteractivity(){
+  document.querySelectorAll('[data-tip-title]').forEach(el=>{
+    el.addEventListener('mouseenter', e=>showChartTooltipFor(el, e));
+    el.addEventListener('mousemove', positionChartTooltip);
+    el.addEventListener('mouseleave', hideChartTooltip);
+    el.addEventListener('focus', e=>showChartTooltipFor(el, {clientX:innerWidth/2, clientY:innerHeight/2}));
+    el.addEventListener('blur', hideChartTooltip);
+  });
+  document.querySelectorAll('[data-open-detail]').forEach(el=>{
+    el.addEventListener('click', ()=>{ modal = el.dataset.openDetail; render(); });
+  });
+  document.querySelectorAll('[data-ledger-detail]').forEach(el=>{
+    el.addEventListener('click', ()=>{ ledgerDetailId = el.dataset.ledgerDetail; modal = 'ledgerDetail'; render(); });
+  });
+  document.querySelectorAll('[data-viz-toggle]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const key = el.dataset.vizToggle;
+      dashVizHiddenSeries[key] = !dashVizHiddenSeries[key];
+      render();
+    });
+  });
+}
+// A clickable (or, with opts.toggle===false, a plain informational) legend row — click toggles
+// dashVizHiddenSeries[key] and re-renders, exactly like clicking a series off in a Power BI legend.
+function vizLegend(items, opts){
+  opts = opts||{};
+  const toggle = opts.toggle !== false;
+  return `<div class="viz-legend">${items.map(it=>{
+    if(!toggle){
+      return `<span class="viz-legend-item" style="cursor:default;"><span class="viz-legend-swatch ${it.dashed?'viz-line':''}" style="background:${it.color};"></span>${escapeHtml(it.label)}</span>`;
+    }
+    const off = dashVizHiddenSeries[it.key];
+    return `<button type="button" class="viz-legend-item ${off?'viz-off':''}" data-viz-toggle="${it.key}"><span class="viz-legend-swatch ${it.dashed?'viz-line':''}" style="background:${it.color};"></span>${escapeHtml(it.label)}</button>`;
+  }).join('')}</div>`;
+}
+
+/* ---------------- Data ---------------- */
+// Up to `maxYears` financial years of Revenue / COGS / Net Margin %, oldest first — for the two
+// multi-year trend visuals (Line Graph, Combo Chart). Falls back to just the current FY when
+// there's no multi-year history yet, same as every other FY-aware view in this app.
+function dashboardIncomeFYSeries(maxYears){
+  const fys = distinctFYsInVouchers().slice().reverse(); // oldest → newest
+  const todayFY = fyLabelForDate(new Date().toISOString().slice(0,10));
+  const list = fys.length ? fys.slice(-maxYears) : [todayFY];
+  return list.map(fy=>{
+    const b = fyBoundsForLabel(fy);
+    const pl = scheduleIIIProfitLossData(b.start, b.end);
+    const revenue = pl.revenueFromOperations;
+    const cogs = pl.purchasesOfStockInTrade;
+    const netProfit = pl.profitForPeriod;
+    const netMargin = revenue ? (netProfit/revenue*100) : 0;
+    return { fy, revenue, cogs, netProfit, netMargin };
+  });
+}
+// Expense hierarchy for the Treemap — the same four categories & ledgers incomeStatementData()
+// and incomeStatementDetailModal() already total up, so the numbers always match.
+function dashboardExpenseTreemapData(is){
+  const groups = [
+    { key:'cogs',  label:'Cost of Sales',            color:VIZ_COLORS[4], ledgers:is.costOfSalesLedgers,  total:is.costOfSales },
+    { key:'dist',  label:'Distribution Costs',        color:VIZ_COLORS[2], ledgers:is.distributionLedgers, total:is.distributionCosts },
+    { key:'admin', label:'Administrative Expenses',   color:VIZ_COLORS[1], ledgers:is.adminLedgers,        total:is.adminExpenses },
+    { key:'fin',   label:'Finance Costs',             color:VIZ_COLORS[3], ledgers:is.financeLedgers,      total:is.financeCosts },
+  ];
+  return groups.map(g=>({
+    ...g,
+    leaves: g.ledgers.map(l=>({ id:l.id, name:l.name, value: Math.max(0, ledgerBalance(l.id)) })).filter(x=>x.value>0),
+  })).filter(g=>g.total>0 && g.leaves.length);
+}
+// Total-assets composition by functional bucket, for the donut — same buckets & sign convention
+// balanceSheetIFRSData() already uses, so the slices always add up to exactly bs.totalAssets.
+function dashboardAssetCompositionData(bs){
+  const bucketTotal = id => state.ledgers.filter(l=> id==='cashbank' ? (bucketOf(l)==='cash'||bucketOf(l)==='bank') : bucketOf(l)===id)
+    .reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const buckets = [
+    { key:'fa',       label:'Fixed Assets',                color:VIZ_COLORS[0], value: bucketTotal('fa') },
+    { key:'inv',      label:'Investments',                 color:VIZ_COLORS[1], value: bucketTotal('inv') },
+    { key:'cashbank', label:'Cash & Bank',                  color:VIZ_COLORS[2], value: bucketTotal('cashbank') },
+    { key:'ca',       label:'Receivables & Other Current',  color:VIZ_COLORS[3], value: bucketTotal('ca') },
+    { key:'misc',     label:'Misc. / Suspense',             color:VIZ_COLORS[4], value: bucketTotal('misc')+bucketTotal('susp') },
+  ];
+  return buckets.filter(b=>b.value>0.001);
+}
+
+/* ---------------- Treemap layout ----------------
+   A simple, robust binary-split ("slice and dice via recursive bisection") treemap: always cuts
+   the current rectangle along its longer side, splitting the value-sorted items into two groups
+   whose sums are as close to equal as possible, and recurses into each half. Not as tightly
+   "squarified" as the classic Bruls/Huizing/Wijk algorithm, but area-exact by construction (every
+   leaf's area is proportional to its value, and the leaves exactly tile the input rectangle with
+   no gaps or overlaps), never produces a zero/negative-size cell, and is simple enough to verify
+   directly — appropriate for the handful of ledgers per expense category this chart ever lays out. */
+function treemapLayout(items, x, y, w, h){
+  items = (items||[]).filter(it=>(it.value||0)>0);
+  if(!items.length || w<=0 || h<=0) return [];
+  if(items.length===1) return [{...items[0], x, y, w, h}];
+  const sorted = items.slice().sort((a,b)=>b.value-a.value);
+  const total = sorted.reduce((s,it)=>s+it.value,0);
+  if(total<=0) return [];
+  let acc=0, splitIdx=1, bestDiff=Infinity;
+  for(let i=0;i<sorted.length-1;i++){
+    acc += sorted[i].value;
+    const diff = Math.abs(acc - total/2);
+    if(diff<bestDiff){ bestDiff=diff; splitIdx=i+1; }
+  }
+  const left = sorted.slice(0,splitIdx), right = sorted.slice(splitIdx);
+  const leftTotal = left.reduce((s,it)=>s+it.value,0);
+  const frac = leftTotal/total;
+  if(w>=h){
+    const wLeft = w*frac;
+    return [...treemapLayout(left, x, y, wLeft, h), ...treemapLayout(right, x+wLeft, y, w-wLeft, h)];
+  } else {
+    const hTop = h*frac;
+    return [...treemapLayout(left, x, y, w, hTop), ...treemapLayout(right, x, y+hTop, w, h-hTop)];
+  }
+}
+
+/* ---------------- Chart builders (inline SVG) ---------------- */
+// Revenue → Cost of Sales → Gross Profit → Other Income → Distribution/Admin → Operating Profit →
+// Finance Costs → Net Profit, as a floating-bar waterfall. Green = adds to profit, red = subtracts,
+// blue = a running subtotal. Life-to-date figures (incomeStatementData()), matching the existing
+// Income Statement card right above it — clicking any bar opens the exact same full breakdown.
+function svgWaterfallChart(is){
+  const steps = [
+    {label:'Revenue', value:is.revenue, kind:'flow'},
+    {label:'Cost of Sales', value:-is.costOfSales, kind:'flow'},
+    {label:'Gross Profit', value:is.grossProfit, kind:'total'},
+    {label:'Other Income', value:is.otherIncome, kind:'flow'},
+    {label:'Distribution Costs', value:-is.distributionCosts, kind:'flow'},
+    {label:'Admin Expenses', value:-is.adminExpenses, kind:'flow'},
+    {label:'Operating Profit', value:is.operatingProfit, kind:'total'},
+    {label:'Finance Costs', value:-is.financeCosts, kind:'flow'},
+    {label:is.profitForPeriod>=0?'Net Profit':'Net Loss', value:is.profitForPeriod, kind:'total'},
+  ];
+  const W=620,H=280,padL=8,padR=8,padT=20,padB=56;
+  const n=steps.length, bw=(W-padL-padR)/n, barW=bw*0.62;
+  let cum=0;
+  const allVals=[0];
+  const bars = steps.map(s=>{
+    let from,to;
+    if(s.kind==='total'){ from=0; to=s.value; cum=s.value; }
+    else { from=cum; to=cum+s.value; cum=to; }
+    allVals.push(from,to);
+    return {...s, from, to};
+  });
+  const maxV=Math.max(...allVals), minV=Math.min(...allVals);
+  const range=(maxV-minV)||1;
+  const H0=H-padB;
+  const y = v => H0 - ((v-minV)/range)*(H0-padT);
+  const zeroY = y(0);
+  const colorInc='var(--credit)', colorDec='var(--debit)', colorTotal='#4F8EF7';
+  const barsSvg = bars.map((b,i)=>{
+    const x = padL + i*bw + (bw-barW)/2;
+    const yTop = y(Math.max(b.from,b.to)), yBot = y(Math.min(b.from,b.to));
+    const hgt = Math.max(2, yBot-yTop);
+    const color = b.kind==='total' ? colorTotal : (b.value>=0?colorInc:colorDec);
+    const sign = b.kind==='total' ? '' : (b.value>=0?'+':'−');
+    const labelLines = wrapLabel2(b.label, 11);
+    const labelSvg = labelLines.map((line,li)=>`<text x="${(x+barW/2).toFixed(1)}" y="${(H0+16+li*10).toFixed(1)}" font-size="8.5" font-weight="600" fill="var(--ink-soft)" text-anchor="middle">${escapeHtml(line)}</text>`).join('');
+    return `<g class="viz-mark" data-tip-title="${escapeAttr(b.label)}" data-tip-value="${sign}₹${fmt(Math.abs(b.value))}" data-tip-sub="${b.kind==='total'?'Running subtotal':'Click to see every ledger behind this statement'}" data-tip-color="${color}" data-open-detail="incomeStatementDetail" tabindex="0">
+      <rect x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${hgt.toFixed(1)}" rx="3" fill="${color}"></rect>
+      <text x="${(x+barW/2).toFixed(1)}" y="${(Math.min(yTop,yBot)-6).toFixed(1)}" font-size="9.5" font-weight="700" fill="var(--ink)" text-anchor="middle">${sign}₹${fmtShort(Math.abs(b.value))}</text>
+      ${labelSvg}
+    </g>`;
+  }).join('');
+  const connectorsSvg = bars.slice(0,-1).map((b,i)=>{
+    const x1 = padL + i*bw + bw - (bw-barW)/2;
+    const x2 = padL + (i+1)*bw + (bw-barW)/2;
+    const yv = y(b.to);
+    return `<line x1="${x1.toFixed(1)}" y1="${yv.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${yv.toFixed(1)}" stroke="var(--border-strong)" stroke-width="1" stroke-dasharray="2,2"></line>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">
+    <line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${W-padR}" y2="${zeroY.toFixed(1)}" class="viz-axis-line"></line>
+    ${connectorsSvg}${barsSvg}
+  </svg>`;
+}
+// Revenue, COGS (left ₹ axis) and Net Profit Margin % (right % axis) over up to six financial
+// years — a deliberately dual-axis combo of three trend lines (mirrors exactly the "Line Graph"
+// this app's Power BI-style dashboards are modeled on: money and a percentage plotted together,
+// each on its own clearly-labelled axis, with a hover tooltip giving the exact figure either way).
+function svgIncomeTrendLine(series){
+  const W=620,H=260,padL=48,padR=48,padT=16,padB=32;
+  const n=series.length, H0=H-padB;
+  const xPos = i => n<=1 ? padL+(W-padL-padR)/2 : padL + i*(W-padL-padR)/(n-1);
+  const showRevenue = !dashVizHiddenSeries.trendRevenue;
+  const showCogs = !dashVizHiddenSeries.trendCogs;
+  const showMargin = !dashVizHiddenSeries.trendMargin;
+  const moneyVals=[0];
+  series.forEach(s=>{ if(showRevenue) moneyVals.push(s.revenue); if(showCogs) moneyVals.push(s.cogs); });
+  const maxMoney = Math.max(...moneyVals)*1.1 || 1;
+  const marginVals = series.map(s=>s.netMargin);
+  const marginMin = Math.min(0, ...marginVals);
+  const marginMax = Math.max(1, ...marginVals)*1.15;
+  const marginRange = (marginMax-marginMin)||1;
+  const yMoney = v => H0 - (v/maxMoney)*(H0-padT);
+  const yMargin = v => H0 - ((v-marginMin)/marginRange)*(H0-padT);
+  let svg='';
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const yy = padT + t*(H0-padT)/ticks;
+    svg += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" class="viz-gridline"></line>`;
+    svg += `<text x="${padL-6}" y="${(yy+3).toFixed(1)}" text-anchor="end" class="viz-axis-label">₹${fmtShort(maxMoney*(1-t/ticks))}</text>`;
+    svg += `<text x="${W-padR+6}" y="${(yy+3).toFixed(1)}" text-anchor="start" class="viz-axis-label">${(marginMin+marginRange*(1-t/ticks)).toFixed(0)}%</text>`;
+  }
+  series.forEach((s,i)=>{ svg += `<text x="${xPos(i).toFixed(1)}" y="${H0+18}" text-anchor="middle" class="viz-axis-label">${escapeHtml(s.fy)}</text>`; });
+  function drawLine(vals, yfn, color, dashed, tipFmt){
+    if(!vals.length) return '';
+    const path = vals.map((v,i)=>`${i===0?'M':'L'} ${xPos(i).toFixed(1)} ${yfn(v).toFixed(1)}`).join(' ');
+    let out = `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.25" ${dashed?'stroke-dasharray="5,4"':''}></path>`;
+    vals.forEach((v,i)=>{
+      out += `<circle class="viz-mark" cx="${xPos(i).toFixed(1)}" cy="${yfn(v).toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="1.5" data-tip-title="FY ${escapeAttr(series[i].fy)}" data-tip-value="${tipFmt(v)}" data-tip-color="${color}" tabindex="0"></circle>`;
+    });
+    return out;
+  }
+  if(showRevenue) svg += drawLine(series.map(s=>s.revenue), yMoney, VIZ_COLORS[0], false, v=>'Revenue: ₹'+fmt(v));
+  if(showCogs) svg += drawLine(series.map(s=>s.cogs), yMoney, VIZ_COLORS[4], false, v=>'COGS: ₹'+fmt(v));
+  if(showMargin) svg += drawLine(series.map(s=>s.netMargin), yMargin, VIZ_COLORS[1], true, v=>'Net Margin: '+v.toFixed(1)+'%');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
+}
+// Columns = Total Revenue per FY (left ₹ axis), line overlay = Net Profit Margin % (right % axis)
+// — the same up-to-six-FY series as the trend line above, presented Power BI "combo chart" style.
+function svgIncomeComboChart(series){
+  const W=620,H=260,padL=48,padR=48,padT=16,padB=32;
+  const n=series.length, H0=H-padB, bw=(W-padL-padR)/n, barW=bw*0.5;
+  const xPos = i => padL + i*bw + bw/2;
+  const showRevenue = !dashVizHiddenSeries.comboRevenue;
+  const showMargin = !dashVizHiddenSeries.comboMargin;
+  const maxRevenue = Math.max(...series.map(s=>s.revenue),0)*1.1 || 1;
+  const marginVals = series.map(s=>s.netMargin);
+  const marginMin = Math.min(0, ...marginVals);
+  const marginMax = Math.max(1, ...marginVals)*1.15;
+  const marginRange = (marginMax-marginMin)||1;
+  const yRev = v => H0 - (v/maxRevenue)*(H0-padT);
+  const yMargin = v => H0 - ((v-marginMin)/marginRange)*(H0-padT);
+  let svg='';
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const yy = padT + t*(H0-padT)/ticks;
+    svg += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" class="viz-gridline"></line>`;
+    svg += `<text x="${padL-6}" y="${(yy+3).toFixed(1)}" text-anchor="end" class="viz-axis-label">₹${fmtShort(maxRevenue*(1-t/ticks))}</text>`;
+    svg += `<text x="${W-padR+6}" y="${(yy+3).toFixed(1)}" text-anchor="start" class="viz-axis-label">${(marginMin+marginRange*(1-t/ticks)).toFixed(0)}%</text>`;
+  }
+  series.forEach((s,i)=>{
+    svg += `<text x="${xPos(i).toFixed(1)}" y="${H0+18}" text-anchor="middle" class="viz-axis-label">${escapeHtml(s.fy)}</text>`;
+    if(showRevenue){
+      const barH = H0-yRev(s.revenue);
+      svg += `<rect class="viz-mark" x="${(xPos(i)-barW/2).toFixed(1)}" y="${yRev(s.revenue).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1,barH).toFixed(1)}" rx="3" fill="${VIZ_COLORS[0]}" data-tip-title="Total Revenue — FY ${escapeAttr(s.fy)}" data-tip-value="₹${fmt(s.revenue)}" data-tip-color="${VIZ_COLORS[0]}" tabindex="0"></rect>`;
+    }
+  });
+  if(showMargin){
+    const path = series.map((s,i)=>`${i===0?'M':'L'} ${xPos(i).toFixed(1)} ${yMargin(s.netMargin).toFixed(1)}`).join(' ');
+    svg += `<path d="${path}" fill="none" stroke="${VIZ_COLORS[1]}" stroke-width="2.5"></path>`;
+    series.forEach((s,i)=>{
+      svg += `<circle class="viz-mark" cx="${xPos(i).toFixed(1)}" cy="${yMargin(s.netMargin).toFixed(1)}" r="5" fill="${VIZ_COLORS[1]}" stroke="var(--surface)" stroke-width="1.5" data-tip-title="Net Profit Margin — FY ${escapeAttr(s.fy)}" data-tip-value="${s.netMargin.toFixed(1)}%" data-tip-color="${VIZ_COLORS[1]}" tabindex="0"></circle>`;
+    });
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
+}
+// Ledger-level expense treemap — block size = amount, grouped and colored by the same four
+// categories the Income Statement breaks expenses into. Click a block to open that ledger's own
+// statement (the same drill-down every ledger name elsewhere in the app already offers).
+function svgExpenseTreemap(groups){
+  const W=560,H=260;
+  if(!groups.length) return `<div class="empty">No expenses recorded yet.</div>`;
+  const groupRects = treemapLayout(groups.map(g=>({...g,value:g.total})), 0, 0, W, H);
+  let svg='';
+  groupRects.forEach(gr=>{
+    const leaves = treemapLayout(gr.leaves.map(l=>({...l})), gr.x, gr.y, gr.w, gr.h);
+    leaves.forEach(lf=>{
+      const showLabel = lf.w>46 && lf.h>26;
+      svg += `<g class="viz-mark" data-ledger-detail="${lf.id}" data-tip-title="${escapeAttr(lf.name)}" data-tip-value="₹${fmt(lf.value)}" data-tip-sub="${escapeAttr(gr.label)}" data-tip-color="${gr.color}" tabindex="0">
+        <rect x="${(lf.x+1.5).toFixed(1)}" y="${(lf.y+1.5).toFixed(1)}" width="${Math.max(0,lf.w-3).toFixed(1)}" height="${Math.max(0,lf.h-3).toFixed(1)}" rx="3" fill="${gr.color}" fill-opacity="0.82"></rect>
+        ${showLabel ? `<text x="${(lf.x+7).toFixed(1)}" y="${(lf.y+16).toFixed(1)}" font-size="10" font-weight="700" fill="#fff">${escapeHtml(shortenLabel(lf.name,Math.floor(lf.w/6)))}</text><text x="${(lf.x+7).toFixed(1)}" y="${(lf.y+30).toFixed(1)}" font-size="9.5" font-weight="600" fill="rgba(255,255,255,0.85)">₹${fmtShort(lf.value)}</text>` : ''}
+      </g>`;
+    });
+    svg += `<rect x="${gr.x.toFixed(1)}" y="${gr.y.toFixed(1)}" width="${gr.w.toFixed(1)}" height="${gr.h.toFixed(1)}" fill="none" stroke="var(--surface)" stroke-width="3"></rect>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;border-radius:6px;overflow:hidden;">${svg}</svg>
+    ${vizLegend(groups.map(g=>({key:'treemapGroup_'+g.key,label:g.label+' — ₹'+fmt(g.total),color:g.color})), {toggle:false})}`;
+}
+// Two grouped, stacked columns — Assets split Current vs Non-current, Liabilities split Current
+// vs Non-current — straight from balanceSheetIFRSData(), the same totals the Balance Sheet card
+// and detail modals above already show. Click a segment for that half's full breakdown.
+function svgBalanceSheetStackedBars(bs){
+  const W=560,H=250,padL=64,padR=20,padT=16,padB=30;
+  const bars = [
+    {label:'Assets', segs:[
+      {name:'Current Assets', value:bs.currentAssetsTotal, color:VIZ_COLORS[0]},
+      {name:'Non-current Assets', value:bs.nonCurrentAssetsTotal, color:VIZ_COLORS[1]},
+    ], detail:'totalAssetsDetail'},
+    {label:'Liabilities', segs:[
+      {name:'Current Liabilities', value:bs.currentLiabTotal, color:VIZ_COLORS[2]},
+      {name:'Non-current Liabilities', value:bs.nonCurrentLiabTotal, color:VIZ_COLORS[3]},
+    ], detail:'liabCapitalDetail'},
+  ];
+  const maxTotal = Math.max(...bars.map(b=>b.segs.reduce((s,x)=>s+x.value,0)), 1);
+  const H0=H-padB, barW=120, gap=90;
+  const totalW = bars.length*barW+(bars.length-1)*gap;
+  const startX = (W-totalW)/2;
+  const yScale = v => (v/maxTotal)*(H0-padT);
+  let svg='';
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const val = maxTotal*t/ticks, yy = H0-yScale(val);
+    svg += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" class="viz-gridline"></line>`;
+    svg += `<text x="${padL-8}" y="${(yy+3).toFixed(1)}" text-anchor="end" class="viz-axis-label">₹${fmtShort(val)}</text>`;
+  }
+  bars.forEach((b,i)=>{
+    const x = startX + i*(barW+gap);
+    const barTotal = b.segs.reduce((s,x)=>s+x.value,0);
+    let cum=0;
+    b.segs.forEach(seg=>{
+      const segH = yScale(seg.value);
+      const yTop = H0-cum-segH;
+      // A segment for a genuinely small liability/asset can be just 1-2px tall at this scale —
+      // accurate but nearly impossible to point at. The visible rect stays proportionally exact;
+      // a transparent overlay widens only the HOVER/click target so tiny segments stay reachable.
+      const hitH = Math.max(6, segH);
+      const hitY = yTop - (hitH-segH)/2;
+      svg += `<g class="viz-mark" data-tip-title="${escapeAttr(seg.name)}" data-tip-value="₹${fmt(seg.value)}" data-tip-sub="${escapeAttr(b.label)} total: ₹${fmt(barTotal)}" data-tip-color="${seg.color}" data-open-detail="${b.detail}" tabindex="0">
+        <rect x="${x.toFixed(1)}" y="${hitY.toFixed(1)}" width="${barW}" height="${hitH.toFixed(1)}" fill="transparent"></rect>
+        <rect x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW}" height="${Math.max(1,segH).toFixed(1)}" rx="3" fill="${seg.color}" style="pointer-events:none;"></rect>
+      </g>`;
+      cum += segH;
+    });
+    svg += `<text x="${(x+barW/2).toFixed(1)}" y="${H0+18}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--ink)">${escapeHtml(b.label)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">${svg}</svg>`;
+}
+// True SVG donut (not a CSS conic-gradient, so each slice can carry its own hover/click handlers)
+// showing total-assets composition by functional bucket, with the grand total in the hollow
+// center — click a slice for the full Total Assets breakdown.
+function svgAssetDonut(slices, total){
+  const W=260,H=230,cx=W/2,cy=108,rOuter=86,rInner=52;
+  const sum = slices.reduce((s,x)=>s+x.value,0);
+  if(!sum) return `<div class="empty">No assets recorded yet.</div>`;
+  let svg='';
+  if(slices.length===1){
+    const s = slices[0];
+    svg += `<circle class="viz-mark" cx="${cx}" cy="${cy}" r="${(rOuter+rInner)/2}" fill="none" stroke="${s.color}" stroke-width="${rOuter-rInner}" data-tip-title="${escapeAttr(s.label)}" data-tip-value="₹${fmt(s.value)}" data-tip-sub="100% of total assets" data-tip-color="${s.color}" data-open-detail="totalAssetsDetail" tabindex="0"></circle>`;
+  } else {
+    let angle=-Math.PI/2;
+    slices.forEach(s=>{
+      const frac=s.value/sum;
+      const a0=angle, a1=angle+frac*Math.PI*2;
+      angle=a1;
+      const large=(a1-a0)>Math.PI?1:0;
+      const x0o=cx+rOuter*Math.cos(a0), y0o=cy+rOuter*Math.sin(a0);
+      const x1o=cx+rOuter*Math.cos(a1), y1o=cy+rOuter*Math.sin(a1);
+      const x1i=cx+rInner*Math.cos(a1), y1i=cy+rInner*Math.sin(a1);
+      const x0i=cx+rInner*Math.cos(a0), y0i=cy+rInner*Math.sin(a0);
+      const d=`M ${x0o.toFixed(2)} ${y0o.toFixed(2)} A ${rOuter} ${rOuter} 0 ${large} 1 ${x1o.toFixed(2)} ${y1o.toFixed(2)} L ${x1i.toFixed(2)} ${y1i.toFixed(2)} A ${rInner} ${rInner} 0 ${large} 0 ${x0i.toFixed(2)} ${y0i.toFixed(2)} Z`;
+      const pct=(frac*100).toFixed(1);
+      svg += `<path class="viz-mark" d="${d}" fill="${s.color}" stroke="var(--surface)" stroke-width="2" data-tip-title="${escapeAttr(s.label)}" data-tip-value="₹${fmt(s.value)}" data-tip-sub="${pct}% of total assets" data-tip-color="${s.color}" data-open-detail="totalAssetsDetail" tabindex="0"></path>`;
+    });
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">
+    ${svg}
+    <text x="${cx}" y="${cy-6}" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--ink-faint)" style="text-transform:uppercase;letter-spacing:.04em;">Total Assets</text>
+    <text x="${cx}" y="${cy+14}" text-anchor="middle" font-size="15" font-weight="800" fill="var(--ink)">₹${fmtShort(total)}</text>
+  </svg>`;
+}
+// Semicircular gauge for the Current Ratio, colored risk/health zones plus a needle — hover
+// anywhere on it for the exact ratio and its formula.
+function svgGaugeChart(value, opts){
+  opts = opts||{};
+  // Scale headroom to the actual value — a current ratio of 2 or 3 is common, but a cash-rich
+  // company (or the bundled demo data) can post a ratio in the double digits; a fixed max:4 would
+  // just pin the needle at the edge and hide how far above "healthy" the real figure is.
+  const max = opts.max || Math.max(4, Math.ceil((value||0)*1.15));
+  const zones = opts.zones || [
+    {to:1, color:'var(--debit)'},
+    {to:1.5, color:'#F2994A'},
+    {to:3, color:'var(--credit)'},
+    {to:max, color:'#4F8EF7'},
+  ];
+  const W=240,H=150,cx=120,cy=132,r=98;
+  const v = Math.max(0, Math.min(value==null?0:value, max));
+  const angleFor = x => Math.PI - (x/max)*Math.PI;
+  let prevTo=0;
+  const zoneArcs = zones.map(z=>{
+    const a0=angleFor(prevTo), a1=angleFor(Math.min(z.to,max));
+    prevTo=z.to;
+    const x0=cx+r*Math.cos(a0), y0=cy-r*Math.sin(a0);
+    const x1=cx+r*Math.cos(a1), y1=cy-r*Math.sin(a1);
+    const large=(a0-a1)>Math.PI?1:0;
+    return `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}" fill="none" stroke="${z.color}" stroke-width="16"></path>`;
+  }).join('');
+  const needleAngle = angleFor(v);
+  const nx = cx+(r-22)*Math.cos(needleAngle), ny = cy-(r-22)*Math.sin(needleAngle);
+  const valueLabel = value==null ? '—' : value.toFixed(2)+'×';
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;font-family:'Inter',sans-serif;overflow:visible;">
+    <g class="viz-mark" data-tip-title="Current Ratio" data-tip-value="${valueLabel}" data-tip-sub="Current Assets ÷ Current Liabilities · 1.5×–3× is generally considered healthy" tabindex="0">
+      ${zoneArcs}
+      <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(2)}" y2="${ny.toFixed(2)}" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"></line>
+      <circle cx="${cx}" cy="${cy}" r="5" fill="var(--ink)"></circle>
+    </g>
+    <text x="${cx}" y="${cy-30}" text-anchor="middle" font-size="19" font-weight="800" fill="var(--ink)">${valueLabel}</text>
+    <text x="${cx-r}" y="${cy+16}" text-anchor="start" font-size="9" fill="var(--ink-faint)">0</text>
+    <text x="${cx+r}" y="${cy+16}" text-anchor="end" font-size="9" fill="var(--ink-faint)">${max}×</text>
+  </svg>`;
+}
+function balanceSheetKPICards(ratios){
+  const cashBank = state.ledgers.filter(l=>['cash','bank'].includes(bucketOf(l))).reduce((s,l)=>s+ledgerBalance(l.id),0);
+  const wc = ratios.workingCapital;
+  return `
+    <div class="viz-kpi-row">
+      <div class="viz-kpi" data-open-detail="totalAssetsDetail" data-tip-title="Working Capital" data-tip-value="₹${fmt(wc)}" data-tip-sub="Current Assets − Current Liabilities" tabindex="0">
+        <div class="viz-kpi-label">Working Capital</div>
+        <div class="viz-kpi-val ${wc>=0?'pos':'neg'}">₹${fmt(wc)}</div>
+      </div>
+      <div class="viz-kpi" data-open-kpi="cash" data-tip-title="Cash &amp; Cash Equivalents" data-tip-value="₹${fmt(cashBank)}" data-tip-sub="Cash-in-hand plus every bank account" tabindex="0">
+        <div class="viz-kpi-label">Cash Equivalents</div>
+        <div class="viz-kpi-val ${cashBank>=0?'pos':'neg'}">₹${fmt(cashBank)}</div>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------------- Card wrappers (dropped into viewDashboard() below the existing two cards) ---------------- */
+function incomeWaterfallCard(){
+  const is = incomeStatementData();
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Profit Bridge</h2><span class="viz-sub">Waterfall · life-to-date</span></div>
+      <div class="panel-body">
+        ${svgWaterfallChart(is)}
+        <p class="muted" style="font-size:10.5px;margin:2px 0 0;">Click any bar to see the underlying ledgers.</p>
+      </div>
+    </div>
+  `;
+}
+function incomeTrendCard(){
+  const series = dashboardIncomeFYSeries(6);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Revenue, COGS &amp; Margin Trend</h2><span class="viz-sub">${series.length>1?`Last ${series.length} FYs`:'Current FY'}</span></div>
+      <div class="panel-body">
+        ${svgIncomeTrendLine(series)}
+        ${vizLegend([
+          {key:'trendRevenue', label:'Revenue', color:VIZ_COLORS[0]},
+          {key:'trendCogs', label:'COGS', color:VIZ_COLORS[4]},
+          {key:'trendMargin', label:'Net Margin %', color:VIZ_COLORS[1], dashed:true},
+        ])}
+      </div>
+    </div>
+  `;
+}
+function incomeComboCard(){
+  const series = dashboardIncomeFYSeries(6);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Revenue vs Margin</h2><span class="viz-sub">Combo · ${series.length>1?`Last ${series.length} FYs`:'Current FY'}</span></div>
+      <div class="panel-body">
+        ${svgIncomeComboChart(series)}
+        ${vizLegend([
+          {key:'comboRevenue', label:'Total Revenue', color:VIZ_COLORS[0]},
+          {key:'comboMargin', label:'Net Profit Margin %', color:VIZ_COLORS[1], dashed:true},
+        ])}
+      </div>
+    </div>
+  `;
+}
+function expenseTreemapCard(){
+  const is = incomeStatementData();
+  const groups = dashboardExpenseTreemapData(is);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Expense Breakdown</h2><span class="viz-sub">Treemap · life-to-date</span></div>
+      <div class="panel-body">
+        ${svgExpenseTreemap(groups)}
+        <p class="muted" style="font-size:10.5px;margin:8px 0 0;">Block size = amount. Click a block for that ledger's statement.</p>
+      </div>
+    </div>
+  `;
+}
+function balanceSheetStackedCard(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Current vs Non-current</h2><span class="viz-sub">Stacked · as of today</span></div>
+      <div class="panel-body">
+        ${svgBalanceSheetStackedBars(bs)}
+      </div>
+    </div>
+  `;
+}
+function assetDonutCard(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const slices = dashboardAssetCompositionData(bs);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Asset Composition</h2><span class="viz-sub">Donut · as of today</span></div>
+      <div class="panel-body" style="display:flex;flex-direction:column;align-items:center;">
+        ${svgAssetDonut(slices, bs.totalAssets)}
+        ${vizLegend(slices.map(s=>({key:'assetSlice_'+s.key, label:s.label, color:s.color})), {toggle:false})}
+      </div>
+    </div>
+  `;
+}
+function balanceSheetKPIGaugeCard(){
+  const is = incomeStatementData();
+  const bs = balanceSheetIFRSData(is.profitForPeriod);
+  const ratios = ratioAnalysisData(is, bs);
+  return `
+    <div class="panel viz-panel">
+      <div class="panel-head"><h2>Liquidity at a Glance</h2><span class="viz-sub">KPIs &amp; Gauge · as of today</span></div>
+      <div class="panel-body">
+        ${balanceSheetKPICards(ratios)}
+        ${svgGaugeChart(ratios.currentRatio, {})}
+        <div style="text-align:center;font-size:10.5px;color:var(--ink-faint);margin-top:2px;">Current Ratio</div>
+      </div>
+    </div>
+  `;
+}
+
 function recentVouchersModal(){
   const recent = state.vouchers.slice().sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAt||'').localeCompare(a.createdAt||'')).slice(0,25);
   return `
@@ -7609,6 +8265,7 @@ function attachHandlers(){
       });
     });
     renderDashboardCharts();
+    wireVizInteractivity();
   }
 
   if(view==='voucher'){
