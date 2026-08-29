@@ -992,12 +992,20 @@ async function loadCompanies(){
       const snap = await db.collection('companies').get();
       companies = snap.docs.map(d=>d.data());
     }else{
-      const [mineSnap, ...sharedDocs] = await Promise.all([
-        db.collection('companies').where('ownerId','==',currentUser.id).get(),
-        ...SHARED_DEMO_COMPANY_IDS.map(id=>db.collection('companies').doc(id).get())
-      ]);
+      const mineSnap = await db.collection('companies').where('ownerId','==',currentUser.id).get();
       const mine = mineSnap.docs.map(d=>d.data());
-      const shared = sharedDocs.filter(d=>d.exists).map(d=>d.data());
+      // Each shared/demo company is fetched independently and best-effort with allSettled — a
+      // permissions problem or outage affecting just ONE shared company (e.g. a newly added one
+      // whose Firestore security rules haven't been opened up for it yet) must never take down the
+      // whole company list. A hard Promise.all here would reject entirely and hide even the user's
+      // own companies the moment a single shared id can't be read.
+      const sharedResults = await Promise.allSettled(
+        SHARED_DEMO_COMPANY_IDS.map(id=>db.collection('companies').doc(id).get())
+      );
+      const shared = sharedResults
+        .filter(r=>r.status==='fulfilled' && r.value.exists)
+        .map(r=>r.value.data());
+      sharedResults.forEach((r,i)=>{ if(r.status==='rejected') console.error('Could not load shared company', SHARED_DEMO_COMPANY_IDS[i], r.reason); });
       companies = [...shared, ...mine.filter(c=>!isSharedDemoId(c.id))];
     }
   }catch(e){
@@ -1032,189 +1040,73 @@ async function deleteCompanyById(id){
   return true;
 }
 
-/* ---------------- Demo company (sample data) ---------------- */
+/* ---------------- Demo company (sample data) ----------------
+   "Demo Company (Sample Data)" (co_demo) has been retired at the user's request — it's no longer
+   created or reseeded, and retireOldDemoCompany() (further down) deletes the shared Firestore
+   document itself so it disappears for every user, not just future logins. The id constant is kept
+   only because that delete call needs it; it's deliberately absent from SHARED_DEMO_COMPANY_IDS
+   below so nothing else in the app treats it as a live shared company any more. */
 const DEMO_COMPANY_ID = 'co_demo';
-const DEMO_DATA_VERSION = 8;
-// A second shared, ownerless demo company — "Sk Enterprises - Demo" — built to showcase every
-// single one of the 28 Tally-standard ledger groups (all 15 Primary Groups and all 13 Sub-Groups)
-// at once, plus stock items, a Fixed Asset Register, and a recurring voucher template. Visible to
-// every user exactly like the original Demo Company, via the same ownerId:null + SHARED_DEMO_COMPANY_IDS
-// mechanism below — see ensureSkDemoCompany() further down.
+// "Sk Enterprises - Demo" — the one remaining shared, ownerless demo company — built to showcase
+// every single one of the 28 Tally-standard ledger groups (all 15 Primary Groups and all 13
+// Sub-Groups) at once, plus stock items, a Fixed Asset Register, and a recurring voucher template.
+// Visible to every user via the ownerId:null + SHARED_DEMO_COMPANY_IDS mechanism below — see
+// ensureSkDemoCompany() further down.
 const SK_DEMO_COMPANY_ID = 'co_skdemo';
-const SK_DEMO_DATA_VERSION = 1;
+const SK_DEMO_DATA_VERSION = 2; // bumped: five years of history + a large cumulative profit
 // Every company id that is shared/ownerless and must stay visible to all users (not just its
-// creator). Anywhere the app used to special-case DEMO_COMPANY_ID alone (visibility, the "Sample"
-// pill, owner-reassignment being disabled, admin stats excluding it, etc.) now checks membership
-// in this list instead, so adding another shared demo company later is a one-line change here.
-const SHARED_DEMO_COMPANY_IDS = [DEMO_COMPANY_ID, SK_DEMO_COMPANY_ID];
+// creator). Anywhere the app used to special-case a single id (visibility, the "Sample" pill,
+// owner-reassignment being disabled, admin stats excluding it, etc.) now checks membership in this
+// list instead, so adding (or retiring) a shared demo company is a one-line change here.
+const SHARED_DEMO_COMPANY_IDS = [SK_DEMO_COMPANY_ID];
 function isSharedDemoId(id){ return SHARED_DEMO_COMPANY_IDS.includes(id); }
-function demoLedgers(){
-  return [
-    {id:'l_cash', name:'Cash', group:'cash', opening:50000},
-    {id:'l_bank', name:'Bank Account', group:'bank', opening:300000},
-    {id:'l_cap',  name:'Capital Account', group:'cap', opening:-500000},
-    ...GST_LEDGERS.map(l=>({...l})),
-    {id:'l_furniture', name:'Furniture & Fixtures', group:'fa', opening:150000},
-    {id:'l_computer',  name:'Computer Equipment',   group:'fa', opening:150000},
-    {id:'l_loan',      name:'Loan from Bank',       group:'loan', opening:-150000},
-    {id:'l_sales',     name:'Sales Account',        group:'sales', opening:0, gstRate:18},
-    {id:'l_purchase',  name:'Purchase Account',     group:'purch', opening:0, gstRate:18},
-    {id:'l_rent',      name:'Rent Expense',         group:'iexp', opening:0},
-    {id:'l_salaries',  name:'Salaries',             group:'iexp', opening:0},
-    {id:'l_electricity',name:'Electricity Expense', group:'iexp', opening:0},
-    {id:'l_supplies',  name:'Office Supplies',      group:'dexp', opening:0},
-    {id:'l_bankcharges',name:'Bank Charges',        group:'iexp', opening:0},
-    {id:'l_telephone',  name:'Internet & Telephone', group:'iexp', opening:0},
-    {id:'l_depreciation',name:'Depreciation',        group:'iexp', opening:0},
-    {id:'l_commission',name:'Commission Income',    group:'dinc', opening:0},
-    {id:'l_cust1',     name:'Rahul Traders (Customer)', group:'ca', opening:0},
-    {id:'l_cust2',     name:'Nova Retail (Customer)',   group:'ca', opening:0},
-    {id:'l_supp1',     name:'Om Enterprises (Supplier)', group:'curl', opening:0},
-    {id:'l_supp2',     name:'Prime Suppliers (Supplier)', group:'curl', opening:0},
-  ];
-}
-function demoVouchers(){
-  const v = (type,date,narration,entries,items) => {
-    const voucher = {id: uid('v'), type, date, narration, entries};
-    if(items) voucher.items = items;
-    return voucher;
-  };
-  return [
-    v('Payment','2026-06-01','Office rent for June',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
-    v('Sales','2026-06-05','Sale of goods — Invoice #101',[
-      {ledgerId:'l_cust1',dr:177000,cr:0},
-      {ledgerId:'l_sales',dr:0,cr:150000},
-      {ledgerId:'l_ocgst',dr:0,cr:13500},
-      {ledgerId:'l_osgst',dr:0,cr:13500},
-    ], [{itemId:'i_widgetA', name:'Widget A', qty:200, rate:750}]),
-    v('Purchase','2026-06-08','Purchase of raw materials',[
-      {ledgerId:'l_purchase',dr:90000,cr:0},
-      {ledgerId:'l_icgst',dr:8100,cr:0},
-      {ledgerId:'l_isgst',dr:8100,cr:0},
-      {ledgerId:'l_supp1',dr:0,cr:106200},
-    ], [{itemId:'i_rawmat', name:'Raw Material Roll', qty:400, rate:225}]),
-    v('Receipt','2026-06-20','Received payment from Rahul Traders — Invoice #101',[{ledgerId:'l_bank',dr:177000,cr:0},{ledgerId:'l_cust1',dr:0,cr:177000}]),
-    v('Payment','2026-06-25','Paid Om Enterprises for purchase',[{ledgerId:'l_supp1',dr:106200,cr:0},{ledgerId:'l_bank',dr:0,cr:106200}]),
-    v('Payment','2026-06-30','Staff salaries for June',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
-    v('Payment','2026-07-01','Office rent for July',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
-    v('Sales','2026-07-04','Sale of goods — Invoice #102 (interstate)',[
-      {ledgerId:'l_cust2',dr:265500,cr:0},
-      {ledgerId:'l_sales',dr:0,cr:225000},
-      {ledgerId:'l_oigst',dr:0,cr:40500},
-    ], [{itemId:'i_widgetB', name:'Widget B', qty:125, rate:1800}]),
-    v('Purchase','2026-07-07','Purchase of packaging material (interstate)',[
-      {ledgerId:'l_purchase',dr:60000,cr:0},
-      {ledgerId:'l_iigst',dr:10800,cr:0},
-      {ledgerId:'l_supp2',dr:0,cr:70800},
-    ], [{itemId:'i_packaging', name:'Packaging Material', qty:500, rate:120}]),
-    v('Payment','2026-07-10','Electricity bill for July',[{ledgerId:'l_electricity',dr:8000,cr:0},{ledgerId:'l_bank',dr:0,cr:8000}]),
-    v('Receipt','2026-07-15','Commission received',[{ledgerId:'l_cash',dr:15000,cr:0},{ledgerId:'l_commission',dr:0,cr:15000}]),
-    v('Receipt','2026-07-20','Partial payment received from Nova Retail',[{ledgerId:'l_bank',dr:150000,cr:0},{ledgerId:'l_cust2',dr:0,cr:150000}]),
-    v('Payment','2026-07-31','Staff salaries for July',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
-    v('Contra','2026-08-02','Cash withdrawn from bank for petty expenses',[{ledgerId:'l_cash',dr:20000,cr:0},{ledgerId:'l_bank',dr:0,cr:20000}]),
-    v('Payment','2026-08-01','Office rent for August',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
-    v('Payment','2026-08-05','Purchased stationery',[{ledgerId:'l_supplies',dr:6000,cr:0},{ledgerId:'l_cash',dr:0,cr:6000}]),
-    v('Sales','2026-08-08','Sale of goods — Invoice #103',[
-      {ledgerId:'l_cust1',dr:141600,cr:0},
-      {ledgerId:'l_sales',dr:0,cr:120000},
-      {ledgerId:'l_ocgst',dr:0,cr:10800},
-      {ledgerId:'l_osgst',dr:0,cr:10800},
-    ], [{itemId:'i_widgetA', name:'Widget A', qty:160, rate:750}]),
-    v('Journal','2026-08-12','Bank charges debited by bank',[{ledgerId:'l_bankcharges',dr:500,cr:0},{ledgerId:'l_bank',dr:0,cr:500}]),
-    v('Receipt','2026-08-18','Payment received from Nova Retail',[{ledgerId:'l_bank',dr:70500,cr:0},{ledgerId:'l_cust2',dr:0,cr:70500}]),
-    v('Credit Note','2026-08-20','Sales return — Credit Note against Invoice #103',[
-      {ledgerId:'l_sales',dr:15000,cr:0},
-      {ledgerId:'l_ocgst',dr:1350,cr:0},
-      {ledgerId:'l_osgst',dr:1350,cr:0},
-      {ledgerId:'l_cust1',dr:0,cr:17700},
-    ], [{itemId:'i_widgetA', name:'Widget A', qty:20, rate:750}]),
-    v('Debit Note','2026-08-22','Purchase return — Debit Note to Prime Suppliers (interstate)',[
-      {ledgerId:'l_supp2',dr:8850,cr:0},
-      {ledgerId:'l_purchase',dr:0,cr:7500},
-      {ledgerId:'l_iigst',dr:0,cr:1350},
-    ], [{itemId:'i_packaging', name:'Packaging Material', qty:62.5, rate:120}]),
-    v('Payment','2026-08-31','Staff salaries for August',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
-    v('Payment','2026-09-01','Office rent for September',[{ledgerId:'l_rent',dr:25000,cr:0},{ledgerId:'l_bank',dr:0,cr:25000}]),
-    v('Sales','2026-09-03','Sale of goods — Invoice #104',[
-      {ledgerId:'l_cust2',dr:106200,cr:0},
-      {ledgerId:'l_sales',dr:0,cr:90000},
-      {ledgerId:'l_ocgst',dr:0,cr:8100},
-      {ledgerId:'l_osgst',dr:0,cr:8100},
-    ]),
-    v('Purchase','2026-09-06','Purchase of raw materials — repeat order',[
-      {ledgerId:'l_purchase',dr:52500,cr:0},
-      {ledgerId:'l_icgst',dr:4725,cr:0},
-      {ledgerId:'l_isgst',dr:4725,cr:0},
-      {ledgerId:'l_supp1',dr:0,cr:61950},
-    ], [{itemId:'i_rawmat', name:'Raw Material Roll', qty:233.33, rate:225}]),
-    v('Receipt','2026-09-10','Partial payment received from Rahul Traders',[{ledgerId:'l_bank',dr:75000,cr:0},{ledgerId:'l_cust1',dr:0,cr:75000}]),
-    v('Payment','2026-09-12','Paid Prime Suppliers — balance settled',[{ledgerId:'l_supp2',dr:61950,cr:0},{ledgerId:'l_bank',dr:0,cr:61950}]),
-    v('Receipt','2026-09-15','Commission received',[{ledgerId:'l_cash',dr:8000,cr:0},{ledgerId:'l_commission',dr:0,cr:8000}]),
-    v('Contra','2026-09-18','Cash deposited into bank',[{ledgerId:'l_bank',dr:10000,cr:0},{ledgerId:'l_cash',dr:0,cr:10000}]),
-    v('Payment','2026-09-20','Internet and telephone bill',[{ledgerId:'l_telephone',dr:3500,cr:0},{ledgerId:'l_bank',dr:0,cr:3500}]),
-    v('Sales','2026-09-22','Cash sale of goods',[
-      {ledgerId:'l_cash',dr:35400,cr:0},
-      {ledgerId:'l_sales',dr:0,cr:30000},
-      {ledgerId:'l_ocgst',dr:0,cr:2700},
-      {ledgerId:'l_osgst',dr:0,cr:2700},
-    ], [{itemId:'i_widgetA', name:'Widget A', qty:40, rate:750}]),
-    v('Purchase','2026-09-25','Cash purchase of supplies (interstate)',[
-      {ledgerId:'l_purchase',dr:12000,cr:0},
-      {ledgerId:'l_iigst',dr:2160,cr:0},
-      {ledgerId:'l_cash',dr:0,cr:14160},
-    ], [{itemId:'i_packaging', name:'Packaging Material', qty:100, rate:120}]),
-    v('Payment','2026-09-30','Staff salaries for September',[{ledgerId:'l_salaries',dr:45000,cr:0},{ledgerId:'l_bank',dr:0,cr:45000}]),
-    v('Journal','2026-09-30','Depreciation on computer equipment',[{ledgerId:'l_depreciation',dr:5000,cr:0},{ledgerId:'l_computer',dr:0,cr:5000}]),
-  ];
-}
-function demoItems(){
-  return [
-    {id:'i_widgetA', name:'Widget A', group:'Finished Goods', unit:'PCS', hsn:'8471', rate:750, gstRate:18, openingQty:500, openingRate:420, reorderLevel:100},
-    {id:'i_widgetB', name:'Widget B', group:'Finished Goods', unit:'PCS', hsn:'8471', rate:1800, gstRate:18, openingQty:150, openingRate:950, reorderLevel:30},
-    {id:'i_rawmat', name:'Raw Material Roll', group:'Raw Materials', unit:'KG', hsn:'3920', rate:225, gstRate:18, openingQty:200, openingRate:130, reorderLevel:100},
-    {id:'i_packaging', name:'Packaging Material', group:'Packaging Materials', unit:'BOX', hsn:'4819', rate:120, gstRate:18, openingQty:100, openingRate:65, reorderLevel:50},
-  ];
-}
-/* ---------------- "Sk Enterprises - Demo" — second shared demo company ----------------
-   Built specifically to showcase every one of the 28 Tally-standard ledger groups (all 15 Primary
-   Groups and all 13 Sub-Groups) in a single company, plus stock items, a Fixed Asset Register
-   entry, and a recurring voucher template — a fuller tour than the original Demo Company, which
-   predates the expanded group hierarchy. Shared/ownerless exactly like Demo Company (see
-   ensureSkDemoCompany() and SHARED_DEMO_COMPANY_IDS above). */
+/* ---------------- "Sk Enterprises - Demo" — the shared demo company ----------------
+   Built to showcase every one of the 28 Tally-standard ledger groups (all 15 Primary Groups and
+   all 13 Sub-Groups) in a single company, spanning five complete past financial years plus the
+   current year to date, with a steady growth story that lands on a large cumulative profit — plus
+   stock items, a Fixed Asset Register, and a recurring voucher template. Shared/ownerless, visible
+   to every user (see ensureSkDemoCompany() and SHARED_DEMO_COMPANY_IDS above). The original "Demo
+   Company (Sample Data)" this replaced has been retired — see retireOldDemoCompany() below. */
+// Opening balances as at 2021-04-01 — the start of the earliest of the five past financial years
+// this company's books now cover — deliberately modest (a small, young enterprise) so five years
+// of steady, profitable trading is what visibly builds it up into a large, healthy company by the
+// current year, rather than the size being baked into artificial opening figures. l_bank is the
+// balancing plug: every other opening balance below is fixed first, and l_bank is whatever makes
+// the full set net to zero (verified by the test harness, not just by eye).
 function skDemoLedgers(){
   return [
     // ---- One ledger tagged with each of the 15 Primary Groups ----
-    {id:'l_cap',   name:'Capital Account',                       group:'cap',   opening:-1000000},
-    {id:'sk_ca',    name:'Prepaid Expenses',                      group:'ca',    opening:8000},
-    {id:'sk_curl',  name:'Outstanding Audit Fees',                group:'curl',  opening:-8000},
+    {id:'l_cap',   name:'Capital Account',                       group:'cap',   opening:-2000000},
+    {id:'sk_ca',    name:'Prepaid Expenses',                      group:'ca',    opening:40000},
+    {id:'sk_curl',  name:'Outstanding Audit Fees',                group:'curl',  opening:-30000},
     {id:'sk_dexp',  name:'Freight & Cartage Outward',             group:'dexp',  opening:0},
     {id:'sk_dirinc',name:'Job Work Income',                       group:'dirinc',opening:0},
-    {id:'sk_fa',    name:'Plant & Machinery',                     group:'fa',    opening:450000},
+    {id:'sk_fa',    name:'Plant & Machinery',                     group:'fa',    opening:1500000},
     {id:'sk_iexp_rent', name:'Office Rent',                       group:'iexp',  opening:0},
     {id:'sk_dinc',  name:'Interest on Fixed Deposit',             group:'dinc',  opening:0},
-    {id:'sk_inv',   name:'Fixed Deposit with Bank',                group:'inv',   opening:200000},
-    {id:'sk_loan',  name:'Loan from Director (Unsecured, Related Party)', group:'loan', opening:-50000},
-    {id:'sk_misc',  name:'Preliminary Expenses (Not Written Off)', group:'misc', opening:30000},
-    {id:'sk_prov',  name:'Provision for Income Tax',               group:'prov', opening:-25000},
+    {id:'sk_inv',   name:'Fixed Deposit with Bank',                group:'inv',   opening:500000},
+    {id:'sk_loan',  name:'Loan from Director (Unsecured, Related Party)', group:'loan', opening:-300000},
+    {id:'sk_misc',  name:'Preliminary Expenses (Not Written Off)', group:'misc', opening:150000},
+    {id:'sk_prov',  name:'Provision for Income Tax',               group:'prov', opening:-100000},
     {id:'sk_purch', name:'Purchase Account',                       group:'purch',opening:0},
     {id:'sk_sales', name:'Sales Account',                          group:'sales',opening:0},
-    {id:'sk_susp',  name:'Suspense Account',                       group:'susp', opening:2000},
+    {id:'sk_susp',  name:'Suspense Account',                       group:'susp', opening:15000},
     // ---- One ledger tagged with each of the 13 Sub-Groups (Sundry Debtors/Creditors get two each) ----
-    {id:'l_bank',    name:'HDFC Bank - Current A/c',             group:'bank',    opening:736000},
-    {id:'sk_bankod',  name:'Bank Overdraft A/c (SBI)',            group:'bankod',  opening:-60000},
-    {id:'l_cash',    name:'Cash-in-Hand',                        group:'cash',    opening:40000},
+    {id:'l_bank',    name:'HDFC Bank - Current A/c',             group:'bank',    opening:1415000},
+    {id:'sk_bankod',  name:'Bank Overdraft A/c (SBI)',            group:'bankod',  opening:-250000},
+    {id:'l_cash',    name:'Cash-in-Hand',                        group:'cash',    opening:60000},
     ...GST_LEDGERS.map(l=>({...l})), // Duties & Taxes (output, group 'duties') + Input GST (group 'ca')
-    {id:'sk_loanadv', name:'Advance to Staff',                    group:'loanadv', opening:18000},
-    {id:'sk_provsub', name:'Provision for Bad & Doubtful Debts',  group:'provsub', opening:-6000},
-    {id:'sk_ressur',  name:'General Reserve',                     group:'ressur',  opening:-150000},
-    {id:'sk_secloan', name:'Term Loan from Bank (Secured)',       group:'secloan', opening:-300000},
-    {id:'sk_stock',   name:'Stock-in-Hand',                       group:'stock',   opening:120000},
-    {id:'sk_sundcr1', name:'Om Traders (Creditor)',               group:'sundcr',  opening:-70000},
+    {id:'sk_loanadv', name:'Advance to Staff',                    group:'loanadv', opening:40000},
+    {id:'sk_provsub', name:'Provision for Bad & Doubtful Debts',  group:'provsub', opening:-20000},
+    {id:'sk_ressur',  name:'General Reserve',                     group:'ressur',  opening:-400000},
+    {id:'sk_secloan', name:'Term Loan from Bank (Secured)',       group:'secloan', opening:-1000000},
+    {id:'sk_stock',   name:'Stock-in-Hand',                       group:'stock',   opening:450000},
+    {id:'sk_sundcr1', name:'Om Traders (Creditor)',               group:'sundcr',  opening:-280000},
     {id:'sk_sundcr2', name:'Prime Vendors (Creditor)',            group:'sundcr',  opening:0},
-    {id:'sk_sundeb1', name:'Rahul Enterprises (Debtor)',          group:'sundeb',  opening:95000},
+    {id:'sk_sundeb1', name:'Rahul Enterprises (Debtor)',          group:'sundeb',  opening:320000},
     {id:'sk_sundeb2', name:'Nova Corp (Debtor)',                  group:'sundeb',  opening:0},
-    {id:'sk_unsloan', name:'Loan from Partner (Unsecured)',       group:'unsloan', opening:-40000},
-    {id:'sk_unsold',  name:'Job Work Material in Hand',           group:'unsold',  opening:10000},
+    {id:'sk_unsloan', name:'Loan from Partner (Unsecured)',       group:'unsloan', opening:-150000},
+    {id:'sk_unsold',  name:'Job Work Material in Hand',           group:'unsold',  opening:40000},
     // ---- Supporting P&L ledgers for realistic voucher activity (all Indirect/Direct Expenses) ----
     {id:'sk_iexp_salaries', name:'Salaries',                      group:'iexp', opening:0},
     {id:'sk_iexp_elec',     name:'Electricity Expense',           group:'iexp', opening:0},
@@ -1226,78 +1118,198 @@ function skDemoLedgers(){
     {id:'sk_dexp_wages',    name:'Direct Wages',                  group:'dexp', opening:0},
   ];
 }
+// Generates five complete past financial years (2021-22 through 2025-26) plus the current year to
+// date (2026-27, April through August — "today" in this system is 2026-08-28): a repeatable
+// monthly pattern of sales, purchases and overheads, scaled up year over year, rather than ~65
+// months of hand-written entries. Every running tracker below (outstanding balances, GST payable/
+// credit, fixed-asset book value, loan balance) only ever moves by amounts the code itself just
+// posted, so every voucher balances by construction and no tracker can go negative — verified
+// end-to-end with a Node harness before shipping (see the conversation this was built in), not
+// just by eye.
 function skDemoVouchers(){
-  const v = (type,date,narration,entries,items) => {
+  const vouchers = [];
+  const push = (type,date,narration,entries,items) => {
     const voucher = {id: uid('v'), type, date, narration, entries};
     if(items) voucher.items = items;
-    return voucher;
+    vouchers.push(voucher);
   };
-  return [
-    v('Payment','2026-06-01','Office rent for June',[{ledgerId:'sk_iexp_rent',dr:30000,cr:0},{ledgerId:'l_bank',dr:0,cr:30000}]),
-    v('Sales','2026-06-05','Sale of goods — Invoice #SK-101',[
-      {ledgerId:'sk_sundeb2',dr:94400,cr:0},
-      {ledgerId:'sk_sales',dr:0,cr:80000},
-      {ledgerId:'l_ocgst',dr:0,cr:7200},
-      {ledgerId:'l_osgst',dr:0,cr:7200},
-    ], [{itemId:'i_sk_widgetA', name:'Widget A', qty:100, rate:800}]),
-    v('Sales','2026-06-10','Sale of goods — Invoice #SK-102 (interstate)',[
-      {ledgerId:'sk_sundeb1',dr:88500,cr:0},
-      {ledgerId:'sk_sales',dr:0,cr:75000},
-      {ledgerId:'l_oigst',dr:0,cr:13500},
-    ], [{itemId:'i_sk_widgetB', name:'Widget B', qty:50, rate:1500}]),
-    v('Purchase','2026-06-12','Purchase of raw materials',[
-      {ledgerId:'sk_purch',dr:60000,cr:0},
-      {ledgerId:'l_icgst',dr:5400,cr:0},
-      {ledgerId:'l_isgst',dr:5400,cr:0},
-      {ledgerId:'sk_sundcr2',dr:0,cr:70800},
-    ], [{itemId:'i_sk_rawmat', name:'Raw Material Roll', qty:300, rate:200}]),
-    v('Purchase','2026-06-15','Purchase of packaging material (interstate)',[
-      {ledgerId:'sk_purch',dr:40000,cr:0},
-      {ledgerId:'l_iigst',dr:7200,cr:0},
-      {ledgerId:'sk_sundcr1',dr:0,cr:47200},
-    ], [{itemId:'i_sk_packaging', name:'Packaging Material', qty:400, rate:100}]),
-    v('Payment','2026-06-20','Electricity bill for June',[{ledgerId:'sk_iexp_elec',dr:6000,cr:0},{ledgerId:'l_cash',dr:0,cr:6000}]),
-    v('Payment','2026-06-22','Internet and telephone bill',[{ledgerId:'sk_iexp_tel',dr:3500,cr:0},{ledgerId:'l_bank',dr:0,cr:3500}]),
-    v('Journal','2026-06-28','Bank charges debited by bank',[{ledgerId:'sk_iexp_bankchg',dr:450,cr:0},{ledgerId:'l_bank',dr:0,cr:450}]),
-    v('Payment','2026-06-30','Staff salaries for June',[{ledgerId:'sk_iexp_salaries',dr:60000,cr:0},{ledgerId:'l_bank',dr:0,cr:60000}]),
-    v('Payment','2026-06-30','Interest on secured term loan',[{ledgerId:'sk_iexp_interest',dr:7500,cr:0},{ledgerId:'l_bank',dr:0,cr:7500}]),
-    v('Payment','2026-06-30','Secured term loan — installment (principal)',[{ledgerId:'sk_secloan',dr:15000,cr:0},{ledgerId:'l_bank',dr:0,cr:15000}]),
-    v('Payment','2026-07-05','Consultancy fees paid via bank overdraft',[{ledgerId:'sk_iexp_prof',dr:12000,cr:0},{ledgerId:'sk_bankod',dr:0,cr:12000}]),
-    v('Receipt','2026-07-08','Received from Nova Corp against Invoice #SK-101 (partial)',[{ledgerId:'l_bank',dr:60000,cr:0},{ledgerId:'sk_sundeb2',dr:0,cr:60000}]),
-    v('Receipt','2026-07-10','Received from Rahul Enterprises against Invoice #SK-102',[{ledgerId:'l_bank',dr:88500,cr:0},{ledgerId:'sk_sundeb1',dr:0,cr:88500}]),
-    v('Receipt','2026-07-12','Interest on Fixed Deposit received',[{ledgerId:'l_bank',dr:9000,cr:0},{ledgerId:'sk_dinc',dr:0,cr:9000}]),
-    v('Receipt','2026-07-15','Job work income received',[{ledgerId:'l_cash',dr:18000,cr:0},{ledgerId:'sk_dirinc',dr:0,cr:18000}]),
-    v('Payment','2026-07-18','Paid Prime Vendors against purchase (settled in full)',[{ledgerId:'sk_sundcr2',dr:70800,cr:0},{ledgerId:'l_bank',dr:0,cr:70800}]),
-    v('Payment','2026-07-20','Paid Om Traders against purchase (partial)',[{ledgerId:'sk_sundcr1',dr:30000,cr:0},{ledgerId:'l_bank',dr:0,cr:30000}]),
-    v('Contra','2026-07-22','Cash deposited into bank',[{ledgerId:'l_bank',dr:15000,cr:0},{ledgerId:'l_cash',dr:0,cr:15000}]),
-    v('Contra','2026-08-01','Cash withdrawn from bank for petty cash',[{ledgerId:'l_cash',dr:10000,cr:0},{ledgerId:'l_bank',dr:0,cr:10000}]),
-    v('Journal','2026-08-05','Depreciation on Plant & Machinery for the period',[{ledgerId:'sk_iexp_dep',dr:22500,cr:0},{ledgerId:'sk_fa',dr:0,cr:22500}]),
-    v('Payment','2026-08-08','Advance given to staff',[{ledgerId:'sk_loanadv',dr:5000,cr:0},{ledgerId:'l_cash',dr:0,cr:5000}]),
-    v('Sales','2026-08-10','Cash sale of goods',[
-      {ledgerId:'l_cash',dr:28320,cr:0},
-      {ledgerId:'sk_sales',dr:0,cr:24000},
-      {ledgerId:'l_ocgst',dr:0,cr:2160},
-      {ledgerId:'l_osgst',dr:0,cr:2160},
-    ], [{itemId:'i_sk_widgetA', name:'Widget A', qty:30, rate:800}]),
-    v('Credit Note','2026-08-14','Sales return — Credit Note against Invoice #SK-101',[
-      {ledgerId:'sk_sales',dr:8000,cr:0},
-      {ledgerId:'l_ocgst',dr:720,cr:0},
-      {ledgerId:'l_osgst',dr:720,cr:0},
-      {ledgerId:'sk_sundeb2',dr:0,cr:9440},
-    ], [{itemId:'i_sk_widgetA', name:'Widget A', qty:10, rate:800}]),
-    v('Debit Note','2026-08-18','Purchase return — Debit Note to Prime Vendors',[
-      {ledgerId:'sk_sundcr2',dr:5900,cr:0},
-      {ledgerId:'sk_purch',dr:0,cr:5000},
-      {ledgerId:'l_icgst',dr:0,cr:450},
-      {ledgerId:'l_isgst',dr:0,cr:450},
-    ], [{itemId:'i_sk_rawmat', name:'Raw Material Roll', qty:25, rate:200}]),
-    v('Payment','2026-08-20','Direct wages paid',[{ledgerId:'sk_dexp_wages',dr:14000,cr:0},{ledgerId:'l_cash',dr:0,cr:14000}]),
-    v('Payment','2026-08-22','Freight & cartage outward',[{ledgerId:'sk_dexp',dr:4200,cr:0},{ledgerId:'l_bank',dr:0,cr:4200}]),
-    v('Journal','2026-08-25','Suspense amount identified as Freight & Cartage Outward',[{ledgerId:'sk_dexp',dr:2000,cr:0},{ledgerId:'sk_susp',dr:0,cr:2000}]),
-    v('Payment','2026-08-28','Loan from Partner (unsecured) — partial repayment',[{ledgerId:'sk_unsloan',dr:10000,cr:0},{ledgerId:'l_bank',dr:0,cr:10000}]),
-    v('Payment','2026-09-01','Loan from Director — partial repayment',[{ledgerId:'sk_loan',dr:10000,cr:0},{ledgerId:'l_bank',dr:0,cr:10000}]),
-    v('Receipt','2026-09-05','Additional capital introduced by proprietor',[{ledgerId:'l_bank',dr:50000,cr:0},{ledgerId:'l_cap',dr:0,cr:50000}]),
-  ];
+  const r100 = n => Math.round(n/100)*100; // keeps every figure a tidy multiple of ₹100
+
+  const FY_START_YEARS = [2021, 2022, 2023, 2024, 2025, 2026];
+  const CURRENT_YEAR_MONTHS = 5; // Apr, May, Jun, Jul, Aug 2026
+
+  // Trade receivable/payable trackers — start at the ledgers' own opening balances above, then
+  // move exactly in step with the sales/purchases/receipts/payments generated below.
+  const outstanding = { sk_sundeb1:320000, sk_sundeb2:0, sk_sundcr1:280000, sk_sundcr2:0 };
+  // Output-GST-payable / input-GST-credit trackers, settled quarterly (offset credit against
+  // liability, then pay the remaining net) so the GST ledgers don't just grow forever.
+  const gstPayable = { cgst:0, sgst:0, igst:0 };
+  const gstCredit = { cgst:0, sgst:0, igst:0 };
+  let faBookValue = 1500000;
+  let secLoanBalance = 1000000;
+
+  for(let y=0; y<FY_START_YEARS.length; y++){
+    const startYear = FY_START_YEARS[y];
+    const isCurrentYear = y === FY_START_YEARS.length-1;
+    const monthsInYear = isCurrentYear ? CURRENT_YEAR_MONTHS : 12;
+    const revGrowth = Math.pow(1.30, y); // revenue/COGS scale ~30% a year
+    const costGrowth = Math.pow(1.14, y); // overheads scale only ~14% a year — margins widen
+
+    for(let m=0; m<monthsInYear; m++){
+      const calMonth = ((3+m) % 12) + 1;             // m=0 -> April(4) ... m=11 -> March(3)
+      const calYear = calMonth >= 4 ? startYear : startYear+1;
+      const mm = String(calMonth).padStart(2,'0');
+      const day = d => `${calYear}-${mm}-${String(d).padStart(2,'0')}`; // d must be <=28
+      const invoiceTag = `SK-${startYear}${mm}`;
+      const debtorAlt = m%2===0;
+      const debtorA = debtorAlt ? 'sk_sundeb1' : 'sk_sundeb2';
+      const debtorAName = debtorAlt ? 'Rahul Enterprises' : 'Nova Corp';
+      const debtorB = debtorAlt ? 'sk_sundeb2' : 'sk_sundeb1';
+      const debtorBName = debtorAlt ? 'Nova Corp' : 'Rahul Enterprises';
+      const creditorA = debtorAlt ? 'sk_sundcr1' : 'sk_sundcr2';
+      const creditorAName = debtorAlt ? 'Om Traders' : 'Prime Vendors';
+
+      // ---- Sales (intra-state) ----
+      const goodsA = r100(400000*revGrowth);
+      const cgstA = r100(goodsA*0.09), sgstA = cgstA;
+      const totalA = goodsA+cgstA+sgstA;
+      outstanding[debtorA] += totalA;
+      gstPayable.cgst += cgstA; gstPayable.sgst += sgstA;
+      push('Sales', day(5), `Sale of goods — Invoice #${invoiceTag}-A`, [
+        {ledgerId:debtorA, dr:totalA, cr:0},
+        {ledgerId:'sk_sales', dr:0, cr:goodsA},
+        {ledgerId:'l_ocgst', dr:0, cr:cgstA},
+        {ledgerId:'l_osgst', dr:0, cr:sgstA},
+      ], [{itemId:'i_sk_widgetA', name:'Widget A', qty:Math.max(1,Math.round(goodsA/800)), rate:800}]);
+
+      // ---- Sales (interstate) ----
+      const goodsB = r100(300000*revGrowth);
+      const igstB = r100(goodsB*0.18);
+      const totalB = goodsB+igstB;
+      outstanding[debtorB] += totalB;
+      gstPayable.igst += igstB;
+      push('Sales', day(10), `Sale of goods (interstate) — Invoice #${invoiceTag}-B`, [
+        {ledgerId:debtorB, dr:totalB, cr:0},
+        {ledgerId:'sk_sales', dr:0, cr:goodsB},
+        {ledgerId:'l_oigst', dr:0, cr:igstB},
+      ], [{itemId:'i_sk_widgetB', name:'Widget B', qty:Math.max(1,Math.round(goodsB/1500)), rate:1500}]);
+
+      // ---- Purchase (intra-state) ----
+      const goodsP = r100(250000*revGrowth);
+      const icgstP = r100(goodsP*0.09), isgstP = icgstP;
+      const totalP = goodsP+icgstP+isgstP;
+      outstanding[creditorA] += totalP;
+      gstCredit.cgst += icgstP; gstCredit.sgst += isgstP;
+      push('Purchase', day(12), 'Purchase of raw materials', [
+        {ledgerId:'sk_purch', dr:goodsP, cr:0},
+        {ledgerId:'l_icgst', dr:icgstP, cr:0},
+        {ledgerId:'l_isgst', dr:isgstP, cr:0},
+        {ledgerId:creditorA, dr:0, cr:totalP},
+      ], [{itemId:'i_sk_rawmat', name:'Raw Material Roll', qty:Math.max(1,Math.round(goodsP/200)), rate:200}]);
+
+      // ---- Cash float: withdraw from bank at the start of each month to fund the cash-paid
+      //      overheads below (electricity, direct wages), sized with a small surplus so cash
+      //      never runs dry even as those payments scale up with costGrowth over five years. ----
+      const cashWithdrawal = r100(55000*costGrowth);
+      push('Contra', day(2), 'Cash withdrawn from bank for petty cash expenses', [{ledgerId:'l_cash',dr:cashWithdrawal,cr:0},{ledgerId:'l_bank',dr:0,cr:cashWithdrawal}]);
+
+      // ---- Fixed monthly overheads (cost-growth scaled) ----
+      const rent = r100(40000*costGrowth);
+      push('Payment', day(1), 'Office rent', [{ledgerId:'sk_iexp_rent',dr:rent,cr:0},{ledgerId:'l_bank',dr:0,cr:rent}]);
+      const salaries = r100(120000*costGrowth);
+      push('Payment', day(28), 'Staff salaries', [{ledgerId:'sk_iexp_salaries',dr:salaries,cr:0},{ledgerId:'l_bank',dr:0,cr:salaries}]);
+      const elec = r100(15000*costGrowth);
+      push('Payment', day(18), 'Electricity bill', [{ledgerId:'sk_iexp_elec',dr:elec,cr:0},{ledgerId:'l_cash',dr:0,cr:elec}]);
+      const tel = r100(8000*costGrowth);
+      push('Payment', day(20), 'Internet and telephone', [{ledgerId:'sk_iexp_tel',dr:tel,cr:0},{ledgerId:'l_bank',dr:0,cr:tel}]);
+      const bankchg = Math.max(100, r100(1200*costGrowth));
+      push('Journal', day(27), 'Bank charges debited by bank', [{ledgerId:'sk_iexp_bankchg',dr:bankchg,cr:0},{ledgerId:'l_bank',dr:0,cr:bankchg}]);
+      const wages = r100(35000*costGrowth);
+      push('Payment', day(25), 'Direct wages', [{ledgerId:'sk_dexp_wages',dr:wages,cr:0},{ledgerId:'l_cash',dr:0,cr:wages}]);
+      const freight = r100(12000*costGrowth);
+      push('Payment', day(22), 'Freight & cartage outward', [{ledgerId:'sk_dexp',dr:freight,cr:0},{ledgerId:'l_bank',dr:0,cr:freight}]);
+
+      // ---- Collections / payments — 80% of whatever is currently outstanding for that party ----
+      const collectA = r100(outstanding[debtorA]*0.80);
+      if(collectA>0){ outstanding[debtorA] -= collectA; push('Receipt', day(24), `Received from ${debtorAName} against outstanding invoices`, [{ledgerId:'l_bank',dr:collectA,cr:0},{ledgerId:debtorA,dr:0,cr:collectA}]); }
+      const collectB = r100(outstanding[debtorB]*0.80);
+      if(collectB>0){ outstanding[debtorB] -= collectB; push('Receipt', day(26), `Received from ${debtorBName} against outstanding invoices`, [{ledgerId:'l_bank',dr:collectB,cr:0},{ledgerId:debtorB,dr:0,cr:collectB}]); }
+      const payA = r100(outstanding[creditorA]*0.80);
+      if(payA>0){ outstanding[creditorA] -= payA; push('Payment', day(23), `Paid ${creditorAName} against outstanding purchases`, [{ledgerId:creditorA,dr:payA,cr:0},{ledgerId:'l_bank',dr:0,cr:payA}]); }
+
+      // ---- Quarterly: loan interest, professional fees, a cash-to-bank contra, FD interest,
+      //      job work income, and a GST return (offset input credit, pay the remaining net) ----
+      if(m%3===0){
+        const interest = r100(15000*costGrowth);
+        push('Payment', day(6), 'Interest on secured term loan', [{ledgerId:'sk_iexp_interest',dr:interest,cr:0},{ledgerId:'l_bank',dr:0,cr:interest}]);
+        const prof = r100(10000*costGrowth);
+        push('Payment', day(15), 'Professional & consultancy fees paid via bank overdraft', [{ledgerId:'sk_iexp_prof',dr:prof,cr:0},{ledgerId:'sk_bankod',dr:0,cr:prof}]);
+        push('Contra', day(8), 'Cash deposited into bank', [{ledgerId:'l_bank',dr:20000,cr:0},{ledgerId:'l_cash',dr:0,cr:20000}]);
+        const fdInterest = r100(3000*revGrowth);
+        push('Receipt', day(9), 'Interest on Fixed Deposit received', [{ledgerId:'l_bank',dr:fdInterest,cr:0},{ledgerId:'sk_dinc',dr:0,cr:fdInterest}]);
+        const jobWork = r100(6000*revGrowth);
+        push('Receipt', day(11), 'Job work income received', [{ledgerId:'l_cash',dr:jobWork,cr:0},{ledgerId:'sk_dirinc',dr:0,cr:jobWork}]);
+
+        ['cgst','sgst','igst'].forEach(tax=>{
+          const ledgerOut = tax==='cgst'?'l_ocgst':tax==='sgst'?'l_osgst':'l_oigst';
+          const ledgerIn = tax==='cgst'?'l_icgst':tax==='sgst'?'l_isgst':'l_iigst';
+          const offset = Math.min(gstPayable[tax], gstCredit[tax]);
+          if(offset>0){
+            gstPayable[tax] -= offset; gstCredit[tax] -= offset;
+            push('Journal', day(17), `GST return: input credit offset against output ${tax.toUpperCase()}`, [{ledgerId:ledgerOut,dr:offset,cr:0},{ledgerId:ledgerIn,dr:0,cr:offset}]);
+          }
+          const netPay = r100(gstPayable[tax]*0.90);
+          if(netPay>0 && netPay<=gstPayable[tax]){
+            gstPayable[tax] -= netPay;
+            push('Payment', day(19), `GST payment to government (${tax.toUpperCase()})`, [{ledgerId:ledgerOut,dr:netPay,cr:0},{ledgerId:'l_bank',dr:0,cr:netPay}]);
+          }
+        });
+      }
+
+      // ---- One-off events ----
+      if(y===0 && m===1){
+        push('Journal', day(14), 'Suspense amount identified as Freight & Cartage Outward', [{ledgerId:'sk_dexp',dr:15000,cr:0},{ledgerId:'sk_susp',dr:0,cr:15000}]);
+      }
+      if(y===1 && m===5){
+        const retGoods=8000, retCgst=720, retSgst=720, retTotal=retGoods+retCgst+retSgst;
+        outstanding[debtorA] = Math.max(0, outstanding[debtorA]-retTotal);
+        gstPayable.cgst = Math.max(0, gstPayable.cgst-retCgst); gstPayable.sgst = Math.max(0, gstPayable.sgst-retSgst);
+        push('Credit Note', day(16), `Sales return — Credit Note against a recent invoice (${debtorAName})`, [
+          {ledgerId:'sk_sales', dr:retGoods, cr:0}, {ledgerId:'l_ocgst', dr:retCgst, cr:0}, {ledgerId:'l_osgst', dr:retSgst, cr:0},
+          {ledgerId:debtorA, dr:0, cr:retTotal},
+        ], [{itemId:'i_sk_widgetA', name:'Widget A', qty:10, rate:800}]);
+      }
+      if(y===2 && m===0){
+        const infusion = 500000;
+        push('Receipt', day(3), 'Additional capital introduced by proprietor', [{ledgerId:'l_bank',dr:infusion,cr:0},{ledgerId:'l_cap',dr:0,cr:infusion}]);
+        const newAsset = 800000;
+        push('Payment', day(4), 'Purchase of new packaging line machinery', [{ledgerId:'sk_fa',dr:newAsset,cr:0},{ledgerId:'l_bank',dr:0,cr:newAsset}]);
+        faBookValue += newAsset;
+      }
+      if(y===3 && m===2){
+        push('Payment', day(13), 'Advance given to staff', [{ledgerId:'sk_loanadv',dr:20000,cr:0},{ledgerId:'l_cash',dr:0,cr:20000}]);
+      }
+    }
+
+    // ---- End of year: depreciation and secured-loan principal repayment ----
+    const depRate = 0.08;
+    if(!isCurrentYear){
+      const depreciation = r100(faBookValue*depRate);
+      faBookValue -= depreciation;
+      push('Journal', `${startYear+1}-03-31`, 'Depreciation on Plant & Machinery for the year', [{ledgerId:'sk_iexp_dep',dr:depreciation,cr:0},{ledgerId:'sk_fa',dr:0,cr:depreciation}]);
+      const principal = Math.min(secLoanBalance, r100(80000*costGrowth));
+      if(principal>0){
+        secLoanBalance -= principal;
+        push('Payment', `${startYear+1}-03-31`, 'Secured term loan — annual installment (principal)', [{ledgerId:'sk_secloan',dr:principal,cr:0},{ledgerId:'l_bank',dr:0,cr:principal}]);
+      }
+    }else{
+      const partialDep = r100(faBookValue*depRate*(CURRENT_YEAR_MONTHS/12));
+      faBookValue -= partialDep;
+      push('Journal', '2026-08-31', 'Depreciation on Plant & Machinery (Apr-Aug)', [{ledgerId:'sk_iexp_dep',dr:partialDep,cr:0},{ledgerId:'sk_fa',dr:0,cr:partialDep}]);
+    }
+  }
+
+  return vouchers;
 }
 function skDemoItems(){
   return [
@@ -1307,22 +1319,27 @@ function skDemoItems(){
     {id:'i_sk_packaging', name:'Packaging Material', group:'Packaging Materials', unit:'BOX', hsn:'4819', rate:100, gstRate:18, openingQty:800, openingRate:70, reorderLevel:100},
   ];
 }
+// Dated to match the two Plant & Machinery events actually posted in skDemoVouchers(): the
+// original plant behind the 2021-04-01 sk_fa opening balance of 1,500,000, and the 800,000
+// packaging-line machine bought on 2023-04-04 (the y===2, m===0 one-off event above).
 function skDemoFixedAssets(){
   const now = new Date().toISOString();
   return [
-    {id:'fa_sk_1', name:'CNC Machine Unit', ledgerId:'sk_fa', cost:300000, purchaseDate:'2026-04-15', usefulLifeYears:10, method:'SLM', salvageValue:30000, postedFYs:[], active:true, createdAt:now},
-    {id:'fa_sk_2', name:'Packaging Line Equipment', ledgerId:'sk_fa', cost:150000, purchaseDate:'2026-05-01', usefulLifeYears:8, method:'WDV', salvageValue:15000, postedFYs:[], active:true, createdAt:now},
+    {id:'fa_sk_1', name:'CNC Machine Unit', ledgerId:'sk_fa', cost:1500000, purchaseDate:'2021-04-01', usefulLifeYears:10, method:'SLM', salvageValue:150000, postedFYs:[], active:true, createdAt:now},
+    {id:'fa_sk_2', name:'Packaging Line Equipment', ledgerId:'sk_fa', cost:800000, purchaseDate:'2023-04-04', usefulLifeYears:8, method:'WDV', salvageValue:80000, postedFYs:[], active:true, createdAt:now},
   ];
 }
 function skDemoRecurringTemplates(){
   const now = new Date().toISOString();
   return [
-    {id:'rtpl_sk_1', name:'Monthly Office Rent', type:'Payment', ledgerA:'l_bank', ledgerB:'sk_iexp_rent', amount:30000, narration:'Office Rent (Recurring)', frequency:'Monthly', nextDueDate:'2026-10-01', lastGeneratedDate:null, active:true, createdAt:now},
+    {id:'rtpl_sk_1', name:'Monthly Office Rent', type:'Payment', ledgerA:'l_bank', ledgerB:'sk_iexp_rent', amount:77000, narration:'Office Rent (Recurring)', frequency:'Monthly', nextDueDate:'2026-09-01', lastGeneratedDate:null, active:true, createdAt:now},
   ];
 }
-/* Same idempotent, reseed-on-version-bump pattern as ensureDemoCompany() below, for the second
-   shared demo company. Kept as its own function (rather than folding into ensureDemoCompany) so the
-   two demo datasets version and reseed independently. */
+/* Called right after any successful login (regular, signup, or admin) — creates the shared "Sk
+   Enterprises - Demo" document in Firestore the first time ever anyone signs in, and reseeds its
+   sample data if the built-in dataset has since been updated (demoVersion bump). Idempotent, so
+   it's safe to call on every login. Firestore requires a signed-in user for this, which is why it
+   can't run until after login rather than at page load. */
 async function ensureSkDemoCompany(){
   try{
     const ref = db.collection('companies').doc(SK_DEMO_COMPANY_ID);
@@ -1346,29 +1363,15 @@ async function ensureSkDemoCompany(){
     }
   }catch(e){ console.error(e); /* not fatal — the app still works without a fresh demo reseed */ }
 }
-/* Called right after any successful login (regular or admin) — creates the shared Demo Company
-   document in Firestore the first time ever anyone signs in, and reseeds its sample data if the
-   built-in demo dataset has since been updated (demoVersion bump). Idempotent, so it's safe to
-   call on every login. Firestore requires a signed-in user for this, which is why it can't run
-   until after login rather than at page load. */
-async function ensureDemoCompany(){
-  try{
-    const ref = db.collection('companies').doc(DEMO_COMPANY_ID);
-    const doc = await ref.get();
-    if(!doc.exists){
-      const company = {
-        id: DEMO_COMPANY_ID, name:'Demo Company (Sample Data)', fyStart:'2026-04-01',
-        gstin:'29ABCDE1234F1Z5', demoVersion: DEMO_DATA_VERSION, ownerId: null,
-        ledgers: demoLedgers(), vouchers: demoVouchers(), items: demoItems(), stockAdjustments: [],
-      };
-      await ref.set(company);
-      return;
-    }
-    const data = doc.data();
-    if(data.demoVersion !== DEMO_DATA_VERSION){
-      await ref.set({ demoVersion: DEMO_DATA_VERSION, ledgers: demoLedgers(), vouchers: demoVouchers(), items: demoItems() }, {merge:true});
-    }
-  }catch(e){ console.error(e); /* not fatal — the app still works without a fresh demo reseed */ }
+/* Retires the old shared "Demo Company (Sample Data)" (co_demo) for every user, not just future
+   logins: deletes its Firestore document outright. Per the app's Firestore rules, an ownerId:null
+   company can only be deleted by an admin (isAdmin() in the rules), so this only actually succeeds
+   the next time someone logs in via the admin backdoor — a regular user's call here simply fails
+   silently (caught below) and the document is left for the admin run to clean up. Either way, no
+   code anywhere creates or reseeds co_demo any more, so it never comes back. */
+async function retireOldDemoCompany(){
+  try{ await db.collection('companies').doc(DEMO_COMPANY_ID).delete(); }
+  catch(e){ /* expected for non-admins under the Firestore rules — not fatal, admin login retries this */ }
 }
 
 async function loadState(){
@@ -1398,17 +1401,9 @@ async function loadState(){
     state.fixedAssets = [];
     toast('Could not load company data');
   }
-  // Safety net: if this is a shared demo company but its sample vouchers are missing (e.g. an
+  // Safety net: if this is the shared demo company but its sample vouchers are missing (e.g. an
   // older/partial seed from a previous version), reseed the full demo dataset on the spot —
-  // regardless of the stored demoVersion flag — so a shared demo company never opens empty.
-  if(cid === DEMO_COMPANY_ID && !state.vouchers.length){
-    state.ledgers = demoLedgers();
-    state.vouchers = demoVouchers();
-    state.items = demoItems();
-    await saveLedgers();
-    await saveVouchers();
-    await saveItems();
-  }
+  // regardless of the stored demoVersion flag — so it never opens empty.
   if(cid === SK_DEMO_COMPANY_ID && !state.vouchers.length){
     state.ledgers = skDemoLedgers();
     state.vouchers = skDemoVouchers();
@@ -3868,7 +3863,7 @@ function renderLogin(){
         pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
         verifyLinkNotice = ''; verifyLinkError = '';
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
-        await Promise.all([ensureDemoCompany(), ensureSkDemoCompany()]);
+        await ensureSkDemoCompany();
         await loadCompanies();
         await loadAnnouncementForUser();
         await loadFeatureFlags();
@@ -3905,7 +3900,10 @@ function renderLogin(){
           await db.collection('users').doc(cred.user.uid).set({ id: cred.user.uid, name:'Administrator', username:'admin', usernameLower:'admin', role:'admin', createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() }, {merge:true});
           currentUser = { id: cred.user.uid, name:'Administrator', username:'admin', isAdmin:true, role:'admin' };
           authDraft = { name:'', username:'', mobile:'', email:'' };
-          await Promise.all([ensureDemoCompany(), ensureSkDemoCompany()]);
+          // Admin login also retires the old shared "Demo Company (Sample Data)" doc globally —
+          // only an admin has delete rights on an ownerless company per the Firestore rules, so
+          // this is the one login path that can actually make co_demo disappear for everyone.
+          await Promise.all([ensureSkDemoCompany(), retireOldDemoCompany()]);
           await loadCompanies();
           await loadFeatureFlags();
           logAudit('admin_login', 'Logged in via the admin backdoor', cred.user.uid, 'Administrator');
@@ -3944,7 +3942,7 @@ function renderLogin(){
         authDraft = { name:'', username:'', mobile:'', email:'' };
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         try{ await db.collection('users').doc(cred.user.uid).update({ lastLoginAt: new Date().toISOString() }); }catch(e){}
-        await Promise.all([ensureDemoCompany(), ensureSkDemoCompany()]);
+        await ensureSkDemoCompany();
         await loadCompanies();
         await loadAnnouncementForUser();
         await loadFeatureFlags();
@@ -8152,7 +8150,7 @@ function renderTotalsOnly(){
 /* ---------------- init ----------------
    Companies and accounts now live in Firestore, which requires a signed-in user — so nothing is
    fetched here. The app always starts at the login screen (matching how it always worked, even
-   before real accounts existed); ensureDemoCompany()/loadCompanies() run right after a successful
+   before real accounts existed); ensureSkDemoCompany()/loadCompanies() run right after a successful
    login or admin login instead, once there's a Firebase Auth session to read/write with. */
 // Client-side "system health" — there's no server here to log to, so real JS errors real users
 // hit are captured client-side and written (best-effort) to Firestore's errorLog collection,
