@@ -507,8 +507,8 @@ let contactSupportOpen = false; // whether the "Contact Support" mini-form is ex
 let contactSupportDraft = { subject:'', message:'' };
 let contactSupportSending = false;
 let contactSupportNotice = '';
-let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false }; // settings/featureFlags doc
-let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false };
+let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; // settings/featureFlags doc
+let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
@@ -819,8 +819,8 @@ async function submitSupportTicket(subject, message){
 async function loadFeatureFlags(){
   try{
     const doc = await db.collection('settings').doc('featureFlags').get();
-    featureFlags = doc.exists ? { inventoryRequiresPaid: !!doc.data().inventoryRequiresPaid, importRequiresPaid: !!doc.data().importRequiresPaid } : { inventoryRequiresPaid:false, importRequiresPaid:false };
-  }catch(e){ featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false }; }
+    featureFlags = doc.exists ? { inventoryRequiresPaid: !!doc.data().inventoryRequiresPaid, importRequiresPaid: !!doc.data().importRequiresPaid, reconcileRequiresPaid: !!doc.data().reconcileRequiresPaid } : { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
+  }catch(e){ featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; }
   featureFlagsDraft = { ...featureFlags };
 }
 function userEntitled(){
@@ -3104,7 +3104,7 @@ function tab(id,label,shortcutLetter){
   const labelHtml = idx>=0
     ? `${escapeHtml(label.slice(0,idx))}<b>${escapeHtml(label[idx])}</b>${escapeHtml(label.slice(idx+1))}`
     : escapeHtml(label);
-  const gated = id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled();
+  const gated = ((id==='inventory' && featureFlags.inventoryRequiresPaid) || (id==='reconcile' && featureFlags.reconcileRequiresPaid)) && !userEntitled();
   return `<button class="navtab ${view===id?'active':''}" data-tab="${id}" title="${gated?'Paid-plan feature':'Shortcut: '+(shortcutLetter||'')}">${tabIcon(id)}<span>${labelHtml}${gated?' 🔒':''}</span></button>`;
 }
 /* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
@@ -3115,6 +3115,10 @@ function goToTab(id){
   if(!id || view===id) return;
   if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled()){
     toast('Inventory is a Paid-plan feature — contact the administrator to upgrade.');
+    return;
+  }
+  if(id==='reconcile' && featureFlags.reconcileRequiresPaid && !userEntitled()){
+    toast('Reconcile is a Paid-plan feature — contact the administrator to upgrade.');
     return;
   }
   view = id;
@@ -4792,13 +4796,14 @@ function renderGateway(){
       if(!isFullAdmin()) return;
       const inventoryRequiresPaid = document.getElementById('flagInventory').checked;
       const importRequiresPaid = document.getElementById('flagImport').checked;
+      const reconcileRequiresPaid = document.getElementById('flagReconcile').checked;
       const btn = document.getElementById('saveFeatureFlagsBtn');
       btn.disabled = true;
       try{
-        await db.collection('settings').doc('featureFlags').set({ inventoryRequiresPaid, importRequiresPaid, updatedAt: new Date().toISOString() }, {merge:true});
-        featureFlags = { inventoryRequiresPaid, importRequiresPaid };
+        await db.collection('settings').doc('featureFlags').set({ inventoryRequiresPaid, importRequiresPaid, reconcileRequiresPaid, updatedAt: new Date().toISOString() }, {merge:true});
+        featureFlags = { inventoryRequiresPaid, importRequiresPaid, reconcileRequiresPaid };
         featureFlagsDraft = { ...featureFlags };
-        await logAudit('feature_flags_updated', `Inventory paid-gated: ${inventoryRequiresPaid}, Import paid-gated: ${importRequiresPaid}`);
+        await logAudit('feature_flags_updated', `Inventory paid-gated: ${inventoryRequiresPaid}, Import paid-gated: ${importRequiresPaid}, Reconcile paid-gated: ${reconcileRequiresPaid}`);
         toast('Feature flags saved');
         renderGateway();
       }catch(err){
@@ -4970,6 +4975,9 @@ function adminSettingsTab(){
     </label>
     <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
       <input type="checkbox" id="flagImport" style="width:auto;" ${featureFlagsDraft.importRequiresPaid?'checked':''} ${isFullAdmin()?'':'disabled'}> Require a Paid/Lifetime plan for <strong>Import Accounting Data</strong>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
+      <input type="checkbox" id="flagReconcile" style="width:auto;" ${featureFlagsDraft.reconcileRequiresPaid?'checked':''} ${isFullAdmin()?'':'disabled'}> Require a Paid/Lifetime plan for <strong>Reconcile</strong>
     </label>
     <button class="btn secondary small" id="saveFeatureFlagsBtn" type="button" style="margin-top:10px;" ${isFullAdmin()?'':'disabled'}>Save Feature Flags</button>
 
