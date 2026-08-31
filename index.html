@@ -378,7 +378,72 @@ function authErrorMessage(err, isSignup){
   if(code==='auth/invalid-credential') return isSignup ? 'Could not create that account.' : 'Incorrect username or password.';
   if(code==='auth/too-many-requests') return 'Too many attempts — please wait a moment and try again.';
   if(code==='auth/network-request-failed') return 'Could not reach the server — check your internet connection.';
+  if(code==='auth/invalid-action-code' || code==='auth/expired-action-code') return 'That verification link is invalid, expired, or has already been used. Please request a new one.';
+  if(code==='auth/missing-email') return 'Please confirm your email address to continue.';
+  if(code==='auth/quota-exceeded') return 'Too many verification emails sent — please try again later.';
+  if(code==='auth/operation-not-allowed') return 'Email sign-up isn\'t enabled on this server yet — contact the administrator.';
+  if(code==='auth/unauthorized-continue-uri') return 'This site isn\'t authorized for email sign-in yet — contact the administrator.';
   return (err && err.message) || 'Something went wrong. Please try again.';
+}
+// Step 1's Name/Username/Mobile/Email survive the reload that happens when the user opens the
+// verification link (often in a new tab) by round-tripping through window.storage — plain JS
+// state doesn't carry across that reload. Cleared once step 2 finishes, or the flow is abandoned.
+async function savePendingSignupDraft(draft){
+  try{ await window.storage.set('pendingSignupDraft', JSON.stringify({ ...draft, sentAt: Date.now() })); }catch(e){}
+}
+async function loadPendingSignupDraft(){
+  try{
+    const stored = await window.storage.get('pendingSignupDraft');
+    if(!stored) return null;
+    return JSON.parse(stored.value);
+  }catch(e){ return null; }
+}
+async function clearPendingSignupDraft(){
+  try{ await window.storage.delete('pendingSignupDraft'); }catch(e){}
+}
+// Where Firebase should send the user back to after they click the emailed link — the current
+// page's own URL with no query string, so this works unmodified on localhost, GitHub Pages, or
+// any custom domain (each still needs to be added under Authorized domains in the Firebase Console).
+function signupLinkUrl(){
+  return window.location.origin + window.location.pathname;
+}
+// Runs once at startup when the URL shows we're back from a clicked verification link (an
+// oobCode in the query string). Confirms the email (from the saved draft, or by asking — a link
+// opened on a different device/browser has no saved draft), completes the passwordless sign-in,
+// and either resumes signup at step 2 or, if that account already has a finished profile, sends
+// the person to log in instead.
+async function handleEmailLinkReturn(){
+  const link = window.location.href;
+  const draft = await loadPendingSignupDraft();
+  let email = draft && draft.email ? draft.email : '';
+  if(!email){
+    email = (window.prompt('Confirm the email address you signed up with, to finish verifying it:') || '').trim();
+  }
+  try{
+    if(!email) throw Object.assign(new Error('No email provided'), { code:'auth/missing-email' });
+    const cred = await fbAuth.signInWithEmailLink(email, link);
+    try{ window.history.replaceState({}, document.title, window.location.pathname); }catch(e){}
+    const profDoc = await db.collection('users').doc(cred.user.uid).get();
+    if(profDoc.exists){
+      // This email already belongs to a completed account — nothing left to verify.
+      await fbAuth.signOut();
+      authMode = 'login';
+      authError = 'That email is already registered to a completed account — please log in instead.';
+      await clearPendingSignupDraft();
+    }else{
+      pendingVerifyUser = cred.user;
+      pendingVerifyEmail = email;
+      verifyLinkAwaiting = false;
+      authMode = 'signup';
+      authDraft = draft ? { name:draft.name||'', username:draft.username||'', mobile:draft.mobile||'', email } : { name:'', username:'', mobile:'', email };
+    }
+  }catch(err){
+    try{ window.history.replaceState({}, document.title, window.location.pathname); }catch(e){}
+    authMode = 'signup';
+    verifyLinkAwaiting = !!draft; // if we still have their step-1 details, drop them back into "resend" rather than a blank form
+    if(draft) authDraft = { name:draft.name||'', username:draft.username||'', mobile:draft.mobile||'', email:draft.email||'' };
+    verifyLinkError = authErrorMessage(err, true);
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -500,15 +565,23 @@ const ADMIN_BACKDOOR_USERNAME = '//owner'; // typing this + ADMIN_MASTER_PASSWOR
 let forgotPasswordOpen = false;  // whether the "Forgot password?" dialog is showing on the login screen
 let forgotPasswordError = '';    // inline error message inside that dialog
 let forgotPasswordSent = false;  // whether the dialog is now showing its "check your email" confirmation
-/* Inline email verification on the sign-up form itself: a "Verify Email" button next to the
-   Email field creates the account behind the scenes and emails a real verification LINK
-   (Firebase's own native flow); "Create Account" only finishes once that link has been clicked. */
-let pendingVerifyUser = null;      // the Firebase Auth user created when "Verify Email" was clicked, until Create Account finalizes the profile
-let pendingVerifyEmail = '';       // the email address that account/link belongs to (invalidated if the Email field is edited afterwards)
-let verifyLinkSending = false;     // true while the account is being created / the link is being (re)sent
+/* Sign-up is two strict steps, enforced by what Firebase Auth actually lets us do — no password
+   exists at all until step 2:
+   Step 1 — Name/Username/Mobile/Email only. "Verify Email" sends a real passwordless sign-in
+   LINK to that address (Firebase's native email-link flow; no account exists yet). The tab sits
+   on a "check your inbox" notice until the user opens the link.
+   Step 2 — opening the link reloads the app, Firebase signs them in (with no password) and marks
+   the email verified automatically. Only now does the Password/Confirm fields appear; "Create
+   Account" links a password credential onto that already-verified account and writes the profile.
+   Because opening the link is a fresh page load (often a new tab), the step-1 fields are mirrored
+   into window.storage (pendingSignupDraft) so they survive the reload and refill step 2. */
+let pendingVerifyUser = null;      // set once the email-link sign-in has completed — a verified Firebase Auth user with no password yet, awaiting step 2
+let pendingVerifyEmail = '';       // the email address that account belongs to
+let verifyLinkAwaiting = false;    // true after the link is sent, before the user has opened it (step 1's "check your inbox" state)
+let verifyLinkSending = false;     // true while the link is being (re)sent
 let verifyLinkCooldownUntil = 0;   // Date.now() timestamp before which the Verify/Resend button stays disabled
-let verifyLinkNotice = '';         // inline success/status message next to the Email field
-let verifyLinkError = '';          // inline error message next to the Email field
+let verifyLinkNotice = '';         // inline success/status message on the sign-up form
+let verifyLinkError = '';          // inline error message on the sign-up form
 let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
 let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
 let viewMenuOpen = false;  // View menu dropdown toggle
@@ -4045,9 +4118,8 @@ function renderLogin(){
   const isSignup = authMode==='signup';
   const pwType = authShowPassword ? 'text' : 'password';
   const verifyLinkCooldownActive = Date.now() < verifyLinkCooldownUntil;
-  const verifySent = !!pendingVerifyUser;
-  const verifyBtnLabel = verifyLinkSending ? 'Sending…' : (verifySent ? (verifyLinkCooldownActive ? 'Sent ✓' : 'Resend Link') : 'Verify Email');
-  const verifyBtnDisabled = verifyLinkSending || (verifySent && verifyLinkCooldownActive);
+  const verifyBtnLabel = verifyLinkSending ? 'Sending…' : (verifyLinkAwaiting ? (verifyLinkCooldownActive ? 'Sent ✓' : 'Resend Link') : 'Verify Email');
+  const verifyBtnDisabled = verifyLinkSending || (verifyLinkAwaiting && verifyLinkCooldownActive);
   app.innerHTML = `
     <div class="rb-bg">
       <span class="rb-letter rb-letter-r">R</span>
@@ -4064,41 +4136,60 @@ function renderLogin(){
             <div class="login-by">by SKm</div>
             <p class="login-tagline">${isSignup ? 'Create your account to start keeping the books.' : 'Log in to continue.'}</p>
 
-            ${isSignup ? `
-            <label>Full Name</label>
-            <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name">
-            <label style="margin-top:12px;">Username</label>
-            <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username">
-            <label style="margin-top:12px;">Mobile Number</label>
-            <input type="tel" id="authMobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric" value="${escapeAttr(authDraft.mobile)}" autocomplete="tel">
-            <label style="margin-top:12px;">Email</label>
-            <div style="display:flex;gap:8px;align-items:stretch;">
-              <input type="email" id="authEmail" placeholder="you@example.com" value="${escapeAttr(authDraft.email)}" autocomplete="email" style="flex:1;">
-              <button type="button" id="verifyEmailBtn" class="btn secondary" style="white-space:nowrap;flex-shrink:0;" ${verifyBtnDisabled?'disabled':''}>${verifyBtnLabel}</button>
+            ${isSignup ? (pendingVerifyUser ? `
+            <div style="background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+              <div style="font-size:12.5px;font-weight:600;">${escapeHtml(authDraft.name||'')}</div>
+              <div class="muted" style="font-size:11.5px;">@${escapeHtml(authDraft.username||'')} · ${escapeHtml(authDraft.email||'')} · <span style="color:var(--accent1);">✓ Verified</span></div>
             </div>
-            ${verifyLinkNotice ? `<p style="font-size:12px;color:var(--accent1);margin:6px 0 0;">${escapeHtml(verifyLinkNotice)}</p>` : ''}
-            ${verifyLinkError ? `<p class="auth-error" style="margin:6px 0 0;">${escapeHtml(verifyLinkError)}</p>` : ''}
-            ` : `
-            <label>Username</label>
-            <input type="text" id="authUsername" placeholder="Your username" value="${escapeAttr(authDraft.username || lastUsername)}" autocomplete="username">
-            `}
+            <p style="margin:6px 0 0;"><a id="signupStartOverLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Not you? Start over</a></p>
 
             <label style="margin-top:12px;">Password</label>
             <div class="pw-field-wrap">
-              <input type="${pwType}" id="authPassword" placeholder="${isSignup?'Create a password':'Your password'}" autocomplete="${isSignup?'new-password':'current-password'}">
+              <input type="${pwType}" id="authPassword" placeholder="Create a password" autocomplete="new-password">
               <button type="button" class="pw-toggle" id="authTogglePw">${authShowPassword?'Hide':'Show'}</button>
             </div>
-
-            ${isSignup ? `
             <label style="margin-top:12px;">Confirm Password</label>
             <input type="${pwType}" id="authConfirmPassword" placeholder="Re-enter password" autocomplete="new-password">
-            ` : `
-            <p style="text-align:right;margin:6px 0 0;"><a id="forgotPasswordLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Forgot password?</a></p>
-            `}
 
             ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
 
-            <button class="btn" id="authSubmitBtn" type="button" style="width:100%;margin-top:16px;">${isSignup?'Create Account':'Log In'} →</button>
+            <button class="btn" id="authSubmitBtn" type="button" style="width:100%;margin-top:16px;">Create Account →</button>
+            ` : `
+            <label>Full Name</label>
+            <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name" ${verifyLinkAwaiting?'disabled':''}>
+            <label style="margin-top:12px;">Username</label>
+            <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username" ${verifyLinkAwaiting?'disabled':''}>
+            <label style="margin-top:12px;">Mobile Number</label>
+            <input type="tel" id="authMobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric" value="${escapeAttr(authDraft.mobile)}" autocomplete="tel" ${verifyLinkAwaiting?'disabled':''}>
+            <label style="margin-top:12px;">Email</label>
+            <input type="email" id="authEmail" placeholder="you@example.com" value="${escapeAttr(authDraft.email)}" autocomplete="email" ${verifyLinkAwaiting?'disabled':''}>
+
+            ${verifyLinkAwaiting ? `
+            <div style="background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;">
+              We sent a verification link to <strong>${escapeHtml(authDraft.email)}</strong>. Open it on this device to continue — this tab will pick up automatically once you do.
+            </div>
+            ` : ''}
+            ${verifyLinkNotice ? `<p style="font-size:12px;color:var(--accent1);margin:6px 0 0;">${escapeHtml(verifyLinkNotice)}</p>` : ''}
+            ${verifyLinkError ? `<p class="auth-error" style="margin:6px 0 0;">${escapeHtml(verifyLinkError)}</p>` : ''}
+            ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
+
+            <button class="btn" id="verifyEmailBtn" type="button" style="width:100%;margin-top:16px;" ${verifyBtnDisabled?'disabled':''}>${verifyBtnLabel}</button>
+            ${verifyLinkAwaiting ? `<p style="margin:8px 0 0;text-align:center;"><a id="signupUseDifferentEmailLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Use a different email</a></p>` : ''}
+            `) : `
+            <label>Username</label>
+            <input type="text" id="authUsername" placeholder="Your username" value="${escapeAttr(authDraft.username || lastUsername)}" autocomplete="username">
+
+            <label style="margin-top:12px;">Password</label>
+            <div class="pw-field-wrap">
+              <input type="${pwType}" id="authPassword" placeholder="Your password" autocomplete="current-password">
+              <button type="button" class="pw-toggle" id="authTogglePw">${authShowPassword?'Hide':'Show'}</button>
+            </div>
+            <p style="text-align:right;margin:6px 0 0;"><a id="forgotPasswordLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Forgot password?</a></p>
+
+            ${authError ? `<p class="auth-error">${escapeHtml(authError)}</p>` : ''}
+
+            <button class="btn" id="authSubmitBtn" type="button" style="width:100%;margin-top:16px;">Log In →</button>
+            `}
 
             <p class="auth-toggle-line">${isSignup ? 'Already have an account?' : 'New here?'} <a id="authToggleModeLink">${isSignup?'Log in':'Create one'}</a></p>
           </div>
@@ -4132,39 +4223,33 @@ function renderLogin(){
     const password = document.getElementById('authPassword').value || '';
     const submitBtn = document.getElementById('authSubmitBtn');
     if(isSignup){
-      const name = (document.getElementById('authName').value||'').trim();
-      const username = (document.getElementById('authUsername').value||'').trim();
-      const mobile = (document.getElementById('authMobile').value||'').trim();
-      const email = (document.getElementById('authEmail').value||'').trim();
+      // Step 2 only — by the time this button exists at all, the email is already verified
+      // (pendingVerifyUser) and name/username/mobile/email already live in authDraft from step 1.
+      if(!pendingVerifyUser){ authError = 'Please verify your email first.'; renderLogin(); return; }
+      const { name, username, mobile, email } = authDraft;
       const confirm = document.getElementById('authConfirmPassword').value || '';
-      authDraft.name = name; authDraft.username = username; authDraft.mobile = mobile; authDraft.email = email;
-      if(!name || !username || !mobile || !email || !password){ authError = 'Please fill in your name, username, mobile number, email, and password.'; renderLogin(); return; }
-      if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
-      if(!isValidMobile(mobile)){ authError = 'Mobile number must be exactly 10 digits.'; renderLogin(); return; }
-      if(!isValidEmail(email)){ authError = 'Please enter a valid email address.'; renderLogin(); return; }
+      if(!name || !username || !mobile || !email){ authError = 'Some of your details were lost — please start over.'; renderLogin(); return; }
+      if(!password){ authError = 'Please create a password.'; renderLogin(); return; }
       if(password.length<6){ authError = 'Password must be at least 6 characters.'; renderLogin(); return; }
       if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); return; }
-      if(!pendingVerifyUser || pendingVerifyEmail!==email){ authError = 'Please click "Verify Email" and open the link we send you before creating your account.'; renderLogin(); return; }
       submitBtn.disabled = true;
       const usernameKey = username.toLowerCase();
       try{
-        await pendingVerifyUser.reload();
-        if(!pendingVerifyUser.emailVerified){
-          authError = 'We haven\'t seen you verify yet — open the link in the email we sent, then click Create Account again.';
-          submitBtn.disabled = false;
-          renderLogin();
-          return;
-        }
         const takenDoc = await db.collection('usernames').doc(usernameKey).get();
-        if(takenDoc.exists){ authError = 'That username is already taken — please choose another (your email is already verified, so just fix the username and click Create Account again).'; submitBtn.disabled = false; renderLogin(); return; }
+        if(takenDoc.exists){ authError = 'That username is already taken — please go back and choose another.'; submitBtn.disabled = false; renderLogin(); return; }
+        // The account already exists (created passwordlessly via the email link) — this adds a
+        // password credential onto it, rather than creating a new account.
+        const credential = firebase.auth.EmailAuthProvider.credential(email, password);
+        await pendingVerifyUser.linkWithCredential(credential);
         const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() };
         await db.collection('users').doc(pendingVerifyUser.uid).set(profile);
         await db.collection('usernames').doc(usernameKey).set({ email });
         lastUsername = username;
         currentUser = { id: pendingVerifyUser.uid, name, username, isAdmin:false, role:'user', plan:'free', planExpiry:null };
         authDraft = { name:'', username:'', mobile:'', email:'' };
-        pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
+        pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkAwaiting = false; verifyLinkCooldownUntil = 0;
         verifyLinkNotice = ''; verifyLinkError = '';
+        await clearPendingSignupDraft();
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         await ensureSkDemoCompany();
         await loadCompanies();
@@ -4263,16 +4348,92 @@ function renderLogin(){
     }
   };
 
-  document.getElementById('authSubmitBtn').addEventListener('click', submitAuth);
-  ['authName','authUsername','authMobile','authEmail','authPassword','authConfirmPassword'].forEach(id=>{
+  document.getElementById('authSubmitBtn')?.addEventListener('click', submitAuth);
+  const onVerifyEmailClick = async ()=>{
+    const name = (document.getElementById('authName').value||'').trim();
+    const username = (document.getElementById('authUsername').value||'').trim();
+    const mobile = (document.getElementById('authMobile').value||'').trim();
+    const email = (document.getElementById('authEmail').value||'').trim();
+    authDraft.name = name; authDraft.username = username; authDraft.mobile = mobile; authDraft.email = email;
+    authError = ''; verifyLinkError = ''; verifyLinkNotice = '';
+
+    // Resend on an already-awaiting, unchanged email — no need to re-validate the whole form again.
+    if(verifyLinkAwaiting && pendingVerifyEmail===email){
+      if(verifyLinkSending || Date.now()<verifyLinkCooldownUntil) return;
+      verifyLinkSending = true;
+      renderLogin();
+      try{
+        await fbAuth.sendSignInLinkToEmail(email, { url: signupLinkUrl(), handleCodeInApp: true });
+        await savePendingSignupDraft({ name, username, mobile, email });
+        verifyLinkNotice = 'Verification link resent — check your inbox (and spam folder).';
+        verifyLinkCooldownUntil = Date.now() + 30000;
+      }catch(err){
+        verifyLinkError = authErrorMessage(err, true);
+      }
+      verifyLinkSending = false;
+      renderLogin();
+      return;
+    }
+
+    // Fresh send: validate the contact details first (no password involved at this stage at all).
+    if(!name || !username || !mobile || !email){ authError = 'Please fill in your name, username, mobile number and email.'; renderLogin(); return; }
+    if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
+    if(!isValidMobile(mobile)){ authError = 'Mobile number must be exactly 10 digits.'; renderLogin(); return; }
+    if(!isValidEmail(email)){ authError = 'Please enter a valid email address.'; renderLogin(); return; }
+    if(verifyLinkSending) return;
+    verifyLinkSending = true;
+    renderLogin();
+    try{
+      const usernameKey = username.toLowerCase();
+      const takenDoc = await db.collection('usernames').doc(usernameKey).get();
+      if(takenDoc.exists){ throw Object.assign(new Error('That username is already taken.'), { code:'auth/username-taken' }); }
+      await fbAuth.sendSignInLinkToEmail(email, { url: signupLinkUrl(), handleCodeInApp: true });
+      await savePendingSignupDraft({ name, username, mobile, email });
+      pendingVerifyEmail = email;
+      verifyLinkAwaiting = true;
+      verifyLinkCooldownUntil = Date.now() + 30000;
+      verifyLinkNotice = 'Verification link sent — open it on this device, then this tab will pick up automatically.';
+      verifyLinkError = '';
+    }catch(err){
+      verifyLinkNotice = '';
+      verifyLinkError = err.code==='auth/username-taken' ? err.message : authErrorMessage(err, true);
+    }
+    verifyLinkSending = false;
+    renderLogin();
+  };
+  document.getElementById('verifyEmailBtn')?.addEventListener('click', onVerifyEmailClick);
+  ['authName','authUsername','authMobile','authEmail'].forEach(id=>{
+    document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') onVerifyEmailClick(); });
+  });
+  ['authPassword','authConfirmPassword'].forEach(id=>{
     document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitAuth(); });
   });
-  document.getElementById('authToggleModeLink')?.addEventListener('click', ()=>{
-    authMode = isSignup ? 'login' : 'signup';
-    authError = '';
-    pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
+  const resetSignupFlow = async ()=>{
+    if(pendingVerifyUser){ try{ await fbAuth.signOut(); }catch(e){} }
+    pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkAwaiting = false; verifyLinkCooldownUntil = 0;
     verifyLinkNotice = ''; verifyLinkError = '';
+    authDraft = { name:'', username:'', mobile:'', email:'' };
+    await clearPendingSignupDraft();
+  };
+  document.getElementById('authToggleModeLink')?.addEventListener('click', async ()=>{
+    const goingToSignup = !isSignup;
+    authError = '';
+    await resetSignupFlow();
+    authMode = goingToSignup ? 'signup' : 'login';
     renderLogin();
+  });
+  document.getElementById('signupStartOverLink')?.addEventListener('click', async ()=>{
+    await resetSignupFlow();
+    renderLogin();
+  });
+  document.getElementById('signupUseDifferentEmailLink')?.addEventListener('click', async ()=>{
+    const draft = { name: authDraft.name, username: authDraft.username, mobile: authDraft.mobile };
+    verifyLinkAwaiting = false; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
+    verifyLinkNotice = ''; verifyLinkError = '';
+    authDraft = { ...draft, email:'' };
+    await clearPendingSignupDraft();
+    renderLogin();
+    document.getElementById('authEmail')?.focus();
   });
   document.getElementById('authTogglePw')?.addEventListener('click', ()=>{
     authShowPassword = !authShowPassword;
@@ -4280,113 +4441,6 @@ function renderLogin(){
   });
   document.getElementById('authMobile')?.addEventListener('input', (e)=>{
     e.target.value = e.target.value.replace(/\D/g,'').slice(0,10);
-  });
-  // Re-rendering the whole screen (to show "Sending…", or after an email edit) would otherwise
-  // wipe out any password already typed, since only name/username/mobile/email live in authDraft —
-  // so every handler below captures the password fields first and restores them after re-rendering.
-  const restorePasswordFields = (pw, pwConfirm)=>{
-    const pwEl = document.getElementById('authPassword');
-    const pwConfirmEl = document.getElementById('authConfirmPassword');
-    if(pwEl) pwEl.value = pw;
-    if(pwConfirmEl) pwConfirmEl.value = pwConfirm;
-  };
-  document.getElementById('authEmail')?.addEventListener('input', (e)=>{
-    // editing the email after a verification link was sent invalidates it for that new address —
-    // the button relabels back to "Verify Email" (the earlier unverified account is simply left unused).
-    if(pendingVerifyUser){
-      const pw = document.getElementById('authPassword').value || '';
-      const pwConfirm = document.getElementById('authConfirmPassword').value || '';
-      const caretPos = e.target.selectionStart;
-      pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
-      verifyLinkNotice = ''; verifyLinkError = '';
-      renderLogin();
-      restorePasswordFields(pw, pwConfirm);
-      const emailEl = document.getElementById('authEmail');
-      if(emailEl){ emailEl.focus(); try{ emailEl.setSelectionRange(caretPos, caretPos); }catch(err){} }
-    }
-  });
-  document.getElementById('verifyEmailBtn')?.addEventListener('click', async ()=>{
-    const name = (document.getElementById('authName').value||'').trim();
-    const username = (document.getElementById('authUsername').value||'').trim();
-    const mobile = (document.getElementById('authMobile').value||'').trim();
-    const email = (document.getElementById('authEmail').value||'').trim();
-    const password = document.getElementById('authPassword').value || '';
-    const confirm = document.getElementById('authConfirmPassword').value || '';
-    authDraft.name = name; authDraft.username = username; authDraft.mobile = mobile; authDraft.email = email;
-    authError = ''; verifyLinkError = ''; verifyLinkNotice = '';
-
-    // Resend on an already-verifying, unchanged email — no need to re-validate the whole form again.
-    if(pendingVerifyUser && pendingVerifyEmail===email){
-      if(verifyLinkSending || Date.now()<verifyLinkCooldownUntil) return;
-      verifyLinkSending = true;
-      renderLogin();
-      restorePasswordFields(password, confirm);
-      try{
-        await pendingVerifyUser.sendEmailVerification();
-        verifyLinkNotice = 'Verification link resent — check your inbox (and spam folder).';
-        verifyLinkCooldownUntil = Date.now() + 30000;
-      }catch(e){
-        verifyLinkError = 'Could not resend the link right now. Please try again shortly.';
-      }
-      verifyLinkSending = false;
-      renderLogin();
-      restorePasswordFields(password, confirm);
-      return;
-    }
-
-    // Fresh verification: validate the whole form, then actually create the account and email the link.
-    if(!name || !username || !mobile || !email || !password){ authError = 'Please fill in your name, username, mobile number, email, and password.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(!isValidMobile(mobile)){ authError = 'Mobile number must be exactly 10 digits.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(!isValidEmail(email)){ authError = 'Please enter a valid email address.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(password.length<6){ authError = 'Password must be at least 6 characters.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); restorePasswordFields(password, confirm); return; }
-    if(verifyLinkSending) return;
-    verifyLinkSending = true;
-    renderLogin();
-    restorePasswordFields(password, confirm);
-    try{
-      const usernameKey = username.toLowerCase();
-      const takenDoc = await db.collection('usernames').doc(usernameKey).get();
-      if(takenDoc.exists){ throw Object.assign(new Error('That username is already taken.'), { code:'auth/username-taken' }); }
-      const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
-      await cred.user.sendEmailVerification();
-      pendingVerifyUser = cred.user;
-      pendingVerifyEmail = email;
-      verifyLinkCooldownUntil = Date.now() + 30000;
-      verifyLinkNotice = 'Verification link sent — open it, then come back here and click Create Account.';
-      verifyLinkError = '';
-    }catch(err){
-      if(err.code==='auth/email-already-in-use'){
-        // Could be a genuinely different account — or this same person's own earlier attempt
-        // that never got finished (link never clicked, browser closed before Create Account).
-        // Try signing into it: if it's ours (no Firestore profile yet), resume instead of dead-ending.
-        try{
-          const cred2 = await fbAuth.signInWithEmailAndPassword(email, password);
-          const existingProfile = await db.collection('users').doc(cred2.user.uid).get();
-          if(existingProfile.exists){
-            await fbAuth.signOut();
-            verifyLinkError = 'That email is already registered to a completed account — try logging in instead.';
-          }else{
-            await cred2.user.reload();
-            if(!cred2.user.emailVerified){ try{ await cred2.user.sendEmailVerification(); }catch(e2){} }
-            pendingVerifyUser = cred2.user;
-            pendingVerifyEmail = email;
-            verifyLinkCooldownUntil = Date.now() + 30000;
-            verifyLinkNotice = 'You already started verifying this email — the link has been resent. Open it, then come back and click Create Account.';
-            verifyLinkError = '';
-          }
-        }catch(signInErr){
-          verifyLinkError = 'That email is already registered to another account.';
-        }
-      }else{
-        verifyLinkNotice = '';
-        verifyLinkError = err.code==='auth/username-taken' ? err.message : authErrorMessage(err, true);
-      }
-    }
-    verifyLinkSending = false;
-    renderLogin();
-    restorePasswordFields(password, confirm);
   });
 
   document.getElementById('forgotPasswordLink')?.addEventListener('click', ()=>{
@@ -4703,7 +4757,7 @@ function renderGateway(){
       authMode = 'login';
       authError = '';
       authDraft = { name:'', username:'', mobile:'', email:'' };
-      pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkCooldownUntil = 0;
+      pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkAwaiting = false; verifyLinkCooldownUntil = 0;
       verifyLinkNotice = ''; verifyLinkError = '';
       announcement = { message:'', active:false }; announcementDismissed = false;
       contactSupportOpen = false; contactSupportDraft = { subject:'', message:'' }; contactSupportNotice = '';
@@ -9685,6 +9739,20 @@ window.addEventListener('unhandledrejection', (e)=>{
   try{ const n = await window.storage.get('lastUsername'); lastUsername = n ? n.value : ''; }catch(e){ lastUsername = ''; }
   authMode = 'login';
   screen = 'login';
+  if(fbAuth.isSignInWithEmailLink(window.location.href)){
+    // Landed here from the "Verify Email" link — finish the passwordless sign-in before anything else.
+    await handleEmailLinkReturn();
+  }else{
+    // Not a link click — but if a signup was left mid-flight (link sent, not yet opened), resume
+    // showing that "check your inbox" state instead of a blank form.
+    const draft = await loadPendingSignupDraft();
+    if(draft){
+      authDraft = { name:draft.name||'', username:draft.username||'', mobile:draft.mobile||'', email:draft.email||'' };
+      authMode = 'signup';
+      pendingVerifyEmail = draft.email||'';
+      verifyLinkAwaiting = true;
+    }
+  }
   renderLogin();
   try{
     const rootSnap = { isRoot:true, screen:'login', view:null, authMode, companyId:null };
