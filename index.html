@@ -699,6 +699,8 @@ let contactSupportOpen = false; // whether the "Contact Support" mini-form is ex
 let contactSupportDraft = { subject:'', message:'' };
 let contactSupportSending = false;
 let contactSupportNotice = '';
+let helpTab = 'info';    // 'info' | 'tickets' — which section is active inside the tabbed Help modal
+let myTickets = [];      // cache of the current user's own support tickets, loaded when the Tickets tab opens
 let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; // settings/featureFlags doc
 let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
@@ -1064,6 +1066,13 @@ async function refreshSupportTickets(){
     supportTickets = snap.docs.map(d=>d.data()).sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
   }catch(err){ supportTickets = []; }
 }
+async function refreshMyTickets(){
+  if(!currentUser){ myTickets = []; return; }
+  try{
+    const snap = await db.collection('supportTickets').where('userId','==',currentUser.id).get();
+    myTickets = snap.docs.map(d=>d.data()).sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
+  }catch(err){ myTickets = []; }
+}
 function wireContactSupportHandlers(rerender){
   document.getElementById('contactSupportOpenBtn')?.addEventListener('click', ()=>{
     contactSupportOpen = true; contactSupportNotice = '';
@@ -1086,7 +1095,8 @@ function wireContactSupportHandlers(rerender){
       contactSupportOpen = false;
       contactSupportDraft = { subject:'', message:'' };
       contactSupportNotice = '';
-      toast('Message sent — thanks for the feedback!');
+      await refreshMyTickets();
+      toast('Ticket submitted — our team will get back to you here.');
     }catch(err){
       console.error('Submit support ticket failed:', err);
       toast('Could not send that — ' + (err && (err.code || err.message) || 'unknown error'));
@@ -3430,8 +3440,10 @@ function render(){
     modal = 'backup';
     render();
   });
-  document.getElementById('menuHelp').addEventListener('click', ()=>{
+  document.getElementById('menuHelp').addEventListener('click', async ()=>{
     modal = 'help';
+    helpTab = 'info';
+    if(currentUser && !currentUser.isAdmin) await refreshMyTickets();
     render();
   });
   document.getElementById('menuDeleteCompany').addEventListener('click', async ()=>{
@@ -3460,7 +3472,15 @@ function render(){
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; render(); });
   }
-  if(modal==='help'){ wireContactSupportHandlers(render); }
+  if(modal==='help'){
+    wireContactSupportHandlers(render);
+    document.querySelectorAll('[data-help-tab]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        helpTab = el.dataset.helpTab;
+        render();
+      });
+    });
+  }
   if(modal==='editCompany'){
     document.getElementById('editCoName').addEventListener('input', e=> editCoDraft.name = e.target.value);
     document.getElementById('editCoDirectory').addEventListener('input', e=> editCoDraft.directory = e.target.value);
@@ -3994,44 +4014,77 @@ function fyPickerModal(){
     </div>
   `;
 }
+function helpTabBtn(id, label){
+  const active = helpTab===id;
+  return `<button class="btn ${active?'':'secondary'} small" data-help-tab="${id}" type="button" style="border-radius:8px 8px 0 0;">${label}</button>`;
+}
 function helpModal(){
+  const showTickets = currentUser && !currentUser.isAdmin;
+  const openCount = showTickets ? myTickets.filter(t=>t.status!=='resolved').length : 0;
+  const activeTab = showTickets ? helpTab : 'info';
   return `
     <div class="modal-overlay" id="modalOverlayBg">
-      <div class="modal-card">
+      <div class="modal-card" style="width:640px;max-height:88vh;display:flex;flex-direction:column;">
         <div class="panel-head"><h2>Help</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
-        <div class="panel-body">
-          <p class="muted" style="font-size:12.5px;line-height:1.7;">
-            <strong style="color:var(--ink);">The Reckoning Books by SKm</strong> is a double-entry accounting workspace.<br><br>
-            • <strong style="color:var(--ink);">Voucher</strong> — record Payment, Receipt, Sales, Purchase, Journal, or Contra entries.<br>
-            • <strong style="color:var(--ink);">Day Book / Calendar</strong> — browse, edit, or delete past vouchers.<br>
-            • <strong style="color:var(--ink);">Ledgers</strong> — view running balances per account.<br>
-            • <strong style="color:var(--ink);">Accounts</strong> — manage your chart of accounts and GST rates.<br>
-            • <strong style="color:var(--ink);">Reports</strong> — Trial Balance, Income Statement and Balance Sheet in Schedule III (Division I) format, Ratio Analysis, Cash Flow — exportable to Excel.<br>
-            • <strong style="color:var(--ink);">GST</strong> — output/input tax summary and a downloadable GST statement.<br><br>
-            Use <strong style="color:var(--ink);">Company</strong> to switch companies, and <strong style="color:var(--ink);">Edit</strong> to update this company's name, financial year, or GSTIN.
-          </p>
-          <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
-            This software is created by Santhosh Kumar MuraliKrishnan.<br>
-            For support or feedback, contact the owner at <a href="mailto:thereckoningbooks@gmail.com" style="color:var(--accent1);font-weight:600;">thereckoningbooks@gmail.com</a>.
-          </p>
-          ${currentUser && !currentUser.isAdmin ? `
-          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
-            ${contactSupportOpen ? `
-              <label>Subject</label>
-              <input type="text" id="contactSupportSubject" placeholder="What's this about?" value="${escapeAttr(contactSupportDraft.subject)}">
-              <label style="margin-top:8px;">Message</label>
-              <textarea id="contactSupportMessage" rows="3" placeholder="Describe the issue or feedback…">${escapeHtml(contactSupportDraft.message)}</textarea>
-              ${contactSupportNotice ? `<p class="muted" style="font-size:11.5px;color:var(--accent1);margin-top:6px;">${escapeHtml(contactSupportNotice)}</p>` : ''}
-              <div style="display:flex;gap:8px;margin-top:10px;">
-                <button class="btn small" id="contactSupportSendBtn" type="button" ${contactSupportSending?'disabled':''}>${contactSupportSending?'Sending…':'Send'}</button>
-                <button class="btn secondary small" id="contactSupportCancelBtn" type="button">Cancel</button>
-              </div>
-            ` : `<button class="btn secondary small" id="contactSupportOpenBtn" type="button">💬 Contact Support</button>`}
-          </div>
-          ` : ''}
+        ${showTickets ? `
+        <div style="display:flex;gap:6px;padding:10px 18px 0;border-bottom:1px solid var(--border);">
+          ${helpTabBtn('info','Info')}
+          ${helpTabBtn('tickets','Raise a Ticket'+(openCount?` (${openCount})`:''))}
+        </div>
+        ` : ''}
+        <div class="panel-body" style="overflow-y:auto;flex:1;">
+          ${activeTab==='tickets' ? helpTicketsTab() : helpInfoTab()}
         </div>
       </div>
     </div>
+  `;
+}
+function helpInfoTab(){
+  return `
+    <p class="muted" style="font-size:12.5px;line-height:1.7;">
+      <strong style="color:var(--ink);">The Reckoning Books by SKm</strong> is a double-entry accounting workspace.<br><br>
+      • <strong style="color:var(--ink);">Voucher</strong> — record Payment, Receipt, Sales, Purchase, Journal, or Contra entries.<br>
+      • <strong style="color:var(--ink);">Day Book / Calendar</strong> — browse, edit, or delete past vouchers.<br>
+      • <strong style="color:var(--ink);">Ledgers</strong> — view running balances per account.<br>
+      • <strong style="color:var(--ink);">Accounts</strong> — manage your chart of accounts and GST rates.<br>
+      • <strong style="color:var(--ink);">Reports</strong> — Trial Balance, Income Statement and Balance Sheet in Schedule III (Division I) format, Ratio Analysis, Cash Flow — exportable to Excel.<br>
+      • <strong style="color:var(--ink);">GST</strong> — output/input tax summary and a downloadable GST statement.<br><br>
+      Use <strong style="color:var(--ink);">Company</strong> to switch companies, and <strong style="color:var(--ink);">Edit</strong> to update this company's name, financial year, or GSTIN.
+    </p>
+    <p class="muted" style="font-size:11.5px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+      This software is created by Santhosh Kumar MuraliKrishnan.<br>
+      For support or feedback, contact the owner at <a href="mailto:thereckoningbooks@gmail.com" style="color:var(--accent1);font-weight:600;">thereckoningbooks@gmail.com</a>.
+    </p>
+  `;
+}
+function helpTicketsTab(){
+  const statusPill = (s)=> s==='resolved' ? 'pos' : (s==='in_progress' ? '' : 'neg');
+  const statusLabel = (s)=> s==='in_progress' ? 'In Progress' : (s==='resolved' ? 'Resolved' : 'Open');
+  return `
+    <p class="muted" style="font-size:12px;margin-top:0;">Run into a problem, or have feedback? Raise a ticket below — our team will respond here, and you can track its status any time.</p>
+    <label>Subject</label>
+    <input type="text" id="contactSupportSubject" placeholder="What's this about?" value="${escapeAttr(contactSupportDraft.subject)}">
+    <label style="margin-top:8px;">Message</label>
+    <textarea id="contactSupportMessage" rows="3" placeholder="Describe the issue or feedback…">${escapeHtml(contactSupportDraft.message)}</textarea>
+    ${contactSupportNotice ? `<p class="muted" style="font-size:11.5px;color:var(--accent1);margin-top:6px;">${escapeHtml(contactSupportNotice)}</p>` : ''}
+    <button class="btn small" id="contactSupportSendBtn" type="button" style="margin-top:10px;" ${contactSupportSending?'disabled':''}>${contactSupportSending?'Sending…':'Submit Ticket'}</button>
+
+    <div class="section-title" style="margin-top:18px;">Your Tickets</div>
+    ${myTickets.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>Subject</th><th>Message</th><th>Status</th></tr>
+      ${myTickets.map(t=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.createdAt)}</td>
+        <td>${escapeHtml(t.subject||'—')}</td>
+        <td class="muted" style="font-size:11.5px;max-width:260px;">${escapeHtml(t.message||'')}
+          ${t.adminNote ? `<div class="muted" style="margin-top:6px;font-size:10.5px;border-top:1px dashed var(--border);padding-top:4px;"><strong>Reply:</strong> ${escapeHtml(t.adminNote)}</div>` : ''}
+        </td>
+        <td><span class="pill ${statusPill(t.status)}">${statusLabel(t.status)}</span></td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">You haven't raised any tickets yet.</div>`}
   `;
 }
 
@@ -4968,10 +5021,12 @@ function renderGateway(){
     servicesMenuOpen = false;
     renderGateway();
   });
-  document.getElementById('gwMenuHelp').addEventListener('click', ()=>{
+  document.getElementById('gwMenuHelp').addEventListener('click', async ()=>{
     fileMenuOpen = false;
     servicesMenuOpen = false;
     modal = 'help';
+    helpTab = 'info';
+    if(currentUser && !currentUser.isAdmin) await refreshMyTickets();
     renderGateway();
   });
   document.getElementById('gwMenuServices')?.addEventListener('click', (e)=>{
@@ -5037,7 +5092,15 @@ function renderGateway(){
       renderGateway();
     });
   }
-  if(modal==='help'){ wireContactSupportHandlers(renderGateway); }
+  if(modal==='help'){
+    wireContactSupportHandlers(renderGateway);
+    document.querySelectorAll('[data-help-tab]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        helpTab = el.dataset.helpTab;
+        renderGateway();
+      });
+    });
+  }
   if(modal==='adminPanel'){
     document.querySelectorAll('[data-admin-tab]').forEach(el=>{
       el.addEventListener('click', async ()=>{
