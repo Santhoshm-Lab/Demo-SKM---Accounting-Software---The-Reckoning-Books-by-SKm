@@ -4032,7 +4032,7 @@ function helpModal(){
           ${helpTabBtn('tickets','Raise a Ticket'+(openCount?` (${openCount})`:''))}
         </div>
         ` : ''}
-        <div class="panel-body" style="overflow-y:auto;flex:1;">
+        <div class="panel-body" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
           ${activeTab==='tickets' ? helpTicketsTab() : helpInfoTab()}
         </div>
       </div>
@@ -5681,7 +5681,7 @@ function adminPanelModal(){
           ${adminTabBtn('settings','Settings')}
           ${adminTabBtn('auditLog','Audit Log')}
         </div>
-        <div class="panel-body" style="overflow-y:auto;flex:1;">
+        <div class="panel-body" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
           ${!isFullAdmin() ? `<p class="muted" style="font-size:11.5px;background:var(--surface-strong);padding:8px 12px;border-radius:6px;margin-bottom:14px;">You're signed in as <strong>Support</strong> — you can view and assist accounts, but role changes, deletions, reassignments, and platform settings are limited to a full Administrator.</p>` : ''}
           ${adminTab==='overview' ? adminOverviewTab() : ''}
           ${adminTab==='users' ? adminUsersTab() : ''}
@@ -6043,7 +6043,7 @@ function adminUserDetailModal(){
     <div class="modal-overlay" id="userDetailOverlayBg">
       <div class="modal-card" style="width:92vw;max-width:640px;max-height:86vh;display:flex;flex-direction:column;">
         <div class="panel-head"><h2>${escapeHtml(u.name)}</h2><button class="btn secondary small" id="userDetailClose" type="button">✕</button></div>
-        <div style="overflow-y:auto;flex:1;">
+        <div style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
           <div class="grid" style="grid-template-columns:repeat(2,1fr);">
             <div class="stat"><div class="label">Username</div><div class="val" style="font-size:15px;">@${escapeHtml(u.username)}</div></div>
             <div class="stat"><div class="label">Role</div><div class="val" style="font-size:15px;">${u.role==='admin'?'Admin':(u.role==='support'?'Support':'User')}</div></div>
