@@ -544,6 +544,14 @@ let contactSupportNotice = '';
 let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; // settings/featureFlags doc
 let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
+/* ---- Admin Panel additions: Companies search/export, Analytics range, Users bulk actions +
+   drill-down, Audit Log search/filter ---- */
+let adminCompanySearch = '';    // search box text on the Companies tab (matches name/owner)
+let adminAnalyticsRangeDays = 30; // 7 | 30 | 90 | 365 — drives both the signup trend and the active/dormant window on the Analytics tab
+let selectedUserIds = {};       // uid -> true, for the Users tab's bulk-action checkboxes (session-only, like every other draft state here)
+let adminUserDetailId = null;   // uid whose drill-down modal (companies + account info) is open, stacked above the Admin Panel
+let adminAuditSearch = '';      // search box text on the Audit Log tab (matches actor/action/target/detail)
+let adminAuditRangeDays = 'all'; // 'all' | 1 | 7 | 30 — date-range filter on the Audit Log tab
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let cfDetailBucket = null;   // which Cash Flow bucket (operating/investing/financing) was clicked, for the detail modal
 let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
@@ -714,6 +722,50 @@ function ownerLabelFor(company){
   const owner = users.find(u=>u.id===company.ownerId);
   return owner ? `${owner.name} (${owner.username})` : 'Orphaned — owner account no longer exists';
 }
+// Most recent voucher date across a company's books, or null if it has none yet — the "Last
+// Activity" column on the Companies tab.
+function companyLastActivity(company){
+  const vouchers = Array.isArray(company.vouchers) ? company.vouchers : [];
+  let latest = null;
+  for(const v of vouchers){ if(v.date && (!latest || v.date>latest)) latest = v.date; }
+  return latest;
+}
+// Approximate on-disk size of one company's Firestore document — every array (ledgers, vouchers,
+// items, etc.) is embedded directly on the doc (see the data-model note near loadAdminPanelData()),
+// so JSON-stringifying the in-memory object is a fair stand-in for what Firestore actually stores;
+// there's no client-readable per-document size API to read the real figure from.
+function companyStorageBytes(company){
+  try{ return new Blob([JSON.stringify(company)]).size; }
+  catch(e){ return 0; }
+}
+function fmtBytes(n){
+  if(!n) return '0 KB';
+  if(n < 1024*1024) return (n/1024).toFixed(1)+' KB';
+  return (n/(1024*1024)).toFixed(2)+' MB';
+}
+function adminFilteredCompanies(){
+  const q = adminCompanySearch.trim().toLowerCase();
+  if(!q) return companies;
+  return companies.filter(c=>
+    (c.name||'').toLowerCase().includes(q) ||
+    ownerLabelFor(c).toLowerCase().includes(q)
+  );
+}
+// Downloads one company's full data (ledgers, vouchers, items, everything embedded on its
+// Firestore doc) as a standalone JSON file — the per-row companion to exportAllDataJSON() below.
+function exportCompanyDataJSON(company){
+  try{
+    const payload = { exportedAt: new Date().toISOString(), company };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = (company.name||'company').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+    a.href = url; a.download = `${safeName || 'company'}-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    return true;
+  }catch(e){ return false; }
+}
 async function loadAnnouncementForUser(){
   try{
     const doc = await db.collection('settings').doc('announcement').get();
@@ -725,6 +777,25 @@ async function refreshAuditLog(){
     const logSnap = await db.collection('auditLog').get();
     auditLog = logSnap.docs.map(d=>d.data()).sort((a,b)=> (b.at||'').localeCompare(a.at||'')).slice(0,200);
   }catch(err){ auditLog = []; }
+}
+// Search (actor/action/target/detail) + date-range filter for the Audit Log tab — client-side only,
+// over whatever refreshAuditLog() already cached (the last 200 events).
+function adminFilteredAuditLog(){
+  let list = auditLog;
+  if(adminAuditRangeDays!=='all'){
+    const cutoff = Date.now() - Number(adminAuditRangeDays)*24*60*60*1000;
+    list = list.filter(e=>{ const t = e.at ? new Date(e.at).getTime() : NaN; return !isNaN(t) && t>=cutoff; });
+  }
+  const q = adminAuditSearch.trim().toLowerCase();
+  if(q){
+    list = list.filter(e=>
+      (e.actorName||'').toLowerCase().includes(q) ||
+      (e.action||'').toLowerCase().includes(q) ||
+      (e.targetName||'').toLowerCase().includes(q) ||
+      (e.detail||'').toLowerCase().includes(q)
+    );
+  }
+  return list;
 }
 async function loadAdminPanelData(){
   try{
@@ -759,26 +830,43 @@ function roleLabel(u){
 
 /* ---------------- Analytics tab (computed client-side from users/companies already in memory —
    no extra reads needed since the admin's loadAdminPanelData() already pulls every document). ---------------- */
-function computeAnalytics(){
+// rangeDays drives both the signup trend window and the active/dormant cutoff — the Analytics tab's
+// date-range select (7/30/90/365 days) passes it straight through. Signups bucket by day for a
+// 7- or 30-day window (up to 30 bars); a 90- or 365-day window buckets by week instead, so the
+// trend chart never has to draw more than about 13-53 points.
+function computeAnalytics(rangeDays){
+  rangeDays = rangeDays || 30;
   const realUsers = users.filter(u=>u.role!=='admin' && u.role!=='support');
   const realCompanies = companies.filter(c=>!isSharedDemoId(c.id));
   const now = Date.now();
   const dayMs = 24*60*60*1000;
 
-  // Signups per day for the last 14 days (oldest first)
   const signupTrend = [];
-  for(let i=13;i>=0;i--){
-    const dayStart = now - i*dayMs;
-    const key = new Date(dayStart).toISOString().slice(0,10);
-    const count = realUsers.filter(u=> (u.createdAt||'').slice(0,10)===key).length;
-    signupTrend.push({ label: key.slice(5), count });
+  if(rangeDays<=30){
+    for(let i=rangeDays-1;i>=0;i--){
+      const dayStart = now - i*dayMs;
+      const key = new Date(dayStart).toISOString().slice(0,10);
+      const count = realUsers.filter(u=> (u.createdAt||'').slice(0,10)===key).length;
+      signupTrend.push({ label: key.slice(5), count });
+    }
+  } else {
+    const weeks = Math.ceil(rangeDays/7);
+    for(let w=weeks-1;w>=0;w--){
+      const weekEnd = now - w*7*dayMs;
+      const weekStart = weekEnd - 7*dayMs;
+      const count = realUsers.filter(u=>{
+        const t = u.createdAt ? new Date(u.createdAt).getTime() : NaN;
+        return !isNaN(t) && t>weekStart && t<=weekEnd;
+      }).length;
+      signupTrend.push({ label: new Date(weekEnd).toISOString().slice(5,10), count });
+    }
   }
 
-  // Active vs dormant companies: "active" = at least one voucher dated within the last 30 days
+  // Active vs dormant companies: "active" = at least one voucher dated within the selected window
   let active = 0, dormant = 0;
   for(const c of realCompanies){
     const vouchers = Array.isArray(c.vouchers) ? c.vouchers : [];
-    const recent = vouchers.some(v=> v.date && (now - new Date(v.date).getTime()) <= 30*dayMs);
+    const recent = vouchers.some(v=> v.date && (now - new Date(v.date).getTime()) <= rangeDays*dayMs);
     if(recent) active++; else dormant++;
   }
 
@@ -797,6 +885,18 @@ function computeAnalytics(){
     .slice(0,5);
 
   return { signupTrend, active, dormant, voucherTypes, topCompanies };
+}
+// Free / Paid (active) / Paid (expired) / Lifetime counts across every real (non-admin, non-support)
+// user — the Plan Distribution chart on the Analytics tab.
+function planDistribution(){
+  const realUsers = users.filter(u=>u.role!=='admin' && u.role!=='support');
+  let free=0, paid=0, expired=0, lifetime=0;
+  for(const u of realUsers){
+    if(u.plan==='lifetime') lifetime++;
+    else if(u.plan==='paid') isPlanExpired(u) ? expired++ : paid++;
+    else free++;
+  }
+  return { free, paid, expired, lifetime, total: realUsers.length };
 }
 
 /* ---------------- Support tickets ---------------- */
@@ -895,6 +995,14 @@ async function refreshErrorLog(){
     const snap = await db.collection('errorLog').get();
     errorLog = snap.docs.map(d=>d.data()).sort((a,b)=> (b.at||'').localeCompare(a.at||'')).slice(0,100);
   }catch(err){ errorLog = []; }
+}
+// Permanently removes one client error-log entry — for clearing noise (a since-fixed bug, a
+// one-off fluke) rather than leaving every error ever captured piling up in the table forever.
+async function dismissErrorLogEntry(id){
+  try{ await db.collection('errorLog').doc(id).delete(); }
+  catch(e){ toast('Could not dismiss that entry'); return false; }
+  errorLog = errorLog.filter(x=>x.id!==id);
+  return true;
 }
 async function exportAllDataJSON(){
   try{
@@ -4465,6 +4573,7 @@ function renderGateway(){
     <div class="rb-credit">Created by <strong>SKm</strong></div>
     ${modal==='help' ? helpModal() : ''}
     ${modal==='adminPanel' ? adminPanelModal() : ''}
+    ${modal==='adminPanel' && adminUserDetailId ? adminUserDetailModal() : ''}
       </div>
     </div>
   `;
@@ -4608,12 +4717,14 @@ function renderGateway(){
       if(e.target.id==='modalOverlayBg'){
         modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
         editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
+        adminUserDetailId = null; selectedUserIds = {};
         renderGateway();
       }
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{
       modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
       editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
+      adminUserDetailId = null; selectedUserIds = {};
       renderGateway();
     });
   }
@@ -4623,6 +4734,7 @@ function renderGateway(){
       el.addEventListener('click', async ()=>{
         adminTab = el.dataset.adminTab;
         editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null; editingTicketId = null;
+        adminUserDetailId = null; selectedUserIds = {};
         if(adminTab==='auditLog') await refreshAuditLog();
         if(adminTab==='support') await refreshSupportTickets();
         if(adminTab==='settings') await refreshErrorLog();
@@ -4876,14 +4988,127 @@ function renderGateway(){
         }
       });
     });
+    document.getElementById('selectAllUsersCheckbox')?.addEventListener('change', (e)=>{
+      const list = adminFilteredSortedUsers().filter(u=> !(currentUser && u.id===currentUser.id));
+      if(e.target.checked){ list.forEach(u=>{ selectedUserIds[u.id] = true; }); }
+      else { list.forEach(u=>{ delete selectedUserIds[u.id]; }); }
+      renderGateway();
+    });
+    document.querySelectorAll('[data-select-user]').forEach(el=>{
+      el.addEventListener('change', (e)=>{
+        const uid = el.dataset.selectUser;
+        if(e.target.checked) selectedUserIds[uid] = true; else delete selectedUserIds[uid];
+        renderGateway();
+      });
+    });
+    document.getElementById('clearSelectionBtn')?.addEventListener('click', ()=>{
+      selectedUserIds = {};
+      renderGateway();
+    });
+    document.querySelectorAll('[data-bulk-status]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const nextBlocked = el.dataset.bulkStatus === 'blocked';
+        const uids = Object.keys(selectedUserIds).filter(id=>selectedUserIds[id] && !(currentUser && id===currentUser.id));
+        if(!uids.length) return;
+        const ok = window.confirm(`${nextBlocked?'Block':'Unblock'} ${uids.length} account${uids.length===1?'':'s'}?`);
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          for(const uid of uids){
+            await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
+            const u = users.find(x=>x.id===uid);
+            if(u) u.blocked = nextBlocked;
+            await logAudit(nextBlocked?'account_blocked':'account_unblocked', 'Bulk action', uid, u?u.name:uid);
+          }
+          selectedUserIds = {};
+          toast(`${uids.length} account${uids.length===1?'':'s'} ${nextBlocked?'blocked':'unblocked'}`);
+          renderGateway();
+        }catch(err){
+          console.error('Bulk status update failed:', err);
+          toast('Could not update those accounts — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-bulk-delete]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        if(!isFullAdmin()){ toast('Only a full Administrator can delete accounts.'); return; }
+        const uids = Object.keys(selectedUserIds).filter(id=>selectedUserIds[id] && !(currentUser && id===currentUser.id));
+        if(!uids.length) return;
+        const targets = uids.map(uid=>users.find(x=>x.id===uid)).filter(Boolean);
+        const totalCompanies = targets.reduce((s,u)=>s+companies.filter(c=>c.ownerId===u.id).length, 0);
+        const ok = window.confirm(
+          `Delete ${targets.length} account${targets.length===1?'':'s'}?\n\n`+
+          `This permanently deletes their profiles and frees up their usernames, along with `+
+          `${totalCompanies} compan${totalCompanies===1?'y':'ies'} they own and all its ledgers/vouchers.\n\n`+
+          `This cannot be undone.`
+        );
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          for(const u of targets){
+            const ownedCompanies = companies.filter(c=>c.ownerId===u.id);
+            for(const c of ownedCompanies){
+              await db.collection('companies').doc(c.id).delete();
+            }
+            if(u.usernameLower){
+              try{ await db.collection('usernames').doc(u.usernameLower).delete(); }catch(e){}
+            }
+            await db.collection('users').doc(u.id).delete();
+            users = users.filter(x=>x.id!==u.id);
+            companies = companies.filter(c=>c.ownerId!==u.id);
+            await logAudit('account_deleted', `Deleted account @${u.username} and ${ownedCompanies.length} compan${ownedCompanies.length===1?'y':'ies'} (bulk action)`, u.id, u.name);
+          }
+          selectedUserIds = {};
+          toast(`${targets.length} account${targets.length===1?'':'s'} deleted`);
+          renderGateway();
+        }catch(err){
+          console.error('Bulk delete failed:', err);
+          toast('Could not delete those accounts — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-view-user-detail]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        adminUserDetailId = el.dataset.viewUserDetail;
+        renderGateway();
+      });
+    });
+  }
+  if(modal==='adminPanel' && adminUserDetailId){
+    document.getElementById('userDetailOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='userDetailOverlayBg'){ adminUserDetailId = null; renderGateway(); }
+    });
+    document.getElementById('userDetailClose')?.addEventListener('click', ()=>{
+      adminUserDetailId = null;
+      renderGateway();
+    });
   }
   if(modal==='adminPanel' && adminTab==='companies'){
+    document.getElementById('adminCompanySearchInput')?.addEventListener('input', (e)=>{
+      adminCompanySearch = e.target.value;
+      const caret = e.target.selectionStart;
+      renderGateway();
+      const el = document.getElementById('adminCompanySearchInput');
+      if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
     document.querySelectorAll('[data-view-company]').forEach(el=>{
       el.addEventListener('click', async ()=>{
         const cid = el.dataset.viewCompany;
         const c = companies.find(x=>x.id===cid);
         if(!c) return;
+        await logAudit('company_viewed', `Opened "${c.name}" in read-only View mode`, cid, c.name);
         await enterCompanyApp(c, {adminViewOnly:true});
+      });
+    });
+    document.querySelectorAll('[data-export-company]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const cid = el.dataset.exportCompany;
+        const c = companies.find(x=>x.id===cid);
+        if(!c) return;
+        const ok = exportCompanyDataJSON(c);
+        toast(ok ? 'Export downloaded' : 'Could not export that company');
       });
     });
     document.querySelectorAll('[data-reassign-company]').forEach(el=>{
@@ -4923,6 +5148,13 @@ function renderGateway(){
         }
       });
     });
+  }
+  if(modal==='adminPanel' && adminTab==='analytics'){
+    document.getElementById('adminAnalyticsRangeSelect')?.addEventListener('change', (e)=>{
+      adminAnalyticsRangeDays = Number(e.target.value);
+      renderGateway();
+    });
+    wireVizInteractivity();
   }
   if(modal==='adminPanel' && adminTab==='support'){
     document.getElementById('ticketStatusFilterSelect')?.addEventListener('change', (e)=>{
@@ -5010,6 +5242,47 @@ function renderGateway(){
       btn.disabled = false; btn.textContent = '⬇ Export All Data (JSON)';
       toast('Export downloaded');
     });
+    document.querySelectorAll('[data-dismiss-error]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const id = el.dataset.dismissError;
+        el.disabled = true;
+        const ok = await dismissErrorLogEntry(id);
+        if(ok){ toast('Entry dismissed'); renderGateway(); }
+        else el.disabled = false;
+      });
+    });
+    document.getElementById('copyFirestoreRulesBtn')?.addEventListener('click', async ()=>{
+      try{
+        await navigator.clipboard.writeText(RECOMMENDED_FIRESTORE_RULES);
+        toast('Rules copied to clipboard');
+      }catch(err){
+        // Clipboard API can be blocked (no HTTPS, permissions, etc.) — fall back to a text selection.
+        const pre = document.getElementById('firestoreRulesBlock');
+        if(pre){
+          const range = document.createRange();
+          range.selectNodeContents(pre);
+          const sel = window.getSelection();
+          sel.removeAllRanges(); sel.addRange(range);
+          toast('Could not auto-copy — text selected, press Ctrl/Cmd+C');
+        } else {
+          toast('Could not copy the rules');
+        }
+      }
+    });
+  }
+  if(modal==='adminPanel' && adminTab==='auditLog'){
+    document.getElementById('adminAuditSearchInput')?.addEventListener('input', (e)=>{
+      adminAuditSearch = e.target.value;
+      const caret = e.target.selectionStart;
+      renderGateway();
+      const el = document.getElementById('adminAuditSearchInput');
+      if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
+    document.getElementById('adminAuditRangeSelect')?.addEventListener('change', (e)=>{
+      const v = e.target.value;
+      adminAuditRangeDays = v==='all' ? 'all' : Number(v);
+      renderGateway();
+    });
   }
 }
 function fileDropdown(){
@@ -5079,37 +5352,52 @@ function adminOverviewTab(){
     ` : `<div class="empty">None found — everything is tidy.</div>`}
   `;
 }
-function analyticsBar(label, count, max){
-  const pct = max>0 ? Math.max(3, Math.round((count/max)*100)) : 0;
-  return `
-    <div style="display:flex;align-items:center;gap:10px;font-size:11.5px;padding:3px 0;">
-      <span class="muted" style="width:52px;flex-shrink:0;">${escapeHtml(label)}</span>
-      <div style="flex:1;background:var(--surface-strong);border-radius:4px;height:14px;overflow:hidden;">
-        <div style="width:${pct}%;height:100%;background:var(--accent1);border-radius:4px;"></div>
-      </div>
-      <span style="width:28px;text-align:right;font-weight:700;color:var(--ink);flex-shrink:0;">${count}</span>
-    </div>
-  `;
-}
+const ADMIN_RANGE_LABELS = { 7:'7 days', 30:'30 days', 90:'90 days', 365:'365 days' };
 function adminAnalyticsTab(){
-  const a = computeAnalytics();
-  const maxSignup = Math.max(1, ...a.signupTrend.map(d=>d.count));
-  const maxVoucherType = Math.max(1, ...a.voucherTypes.map(v=>v.count));
-  const maxCompanyVouchers = Math.max(1, ...a.topCompanies.map(c=>c.count));
+  const a = computeAnalytics(adminAnalyticsRangeDays);
+  const plans = planDistribution();
+  const rangeLabel = ADMIN_RANGE_LABELS[adminAnalyticsRangeDays] || `${adminAnalyticsRangeDays} days`;
+
+  const signupCategories = a.signupTrend.map(d=>({key:d.label, label:d.label}));
+  const signupSeries = [{ key:'signups', label:'Signups', color:VIZ_COLORS[1],
+    values: Object.fromEntries(a.signupTrend.map(d=>[d.label, d.count])) }];
+
+  const voucherTypeItems = a.voucherTypes.map((v,i)=>({ label:v.type, value:v.count, display:String(v.count), color:VIZ_COLORS[i%VIZ_COLORS.length] }));
+  const topCompanyItems = a.topCompanies.map((c,i)=>({ label: c.name.length>22?c.name.slice(0,21)+'…':c.name, value:c.count, display:String(c.count), color:VIZ_COLORS[i%VIZ_COLORS.length] }));
+
+  const planSegments = [
+    { label:'Free', value:plans.free, color:VIZ_COLORS[1] },
+    { label:'Paid', value:plans.paid, color:VIZ_COLORS[0] },
+    { label:'Lifetime', value:plans.lifetime, color:VIZ_COLORS[3] },
+    { label:'Expired', value:plans.expired, color:VIZ_COLORS[4] },
+  ];
+
   return `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+      <span class="muted" style="font-size:12px;">Window applies to Active/Dormant and the signup trend below.</span>
+      <select id="adminAnalyticsRangeSelect" style="max-width:160px;">
+        <option value="7" ${adminAnalyticsRangeDays===7?'selected':''}>Last 7 days</option>
+        <option value="30" ${adminAnalyticsRangeDays===30?'selected':''}>Last 30 days</option>
+        <option value="90" ${adminAnalyticsRangeDays===90?'selected':''}>Last 90 days</option>
+        <option value="365" ${adminAnalyticsRangeDays===365?'selected':''}>Last 365 days</option>
+      </select>
+    </div>
     <div class="grid" style="grid-template-columns:repeat(2,1fr);">
-      <div class="stat"><div class="label">Active Companies (30d)</div><div class="val pos">${a.active}</div></div>
+      <div class="stat"><div class="label">Active Companies (${rangeLabel})</div><div class="val pos">${a.active}</div></div>
       <div class="stat"><div class="label">Dormant Companies</div><div class="val ${a.dormant?'neg':''}">${a.dormant}</div></div>
     </div>
 
-    <div class="section-title" style="margin-top:6px;">Signups — last 14 days</div>
-    ${a.signupTrend.every(d=>d.count===0) ? `<div class="empty">No signups in this window yet.</div>` : a.signupTrend.map(d=>analyticsBar(d.label, d.count, maxSignup)).join('')}
+    <div class="section-title" style="margin-top:6px;">Signups — last ${rangeLabel}</div>
+    ${a.signupTrend.every(d=>d.count===0) ? `<div class="empty">No signups in this window yet.</div>` : svgClusteredColumnChart(signupCategories, signupSeries)}
+
+    <div class="section-title">Plan Distribution</div>
+    ${plans.total ? svgStackedBar(planSegments) : `<div class="empty">No accounts yet.</div>`}
 
     <div class="section-title">Voucher types (all companies)</div>
-    ${a.voucherTypes.length ? a.voucherTypes.map(v=>analyticsBar(v.type, v.count, maxVoucherType)).join('') : `<div class="empty">No vouchers recorded yet.</div>`}
+    ${voucherTypeItems.length ? svgHBarChart(voucherTypeItems, {width:560}) : `<div class="empty">No vouchers recorded yet.</div>`}
 
     <div class="section-title">Most active companies</div>
-    ${a.topCompanies.length ? a.topCompanies.map(c=>analyticsBar(c.name.length>18?c.name.slice(0,17)+'…':c.name, c.count, maxCompanyVouchers)).join('') : `<div class="empty">No companies yet.</div>`}
+    ${topCompanyItems.length ? svgHBarChart(topCompanyItems, {width:560, labelWidth:200}) : `<div class="empty">No companies yet.</div>`}
   `;
 }
 function adminSupportTab(){
@@ -5157,6 +5445,53 @@ function adminSupportTab(){
     ` : `<div class="empty">No support tickets${ticketStatusFilter!=='all'?' with this status':''} yet.</div>`}
   `;
 }
+// Reference-only — shown (with a copy button) on the Settings tab. This app talks to Firestore
+// directly from the browser via the client SDK, which has no API to deploy security rules, so this
+// is never applied automatically; an admin has to paste it into the Firebase Console themselves.
+const RECOMMENDED_FIRESTORE_RULES = `rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    function isOwnerUid(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function myRole() { return isSignedIn() ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : null; }
+    function isSupportOrAdmin() { return myRole() == 'support' || myRole() == 'admin'; }
+    function isAdmin() { return myRole() == 'admin'; }
+
+    match /users/{uid} {
+      allow read: if isOwnerUid(uid) || isSupportOrAdmin();
+      allow create: if isOwnerUid(uid);
+      allow update: if isOwnerUid(uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+    match /usernames/{name} {
+      allow read, write: if isSignedIn();
+    }
+    match /companies/{cid} {
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isSupportOrAdmin());
+      allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+    }
+    match /auditLog/{id} {
+      allow read, create: if isSupportOrAdmin();
+      allow update, delete: if false;
+    }
+    match /errorLog/{id} {
+      allow read, delete: if isSupportOrAdmin();
+      allow create: if isSignedIn();
+      allow update: if false;
+    }
+    match /supportTickets/{id} {
+      allow read: if isSupportOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSupportOrAdmin();
+      allow delete: if isAdmin();
+    }
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}`;
 function adminSettingsTab(){
   return `
     <div class="section-title" style="margin-top:0;">Feature Flags</div>
@@ -5181,15 +5516,27 @@ function adminSettingsTab(){
     ${errorLog.length ? `
     <div style="overflow-x:auto;">
     <table>
-      <tr><th>When</th><th>User</th><th>Message</th></tr>
+      <tr><th>When</th><th>User</th><th>Message</th><th></th></tr>
       ${errorLog.map(e=>`<tr>
         <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
         <td class="muted">${escapeHtml(e.userName||'—')}</td>
         <td style="font-size:11.5px;">${escapeHtml(e.message||'')}</td>
+        <td><button class="btn secondary small" data-dismiss-error="${escapeAttr(e.id)}" type="button">Dismiss</button></td>
       </tr>`).join('')}
     </table>
     </div>
     ` : `<div class="empty">No client errors recorded — clean bill of health.</div>`}
+
+    <div class="section-title">Recommended Firestore Security Rules</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">
+      Reference only — this app talks to Firestore straight from the browser (the client SDK), which
+      cannot deploy security rules. Copy these into the <strong>Rules</strong> tab of the Firebase
+      Console for this project yourself.
+    </p>
+    <div style="position:relative;">
+      <button class="btn secondary small" id="copyFirestoreRulesBtn" type="button" style="position:absolute;top:8px;right:8px;">Copy</button>
+      <pre id="firestoreRulesBlock" style="background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:11px;line-height:1.5;overflow-x:auto;margin-top:8px;white-space:pre;">${escapeHtml(RECOMMENDED_FIRESTORE_RULES)}</pre>
+    </div>
   `;
 }
 function adminFilteredSortedUsers(){
@@ -5214,15 +5561,28 @@ function adminFilteredSortedUsers(){
 function adminUsersTab(){
   const list = adminFilteredSortedUsers();
   const arrow = (key)=> adminUserSort===key ? (adminUserSortDir==='asc'?' ▲':' ▼') : '';
+  const selectableList = list.filter(u=> !(currentUser && u.id===currentUser.id));
+  const selectedCount = Object.keys(selectedUserIds).filter(id=>selectedUserIds[id]).length;
+  const allVisibleSelected = selectableList.length>0 && selectableList.every(u=>selectedUserIds[u.id]);
   return `
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
       <input type="text" id="adminUserSearchInput" placeholder="Search name, username, email or mobile…" value="${escapeAttr(adminUserSearch)}" style="max-width:280px;">
       <span class="muted" style="font-size:12px;">${list.length} of ${users.length} account${users.length===1?'':'s'}</span>
     </div>
+    ${selectedCount ? `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;">
+      <strong style="font-size:12px;">${selectedCount} selected</strong>
+      <button class="btn secondary small" data-bulk-status="active" type="button">Unblock</button>
+      <button class="btn secondary small" data-bulk-status="blocked" type="button">Block</button>
+      <button class="btn secondary small" data-bulk-delete type="button" style="color:var(--debit);" ${isFullAdmin()?'':'disabled'} title="${isFullAdmin()?'':'Only a full Administrator can bulk-delete accounts'}">Delete</button>
+      <button class="btn secondary small" id="clearSelectionBtn" type="button">Clear</button>
+    </div>
+    ` : ''}
     ${list.length ? `
     <div style="overflow-x:auto;">
     <table>
       <tr>
+        <th><input type="checkbox" id="selectAllUsersCheckbox" ${allVisibleSelected?'checked':''}></th>
         <th>#</th>
         <th data-admin-sort="name" style="cursor:pointer;">Account${arrow('name')}</th>
         <th>Mobile</th>
@@ -5239,6 +5599,7 @@ function adminUsersTab(){
         const isEditing = editingUserId===u.id;
         const isEditingPlan = editingPlanUserId===u.id;
         return `<tr>
+          <td><input type="checkbox" data-select-user="${escapeAttr(u.id)}" ${selectedUserIds[u.id]?'checked':''} ${isSelf?'disabled':''} title="${isSelf?'Your own account is excluded from bulk actions':''}"></td>
           <td class="muted">${i+1}</td>
           <td>
             ${isEditing ? `<input type="text" data-edit-name="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.name)}" style="margin-bottom:4px;">` : escapeHtml(u.name)}
@@ -5279,6 +5640,7 @@ function adminUsersTab(){
                 <button class="btn small" data-save-user="${escapeAttr(u.id)}" type="button">Save</button>
                 <button class="btn secondary small" id="cancelEditUserBtn" type="button">Cancel</button>
               ` : `<button class="btn secondary small" data-edit-user="${escapeAttr(u.id)}" type="button">Edit</button>`}
+              <button class="btn secondary small" data-view-user-detail="${escapeAttr(u.id)}" type="button">Details</button>
               <button class="btn secondary small" data-reset-password="${escapeAttr(u.id)}" type="button" ${u.email?'':'disabled'}>Reset Password</button>
               <button class="btn secondary small" data-force-logout="${escapeAttr(u.id)}" type="button" ${isSelf?'disabled':''}>Force Logout</button>
               <select data-role-select="${escapeAttr(u.id)}" ${isSelf||!isFullAdmin()?'disabled':''} style="width:auto;">
@@ -5297,20 +5659,76 @@ function adminUsersTab(){
     ` : `<div class="empty">${adminUserSearch ? 'No accounts match your search.' : 'No accounts have been created yet.'}</div>`}
   `;
 }
-function adminCompaniesTab(){
+// Per-user drill-down — stacked above the Admin Panel (adminUserDetailId, not the `modal` variable,
+// so it can layer on top of whichever admin tab is open underneath). Shows account info plus the
+// companies this user owns; there's no login-history array in the data model, only a single
+// lastLoginAt field, so that's the one login-related fact shown.
+function adminUserDetailModal(){
+  const u = users.find(x=>x.id===adminUserDetailId);
+  if(!u) return '';
+  const owned = companies.filter(c=>c.ownerId===u.id);
   return `
+    <div class="modal-overlay" id="userDetailOverlayBg">
+      <div class="modal-card" style="width:92vw;max-width:640px;max-height:86vh;display:flex;flex-direction:column;">
+        <div class="panel-head"><h2>${escapeHtml(u.name)}</h2><button class="btn secondary small" id="userDetailClose" type="button">✕</button></div>
+        <div style="overflow-y:auto;flex:1;">
+          <div class="grid" style="grid-template-columns:repeat(2,1fr);">
+            <div class="stat"><div class="label">Username</div><div class="val" style="font-size:15px;">@${escapeHtml(u.username)}</div></div>
+            <div class="stat"><div class="label">Role</div><div class="val" style="font-size:15px;">${u.role==='admin'?'Admin':(u.role==='support'?'Support':'User')}</div></div>
+            <div class="stat"><div class="label">Plan</div><div class="val" style="font-size:15px;">${planLabel(u)}</div></div>
+            <div class="stat"><div class="label">Status</div><div class="val" style="font-size:15px;">${u.blocked?'Blocked':'Active'}</div></div>
+          </div>
+          <table style="margin-top:12px;">
+            <tr><th>Mobile</th><td>${escapeHtml(u.mobile||'—')}</td></tr>
+            <tr><th>Email</th><td>${escapeHtml(u.email||'—')}</td></tr>
+            <tr><th>Signed Up</th><td>${fmtTimestamp(u.createdAt)}</td></tr>
+            <tr><th>Last Active</th><td>${u.lastLoginAt ? fmtTimestamp(u.lastLoginAt) : '—'}</td></tr>
+          </table>
+          <div class="section-title">Companies (${owned.length})</div>
+          ${owned.length ? `
+          <table>
+            <tr><th>Company</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th></tr>
+            ${owned.map(c=>{
+              const lastActivity = companyLastActivity(c);
+              return `<tr>
+                <td>${escapeHtml(c.name)}</td>
+                <td class="num">${(c.ledgers||[]).length}</td>
+                <td class="num">${(c.vouchers||[]).length}</td>
+                <td class="muted" style="font-size:11px;">${lastActivity ? escapeHtml(lastActivity) : '—'}</td>
+              </tr>`;
+            }).join('')}
+          </table>
+          ` : `<div class="empty">Owns no companies.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function adminCompaniesTab(){
+  const list = adminFilteredCompanies();
+  return `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="text" id="adminCompanySearchInput" placeholder="Search company or owner…" value="${escapeAttr(adminCompanySearch)}" style="max-width:280px;">
+      <span class="muted" style="font-size:12px;">${list.length} of ${companies.length} compan${companies.length===1?'y':'ies'}</span>
+    </div>
+    ${list.length ? `
     <div style="overflow-x:auto;">
     <table>
-      <tr><th>#</th><th>Company</th><th>Owner</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Actions</th></tr>
-      ${companies.map((c,i)=>`<tr>
+      <tr><th>#</th><th>Company</th><th>Owner</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th><th>Storage</th><th>Actions</th></tr>
+      ${list.map((c,i)=>{
+        const lastActivity = companyLastActivity(c);
+        return `<tr>
         <td class="muted">${i+1}</td>
         <td>${escapeHtml(c.name)}${isSharedDemoId(c.id)?' <span class="pill pos" style="margin-left:4px;">Sample</span>':''}</td>
         <td class="muted">${escapeHtml(ownerLabelFor(c))}</td>
         <td class="num">${(c.ledgers||[]).length}</td>
         <td class="num">${(c.vouchers||[]).length}</td>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${lastActivity ? escapeHtml(lastActivity) : '—'}</td>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtBytes(companyStorageBytes(c))}</td>
         <td>
           <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
             <button class="btn secondary small" data-view-company="${escapeAttr(c.id)}" type="button">View</button>
+            <button class="btn secondary small" data-export-company="${escapeAttr(c.id)}" type="button">⬇ Export</button>
             ${!isSharedDemoId(c.id) && isFullAdmin() ? (
               reassigningCompanyId===c.id ? `
                 <select data-reassign-select="${escapeAttr(c.id)}">
@@ -5322,19 +5740,30 @@ function adminCompaniesTab(){
             ) : ''}
           </div>
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
     </table>
     </div>
+    ` : `<div class="empty">${adminCompanySearch ? 'No companies match your search.' : 'No companies yet.'}</div>`}
   `;
 }
 function adminAuditLogTab(){
+  const filtered = adminFilteredAuditLog();
   return `
-    <p class="muted" style="font-size:12px;margin-top:0;">Most recent ${auditLog.length===200?'200':auditLog.length} event${auditLog.length===1?'':'s'}, newest first.</p>
-    ${auditLog.length ? `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="text" id="adminAuditSearchInput" placeholder="Search actor, action, target or detail…" value="${escapeAttr(adminAuditSearch)}" style="max-width:280px;">
+      <select id="adminAuditRangeSelect" style="max-width:160px;">
+        <option value="all" ${adminAuditRangeDays==='all'?'selected':''}>All time</option>
+        <option value="1" ${adminAuditRangeDays===1?'selected':''}>Last 24 hours</option>
+        <option value="7" ${adminAuditRangeDays===7?'selected':''}>Last 7 days</option>
+        <option value="30" ${adminAuditRangeDays===30?'selected':''}>Last 30 days</option>
+      </select>
+      <span class="muted" style="font-size:12px;">${filtered.length} of ${auditLog.length===200?'200+':auditLog.length} event${auditLog.length===1?'':'s'}${auditLog.length===200?' (most recent 200 loaded)':''}, newest first.</span>
+    </div>
+    ${filtered.length ? `
     <div style="overflow-x:auto;">
     <table>
       <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
-      ${auditLog.map(e=>`<tr>
+      ${filtered.map(e=>`<tr>
         <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
         <td>${escapeHtml(e.actorName||'—')}</td>
         <td>${escapeHtml(e.action||'—')}</td>
@@ -5343,7 +5772,7 @@ function adminAuditLogTab(){
       </tr>`).join('')}
     </table>
     </div>
-    ` : `<div class="empty">No activity recorded yet.</div>`}
+    ` : `<div class="empty">${(adminAuditSearch || adminAuditRangeDays!=='all') ? 'No events match your filters.' : 'No activity recorded yet.'}</div>`}
   `;
 }
 
