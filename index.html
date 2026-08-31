@@ -701,6 +701,7 @@ let contactSupportSending = false;
 let contactSupportNotice = '';
 let helpTab = 'info';    // 'info' | 'tickets' — which section is active inside the tabbed Help modal
 let myTickets = [];      // cache of the current user's own support tickets, loaded when the Tickets tab opens
+let myTicketUpdateIds = new Set(); // "<ticketId>_<updatedAt>" keys already toasted this session — avoids re-toasting the same admin update on every 30s poll, while still catching the NEXT update to that same ticket
 let featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; // settings/featureFlags doc
 let featureFlagsDraft = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false };
 let errorLog = [];              // cache of client-side error log entries, loaded when the Settings tab opens
@@ -1116,6 +1117,7 @@ async function submitSupportTicket(subject, message){
     message,
     status: 'open',
     adminNote: '',
+    seenByUser: true, // the user just raised it themselves — nothing to notify them about yet
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -1204,6 +1206,7 @@ async function checkForceLogoutOnce(){
       await fbAuth.signOut();
       currentUser = null;
       stopForceLogoutPoll();
+      stopTicketUpdatePoll();
       toast("You've been signed out by an administrator.");
       screen = 'login'; authMode = 'login'; renderLogin(); pushHistory();
     }
@@ -1215,6 +1218,53 @@ function startForceLogoutPoll(){
 }
 function stopForceLogoutPoll(){
   if(forceLogoutPollHandle){ clearInterval(forceLogoutPollHandle); forceLogoutPollHandle = null; }
+}
+
+/* ---------------- Ticket update notifications ----------------
+   A regular user won't sit and watch the Support tab like an admin does, so instead of making them
+   go re-open Help → Raise a Ticket to notice a status change or a reply, this polls (same lightweight
+   pattern as the force-logout check above) for their own tickets the admin has touched since they last
+   looked, toasts it once, and keeps the "Raise a Ticket" tab badged until they actually view it. */
+let ticketUpdatePollHandle = null;
+async function checkTicketUpdatesOnce(){
+  if(!currentUser || currentUser.isAdmin) return;
+  try{
+    const snap = await db.collection('supportTickets').where('userId','==',currentUser.id).where('seenByUser','==', false).get();
+    const updated = snap.docs.map(d=>d.data());
+    if(!updated.length) return;
+    const byId = Object.fromEntries(updated.map(t=>[t.id, t]));
+    myTickets = myTickets.map(t => byId[t.id] || t);
+    Object.keys(byId).filter(id => !myTickets.some(t=>t.id===id)).forEach(id => myTickets.unshift(byId[id]));
+    updated.forEach(t=>{
+      const notifyKey = t.id + '_' + (t.updatedAt||'');
+      if(myTicketUpdateIds.has(notifyKey)) return;
+      myTicketUpdateIds.add(notifyKey);
+      const label = t.status==='resolved' ? 'has been resolved' : (t.status==='in_progress' ? 'is now In Progress' : 'has an update');
+      toast(`🎫 Your ticket "${t.subject||'(no subject)'}" ${label}.`);
+    });
+    // Already looking at the Tickets tab when the update lands — clear the "new" flag right away
+    // instead of leaving a stale badge on a screen the user is already viewing.
+    if(modal==='help' && helpTab==='tickets') await markMyTicketsSeen();
+    if(screen==='app') render();
+    else if(screen==='gateway') renderGateway();
+  }catch(err){ /* best-effort */ }
+}
+function startTicketUpdatePoll(){
+  stopTicketUpdatePoll();
+  checkTicketUpdatesOnce();
+  ticketUpdatePollHandle = setInterval(checkTicketUpdatesOnce, 30000);
+}
+function stopTicketUpdatePoll(){
+  if(ticketUpdatePollHandle){ clearInterval(ticketUpdatePollHandle); ticketUpdatePollHandle = null; }
+}
+async function markMyTicketsSeen(){
+  const unseen = myTickets.filter(t=>t.seenByUser===false);
+  if(!unseen.length) return;
+  try{
+    await Promise.all(unseen.map(t=> db.collection('supportTickets').doc(t.id).set({ seenByUser:true }, {merge:true})));
+    const seenIds = new Set(unseen.map(t=>t.id));
+    myTickets = myTickets.map(t => seenIds.has(t.id) ? { ...t, seenByUser:true } : t);
+  }catch(err){ /* best-effort */ }
 }
 
 function toast(msg){
@@ -3443,8 +3493,12 @@ function render(){
   document.getElementById('menuHelp').addEventListener('click', async ()=>{
     modal = 'help';
     helpTab = 'info';
-    if(currentUser && !currentUser.isAdmin) await refreshMyTickets();
+    if(currentUser && !currentUser.isAdmin){
+      await refreshMyTickets();
+      if(myTickets.some(t=>t.seenByUser===false)) helpTab = 'tickets';
+    }
     render();
+    if(helpTab==='tickets'){ await markMyTicketsSeen(); render(); }
   });
   document.getElementById('menuDeleteCompany').addEventListener('click', async ()=>{
     const deleted = await deleteCompanyById(currentCompany.id);
@@ -3475,9 +3529,10 @@ function render(){
   if(modal==='help'){
     wireContactSupportHandlers(render);
     document.querySelectorAll('[data-help-tab]').forEach(el=>{
-      el.addEventListener('click', ()=>{
+      el.addEventListener('click', async ()=>{
         helpTab = el.dataset.helpTab;
         render();
+        if(helpTab==='tickets'){ await markMyTicketsSeen(); render(); }
       });
     });
   }
@@ -4020,7 +4075,7 @@ function helpTabBtn(id, label){
 }
 function helpModal(){
   const showTickets = currentUser && !currentUser.isAdmin;
-  const openCount = showTickets ? myTickets.filter(t=>t.status!=='resolved').length : 0;
+  const unseenCount = showTickets ? myTickets.filter(t=>t.seenByUser===false).length : 0;
   const activeTab = showTickets ? helpTab : 'info';
   return `
     <div class="modal-overlay" id="modalOverlayBg">
@@ -4029,7 +4084,7 @@ function helpModal(){
         ${showTickets ? `
         <div style="display:flex;gap:6px;padding:10px 18px 0;border-bottom:1px solid var(--border);">
           ${helpTabBtn('info','Info')}
-          ${helpTabBtn('tickets','Raise a Ticket'+(openCount?` (${openCount})`:''))}
+          ${helpTabBtn('tickets','Raise a Ticket'+(unseenCount?` (${unseenCount} new)`:''))}
         </div>
         ` : ''}
         <div class="panel-body" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
@@ -4074,13 +4129,16 @@ function helpTicketsTab(){
     <div style="overflow-x:auto;">
     <table>
       <tr><th>When</th><th>Subject</th><th>Message</th><th>Status</th></tr>
-      ${myTickets.map(t=>`<tr>
-        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.createdAt)}</td>
+      ${myTickets.map(t=>`<tr ${t.seenByUser===false?'style="background:var(--surface-strong);"':''}>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.updatedAt||t.createdAt)}</td>
         <td>${escapeHtml(t.subject||'—')}</td>
         <td class="muted" style="font-size:11.5px;max-width:260px;">${escapeHtml(t.message||'')}
           ${t.adminNote ? `<div class="muted" style="margin-top:6px;font-size:10.5px;border-top:1px dashed var(--border);padding-top:4px;"><strong>Reply:</strong> ${escapeHtml(t.adminNote)}</div>` : ''}
         </td>
-        <td><span class="pill ${statusPill(t.status)}">${statusLabel(t.status)}</span></td>
+        <td>
+          <span class="pill ${statusPill(t.status)}">${statusLabel(t.status)}</span>
+          ${t.seenByUser===false ? `<div class="muted" style="font-size:10px;color:var(--accent1);font-weight:700;margin-top:4px;">● New update</div>` : ''}
+        </td>
       </tr>`).join('')}
     </table>
     </div>
@@ -4559,6 +4617,7 @@ function renderLogin(){
         await loadFeatureFlags();
         logAudit('account_created', `New account @${username}`, currentUser.id, name);
         startForceLogoutPoll();
+        startTicketUpdatePoll();
         screen = 'gateway';
         renderGateway();
         pushHistory();
@@ -4638,6 +4697,7 @@ function renderLogin(){
         await loadFeatureFlags();
         logAudit('login', '', cred.user.uid, currentUser.name);
         startForceLogoutPoll();
+        startTicketUpdatePoll();
         screen = 'gateway';
         renderGateway();
         pushHistory();
@@ -5026,8 +5086,12 @@ function renderGateway(){
     servicesMenuOpen = false;
     modal = 'help';
     helpTab = 'info';
-    if(currentUser && !currentUser.isAdmin) await refreshMyTickets();
+    if(currentUser && !currentUser.isAdmin){
+      await refreshMyTickets();
+      if(myTickets.some(t=>t.seenByUser===false)) helpTab = 'tickets';
+    }
     renderGateway();
+    if(helpTab==='tickets'){ await markMyTicketsSeen(); renderGateway(); }
   });
   document.getElementById('gwMenuServices')?.addEventListener('click', (e)=>{
     e.stopPropagation();
@@ -5060,6 +5124,7 @@ function renderGateway(){
       e.stopPropagation();
       fileMenuOpen = false;
       stopForceLogoutPoll();
+      stopTicketUpdatePoll();
       try{ await fbAuth.signOut(); }catch(err){}
       currentUser = null;
       companies = [];
@@ -5071,6 +5136,7 @@ function renderGateway(){
       verifyLinkNotice = ''; verifyLinkError = '';
       announcement = { message:'', active:false }; announcementDismissed = false;
       contactSupportOpen = false; contactSupportDraft = { subject:'', message:'' }; contactSupportNotice = '';
+      myTickets = []; myTicketUpdateIds = new Set(); helpTab = 'info';
       screen = 'login';
       renderLogin();
       pushHistory();
@@ -5095,9 +5161,10 @@ function renderGateway(){
   if(modal==='help'){
     wireContactSupportHandlers(renderGateway);
     document.querySelectorAll('[data-help-tab]').forEach(el=>{
-      el.addEventListener('click', ()=>{
+      el.addEventListener('click', async ()=>{
         helpTab = el.dataset.helpTab;
         renderGateway();
+        if(helpTab==='tickets'){ await markMyTicketsSeen(); renderGateway(); }
       });
     });
   }
@@ -5540,8 +5607,9 @@ function renderGateway(){
         if(!t) return;
         const nextStatus = el.value;
         try{
-          await db.collection('supportTickets').doc(tid).set({ status: nextStatus, updatedAt: new Date().toISOString() }, {merge:true});
+          await db.collection('supportTickets').doc(tid).set({ status: nextStatus, updatedAt: new Date().toISOString(), seenByUser: false }, {merge:true});
           t.status = nextStatus;
+          t.seenByUser = false;
           await logAudit('ticket_status_changed', `Set ticket "${t.subject}" to ${nextStatus}`, t.userId, t.userName);
           toast('Ticket updated');
           renderGateway();
@@ -5573,8 +5641,9 @@ function renderGateway(){
         const note = noteInput ? noteInput.value.trim() : '';
         el.disabled = true;
         try{
-          await db.collection('supportTickets').doc(tid).set({ adminNote: note, updatedAt: new Date().toISOString() }, {merge:true});
+          await db.collection('supportTickets').doc(tid).set({ adminNote: note, updatedAt: new Date().toISOString(), seenByUser: false }, {merge:true});
           t.adminNote = note;
+          t.seenByUser = false;
           editingTicketId = null;
           toast('Note saved');
           renderGateway();
@@ -5855,7 +5924,9 @@ service cloud.firestore {
     match /supportTickets/{id} {
       allow read: if isSupportOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isSupportOrAdmin();
+      // The ticket's own user may only flip seenByUser (to dismiss the "updated" badge once they've
+      // viewed it) — every other field, including status and adminNote, stays support/admin-only.
+      allow update: if isSupportOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenByUser']));
       allow delete: if isAdmin();
     }
     match /settings/{docId} {
