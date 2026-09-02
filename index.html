@@ -3667,52 +3667,197 @@ function gstBreakdownForVoucher(v){
   return { cgst, sgst, igst, totalTax };
 }
 
+// Which period the GST statement download covers — follows the same Financial Year picker as the
+// rest of the app (the FY badge at top of screen) so the export lines up with whatever the user is
+// currently looking at. No FY selected = every voucher ever entered (the original, pre-format
+// behaviour), clearly labelled as such rather than silently passed off as a single return period.
+function gstStatementPeriod(){
+  if(activeFY){
+    const b = fyBoundsForLabel(activeFY);
+    return { from:b.start, to:b.end, label:`FY ${activeFY}  (${b.start} to ${b.end})` };
+  }
+  return { from:null, to:null, label:'All time — no Financial Year selected. Pick one from the FY badge (top of the GST screen) before filing so this matches a real return period.' };
+}
+// A GST-rate-slab percentage from a voucher's own taxable value and tax — the app applies one
+// blended rate per voucher (via the GST Calculator), so this recovers exactly that rate rather than
+// re-deriving it from individual line items.
+function voucherGSTRate(taxable, totalTax){
+  if(taxable<=0) return 0;
+  return Math.round((totalTax/taxable*100)*100)/100;
+}
+// Splits a Sales voucher's taxable value/tax across its line items in proportion to each item's own
+// value (qty×rate) — the GST Calculator taxes the invoice as a whole, not item by item, so this is
+// the standard pro-rata apportionment used to get an HSN-wise breakup out of a voucher-level tax.
+// Vouchers with no itemised lines (or items with no linked HSN) fall into a single '(HSN not
+// recorded)' bucket per voucher, rather than being silently dropped from Table 12.
+function voucherHSNSplits(v, g, taxable){
+  const items = (v.items||[]).filter(it=>it.name && (Number(it.qty)||0)>0);
+  if(!items.length){
+    return [{ hsn:'(HSN not recorded)', unit:'', qty:null, taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, tax:g.totalTax }];
+  }
+  const lineValues = items.map(it=>(Number(it.qty)||0)*(Number(it.rate)||0));
+  const sumLines = lineValues.reduce((s,x)=>s+x,0);
+  if(sumLines<=0){
+    return [{ hsn:'(HSN not recorded)', unit:'', qty:null, taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, tax:g.totalTax }];
+  }
+  return items.map((it,i)=>{
+    const share = lineValues[i]/sumLines;
+    const master = it.itemId ? state.items.find(m=>m.id===it.itemId) : null;
+    return {
+      hsn: (master && master.hsn) ? master.hsn : '(HSN not recorded)',
+      unit: master ? (master.unit||'') : '',
+      qty: Number(it.qty)||0,
+      taxable: r2(taxable*share), cgst: r2(g.cgst*share), sgst: r2(g.sgst*share), igst: r2(g.igst*share), tax: r2(g.totalTax*share),
+    };
+  });
+}
 function buildGSTStatementWorkbook(){
   const wb = XLSX.utils.book_new();
-  const netGST = gstOutputTotal() - gstInputTotal();
+  const period = gstStatementPeriod();
+  const NT = 'Not tracked in this app — add manually if applicable';
 
-  // Summary sheet
-  const summary = [
-    ['GST Statement', currentCompany.name],
+  const salesInPeriod = state.vouchers.filter(v=>v.type==='Sales' && (!period.from||v.date>=period.from) && (!period.to||v.date<=period.to));
+  const purchInPeriod = state.vouchers.filter(v=>v.type==='Purchase' && (!period.from||v.date>=period.from) && (!period.to||v.date<=period.to));
+  const taxedSales = salesInPeriod.map(v=>{ const g=gstBreakdownForVoucher(v); const invoice=voucherAmount(v); return {v, g, invoice, taxable:r2(invoice-g.totalTax)}; }).filter(r=>r.g.totalTax>0);
+  const taxedPurch = purchInPeriod.map(v=>{ const g=gstBreakdownForVoucher(v); const invoice=voucherAmount(v); return {v, g, invoice, taxable:r2(invoice-g.totalTax)}; }).filter(r=>r.g.totalTax>0);
+
+  const outTotals = taxedSales.reduce((s,r)=>({taxable:s.taxable+r.taxable, cgst:s.cgst+r.g.cgst, sgst:s.sgst+r.g.sgst, igst:s.igst+r.g.igst, tax:s.tax+r.g.totalTax}), {taxable:0,cgst:0,sgst:0,igst:0,tax:0});
+  const inTotals  = taxedPurch.reduce((s,r)=>({taxable:s.taxable+r.taxable, cgst:s.cgst+r.g.cgst, sgst:s.sgst+r.g.sgst, igst:s.igst+r.g.igst, tax:s.tax+r.g.totalTax}), {taxable:0,cgst:0,sgst:0,igst:0,tax:0});
+  const interstateOut = taxedSales.filter(r=>r.g.igst>0).reduce((s,r)=>({taxable:s.taxable+r.taxable, igst:s.igst+r.g.igst}), {taxable:0,igst:0});
+
+  // ---- GSTR-3B — Table 3.1 / 3.2 / 4 / 5 / 6.1 / 6.2, in the return's own numbering ----
+  // Tax Payable/ITC here are pinned to the SAME period-scoped totals as Tables 3.1 and 4 above (not
+  // the ledgers' running balances, which also carry brought-forward/settled amounts from prior
+  // periods) — so 6.1 always reconciles against the rest of this same download.
+  const payC = r2(outTotals.cgst), payS = r2(outTotals.sgst), payI = r2(outTotals.igst);
+  const credC = r2(inTotals.cgst), credS = r2(inTotals.sgst), credI = r2(inTotals.igst);
+  const usedC = r2(Math.max(0,Math.min(payC,credC))), usedS = r2(Math.max(0,Math.min(payS,credS))), usedI = r2(Math.max(0,Math.min(payI,credI)));
+  const cashC = r2(Math.max(0,payC-usedC)), cashS = r2(Math.max(0,payS-usedS)), cashI = r2(Math.max(0,payI-usedI));
+
+  const g3b = [
+    ['FORM GSTR-3B — Summary Return (Tax Liability & ITC)'],
+    ['Legal Name', currentCompany.name],
+    ['GSTIN', currentCompany.gstin||'(not set — add it under Edit Company)'],
+    ['Tax Period', period.label],
     ['Generated on', new Date().toLocaleDateString('en-IN')],
     [],
-    ['Tax Head','Output (Payable)','Input (Credit)'],
-    ['CGST', r2(-ledgerBalance('l_ocgst')), r2(ledgerBalance('l_icgst'))],
-    ['SGST', r2(-ledgerBalance('l_osgst')), r2(ledgerBalance('l_isgst'))],
-    ['IGST', r2(-ledgerBalance('l_oigst')), r2(ledgerBalance('l_iigst'))],
-    ['Total', r2(gstOutputTotal()), r2(gstInputTotal())],
+    ['3.1 — Details of Outward Supplies and inward supplies liable to reverse charge'],
+    ['Nature of Supplies','Taxable Value','IGST','CGST','SGST/UTGST','Cess'],
+    ['(a) Outward taxable supplies (other than zero rated, nil rated and exempted)', r2(outTotals.taxable), r2(outTotals.igst), r2(outTotals.cgst), r2(outTotals.sgst), 0],
+    ['(b) Outward taxable supplies (zero rated)', 0,0,0,0,0, NT],
+    ['(c) Other outward supplies (nil rated, exempted)', 0,0,0,0,0, NT],
+    ['(d) Inward supplies (liable to reverse charge)', 0,0,0,0,0, NT],
+    ['(e) Non-GST outward supplies', 0,0,0,0,0, NT],
     [],
-    ['Net GST', netGST>=0?'Payable':'Refundable / Carried Forward', r2(Math.abs(netGST))],
+    ['3.2 — Interstate supplies made (place-of-supply state-wise break-up not tracked)'],
+    ['Supplies made to','Total Taxable Value','Integrated Tax'],
+    ['Unregistered persons / composition taxable persons / UIN holders (aggregate)', r2(interstateOut.taxable), r2(interstateOut.igst), '', '', '', 'State-wise split not tracked — see place of supply manually'],
+    [],
+    ['4 — Eligible ITC'],
+    ['Details','Integrated Tax','Central Tax','State/UT Tax','Cess'],
+    ['(A) ITC Available',''],
+    ['(1) Import of goods', 0,0,0,0, NT],
+    ['(2) Import of services', 0,0,0,0, NT],
+    ['(3) Inward supplies liable to reverse charge (other than 1 & 2)', 0,0,0,0, NT],
+    ['(4) Inward supplies from ISD', 0,0,0,0, NT],
+    ['(5) All other ITC', r2(inTotals.igst), r2(inTotals.cgst), r2(inTotals.sgst), 0],
+    ['(B) ITC Reversed',''],
+    ['(1) As per Rules 38, 42 & 43 of CGST Rules', 0,0,0,0, NT],
+    ['(2) Others', 0,0,0,0, NT],
+    ['(C) Net ITC Available (A) − (B)', r2(inTotals.igst), r2(inTotals.cgst), r2(inTotals.sgst), 0],
+    ['(D) Ineligible ITC',''],
+    ['(1) As per Section 17(5)', 0,0,0,0, NT],
+    ['(2) Others', 0,0,0,0, NT],
+    [],
+    ['5 — Values of exempt, nil-rated and non-GST inward supplies'],
+    ['Nature of supplies','Inter-State','Intra-State'],
+    ['From a supplier under composition scheme, exempt and nil rated supply', 0,0, '', '', '', NT],
+    ['Non-GST supply', 0,0, '', '', '', NT],
+    [],
+    ['6.1 — Payment of Tax'],
+    ['Tax Head','Tax Payable','Paid through ITC','Paid in Cash'],
+    ['Integrated Tax', payI, usedI, cashI],
+    ['Central Tax', payC, usedC, cashC],
+    ['State/UT Tax', payS, usedS, cashS],
+    ['Cess', 0,0,0],
+    ['Interest', 0,0,0, '', '', NT],
+    ['Late Fee', 0,0,0, '', '', NT],
+    ['Note: ITC used above is only this period\'s purchases — any ITC actually brought forward from an earlier period\'s electronic credit ledger isn\'t included, so "Paid in Cash" may read higher than what you\'d really owe.'],
+    [],
+    ['6.2 — TDS/TCS Credit'],
+    ['Details','Integrated Tax','Central Tax','State/UT Tax'],
+    ['TDS', 0,0,0, '', '', NT],
+    ['TCS', 0,0,0, '', '', NT],
+    [],
+    ['Rows marked "'+NT+'" are categories this app does not currently capture (e.g. zero-rated exports, reverse charge, ITC reversal, TDS/TCS) — review and add them by hand before filing if they apply to your business.'],
   ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(g3b), 'GSTR-3B');
 
-  // Outward supplies (Sales)
+  // ---- GSTR-1 — Table 7 (B2C, rate-wise) ----
+  // Every sale in this app is reported here rather than under Table 4 (B2B) because B2B reporting
+  // requires the buyer's GSTIN, which this app doesn't currently capture per customer — so, correctly
+  // under GST law, none of these invoices can be attributed to a registered buyer without it.
+  const b2cMap = new Map(); // key: `${intra|inter}|${rate}`
+  taxedSales.forEach(({v,g,taxable})=>{
+    const isInter = g.igst>0;
+    const rate = voucherGSTRate(taxable, g.totalTax);
+    const key = (isInter?'inter':'intra')+'|'+rate;
+    const row = b2cMap.get(key) || { isInter, rate, taxable:0, cgst:0, sgst:0, igst:0, tax:0, count:0 };
+    row.taxable += taxable; row.cgst += g.cgst; row.sgst += g.sgst; row.igst += g.igst; row.tax += g.totalTax; row.count += 1;
+    b2cMap.set(key, row);
+  });
+  const b2cRows = Array.from(b2cMap.values()).sort((a,b)=> a.isInter===b.isInter ? a.rate-b.rate : (a.isInter?1:-1));
+  const t7 = [
+    ['FORM GSTR-1 — Table 7: B2C (Others) — rate-wise summary of supplies to unregistered persons'],
+    ['Legal Name', currentCompany.name],
+    ['GSTIN', currentCompany.gstin||'(not set — add it under Edit Company)'],
+    ['Tax Period', period.label],
+    [],
+    ['Table','Rate (%)','Invoices','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Total Tax'],
+    ...b2cRows.map(r=>[ r.isInter?'7B — Inter-State':'7A — Intra-State', r.rate, r.count, r2(r.taxable), r2(r.igst), r2(r.cgst), r2(r.sgst), r2(r.tax) ]),
+    ['Total','', taxedSales.length, r2(outTotals.taxable), r2(outTotals.igst), r2(outTotals.cgst), r2(outTotals.sgst), r2(outTotals.tax)],
+    [],
+    ['No B2B (Table 4) rows are produced because customer GSTIN is not captured per party in this app — if any of the above buyers are actually GST-registered, move that invoice to Table 4 manually and supply their GSTIN.'],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(t7), 'GSTR-1 - Table 7 (B2C)');
+
+  // ---- GSTR-1 — Table 12 (HSN-wise summary) ----
+  const hsnMap = new Map(); // key: `${hsn}|${unit}|${rate}`
+  taxedSales.forEach(({v,g,taxable})=>{
+    voucherHSNSplits(v,g,taxable).forEach(s=>{
+      const rate = voucherGSTRate(s.taxable, s.tax);
+      const key = s.hsn+'|'+(s.unit||'')+'|'+rate;
+      const row = hsnMap.get(key) || { hsn:s.hsn, unit:s.unit, rate, qty:0, hasQty:false, taxable:0, cgst:0, sgst:0, igst:0, tax:0 };
+      if(s.qty!=null){ row.qty += s.qty; row.hasQty = true; }
+      row.taxable += s.taxable; row.cgst += s.cgst; row.sgst += s.sgst; row.igst += s.igst; row.tax += s.tax;
+      hsnMap.set(key, row);
+    });
+  });
+  const hsnRows = Array.from(hsnMap.values()).sort((a,b)=> a.hsn.localeCompare(b.hsn) || a.rate-b.rate);
+  const t12 = [
+    ['FORM GSTR-1 — Table 12: HSN-wise summary of outward supplies'],
+    ['Legal Name', currentCompany.name],
+    ['GSTIN', currentCompany.gstin||'(not set — add it under Edit Company)'],
+    ['Tax Period', period.label],
+    [],
+    ['HSN','UQC (Unit)','Total Quantity','Rate (%)','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Total Value'],
+    ...hsnRows.map(r=>[ r.hsn, r.unit||'', r.hasQty?r2(r.qty):'', r.rate, r2(r.taxable), r2(r.igst), r2(r.cgst), r2(r.sgst), r2(r.taxable+r.tax) ]),
+    ['Total','','', '', r2(outTotals.taxable), r2(outTotals.igst), r2(outTotals.cgst), r2(outTotals.sgst), r2(outTotals.taxable+outTotals.tax)],
+    [],
+    ['"(HSN not recorded)" rows are sales with no itemised line (or items with no HSN set under Inventory) — set an HSN on each item and re-itemise the sale to break these out properly.'],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(t12), 'GSTR-1 - Table 12 (HSN)');
+
+  // ---- Supporting registers (voucher-level working papers behind the totals above) ----
   const outward = [['Date','Voucher','Narration','Taxable Value','CGST','SGST','IGST','Total Tax','Invoice Value']];
-  let outTotals = {taxable:0,cgst:0,sgst:0,igst:0,tax:0,invoice:0};
-  state.vouchers.filter(v=>v.type==='Sales').forEach(v=>{
-    const g = gstBreakdownForVoucher(v);
-    if(g.totalTax<=0) return;
-    const invoice = voucherAmount(v);
-    const taxable = invoice - g.totalTax;
-    outward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]);
-    outTotals.taxable+=taxable; outTotals.cgst+=g.cgst; outTotals.sgst+=g.sgst; outTotals.igst+=g.igst; outTotals.tax+=g.totalTax; outTotals.invoice+=invoice;
-  });
-  if(outward.length>1) outward.push(['Total','','', r2(outTotals.taxable), r2(outTotals.cgst), r2(outTotals.sgst), r2(outTotals.igst), r2(outTotals.tax), r2(outTotals.invoice)]);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(outward), 'Outward Supplies (Sales)');
+  taxedSales.forEach(({v,g,invoice,taxable})=> outward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]));
+  if(outward.length>1) outward.push(['Total','','', r2(outTotals.taxable), r2(outTotals.cgst), r2(outTotals.sgst), r2(outTotals.igst), r2(outTotals.tax), r2(outTotals.taxable+outTotals.tax)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(outward), 'Sales Register');
 
-  // Inward supplies (Purchase)
   const inward = [['Date','Voucher','Narration','Taxable Value','CGST','SGST','IGST','Total Tax','Invoice Value']];
-  let inTotals = {taxable:0,cgst:0,sgst:0,igst:0,tax:0,invoice:0};
-  state.vouchers.filter(v=>v.type==='Purchase').forEach(v=>{
-    const g = gstBreakdownForVoucher(v);
-    if(g.totalTax<=0) return;
-    const invoice = voucherAmount(v);
-    const taxable = invoice - g.totalTax;
-    inward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]);
-    inTotals.taxable+=taxable; inTotals.cgst+=g.cgst; inTotals.sgst+=g.sgst; inTotals.igst+=g.igst; inTotals.tax+=g.totalTax; inTotals.invoice+=invoice;
-  });
-  if(inward.length>1) inward.push(['Total','','', r2(inTotals.taxable), r2(inTotals.cgst), r2(inTotals.sgst), r2(inTotals.igst), r2(inTotals.tax), r2(inTotals.invoice)]);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inward), 'Inward Supplies (Purchase)');
+  taxedPurch.forEach(({v,g,invoice,taxable})=> inward.push([v.date, v.type, v.narration||'', r2(taxable), r2(g.cgst), r2(g.sgst), r2(g.igst), r2(g.totalTax), r2(invoice)]));
+  if(inward.length>1) inward.push(['Total','','', r2(inTotals.taxable), r2(inTotals.cgst), r2(inTotals.sgst), r2(inTotals.igst), r2(inTotals.tax), r2(inTotals.taxable+inTotals.tax)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inward), 'Purchase Register');
 
   return wb;
 }
@@ -3722,7 +3867,7 @@ function downloadGSTStatement(){
   const safeName = (currentCompany.name||'Company').replace(/[^a-z0-9]+/gi,'_');
   const filename = `${safeName}_GST_Statement_${new Date().toISOString().slice(0,10)}.xlsx`;
   XLSX.writeFile(wb, filename);
-  toast('GST statement downloaded');
+  toast('GST statement downloaded — GSTR-3B, GSTR-1 (Table 7 & 12), and supporting registers');
 }
 
 function netProfit(){
@@ -9738,7 +9883,7 @@ function viewGST(){
       <div class="panel-head"><h2>GST Summary</h2>
         <div style="display:flex;gap:8px;">
           <button class="btn secondary small" id="viewGSTFormatsBtn" type="button">📋 GST Format</button>
-          <button class="btn secondary small" id="downloadGSTBtn" type="button">⬇ Download GST Statement</button>
+          <button class="btn secondary small" id="downloadGSTBtn" type="button">⬇ Download GST Statement (GSTR format)</button>
         </div>
       </div>
       <div class="panel-body" style="padding:0;">
