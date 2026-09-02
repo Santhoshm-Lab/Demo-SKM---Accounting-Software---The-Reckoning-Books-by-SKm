@@ -4597,10 +4597,12 @@ function renderLogin(){
       try{
         const takenDoc = await db.collection('usernames').doc(usernameKey).get();
         if(takenDoc.exists){ authError = 'That username is already taken — please go back and choose another.'; submitBtn.disabled = false; renderLogin(); return; }
-        // The account already exists (created passwordlessly via the email link) — this adds a
-        // password credential onto it, rather than creating a new account.
-        const credential = firebase.auth.EmailAuthProvider.credential(email, password);
-        await pendingVerifyUser.linkWithCredential(credential);
+        // The account already exists (created passwordlessly via the email link). Firebase treats
+        // the email-link sign-in as already having the "password" provider linked (it's the same
+        // provider ID as email/password, just without a password set yet) — so linkWithCredential
+        // here would always fail with auth/provider-already-linked. Setting the password directly
+        // on the existing identity is the correct call in this situation.
+        await pendingVerifyUser.updatePassword(password);
         const profile = { id: pendingVerifyUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() };
         await db.collection('users').doc(pendingVerifyUser.uid).set(profile);
         await db.collection('usernames').doc(usernameKey).set({ email });
