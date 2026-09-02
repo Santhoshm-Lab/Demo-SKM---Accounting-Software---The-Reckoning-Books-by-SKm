@@ -605,6 +605,38 @@ const INDIAN_STATES = [
   'Jammu and Kashmir','Ladakh','Lakshadweep','Puducherry',
 ];
 
+// ISO-3166 country names (short list of common/official English short names), used to populate the
+// Country dropdown on Create/Edit Company. India is listed first since it's overwhelmingly the
+// common case for this app; the rest follow in alphabetical order.
+const COUNTRIES = [
+  'India',
+  'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia',
+  'Australia','Austria','Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium',
+  'Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria',
+  'Burkina Faso','Burundi','Cabo Verde','Cambodia','Cameroon','Canada','Central African Republic',
+  'Chad','Chile','China','Colombia','Comoros','Congo (Congo-Brazzaville)','Costa Rica','Croatia',
+  'Cuba','Cyprus','Czechia (Czech Republic)','Democratic Republic of the Congo','Denmark','Djibouti',
+  'Dominica','Dominican Republic','Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea',
+  'Estonia','Eswatini (Swaziland)','Ethiopia','Fiji','Finland','France','Gabon','Gambia','Georgia',
+  'Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau','Guyana','Haiti',
+  'Honduras','Hungary','Iceland','Indonesia','Iran','Iraq','Ireland','Israel','Italy','Ivory Coast',
+  'Jamaica','Japan','Jordan','Kazakhstan','Kenya','Kiribati','Kosovo','Kuwait','Kyrgyzstan','Laos',
+  'Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein','Lithuania','Luxembourg',
+  'Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania',
+  'Mauritius','Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco',
+  'Mozambique','Myanmar (Burma)','Namibia','Nauru','Nepal','Netherlands','New Zealand','Nicaragua',
+  'Niger','Nigeria','North Korea','North Macedonia','Norway','Oman','Pakistan','Palau','Palestine',
+  'Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal','Qatar','Romania',
+  'Russia','Rwanda','Saint Kitts and Nevis','Saint Lucia','Saint Vincent and the Grenadines','Samoa',
+  'San Marino','Sao Tome and Principe','Saudi Arabia','Senegal','Serbia','Seychelles','Sierra Leone',
+  'Singapore','Slovakia','Slovenia','Solomon Islands','Somalia','South Africa','South Korea',
+  'South Sudan','Spain','Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria','Taiwan',
+  'Tajikistan','Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia',
+  'Turkey','Turkmenistan','Tuvalu','Uganda','Ukraine','United Arab Emirates','United Kingdom',
+  'United States of America','Uruguay','Uzbekistan','Vanuatu','Vatican City','Venezuela','Vietnam',
+  'Yemen','Zambia','Zimbabwe',
+];
+
 const GST_LEDGERS = [
   {id:'l_ocgst', name:'Output CGST', group:'duties', opening:0, gstType:'output_cgst'},
   {id:'l_osgst', name:'Output SGST', group:'duties', opening:0, gstType:'output_sgst'},
@@ -3543,7 +3575,7 @@ function render(){
     document.getElementById('editCoAddress').addEventListener('input', e=> editCoDraft.address = e.target.value);
     document.getElementById('editCoState').addEventListener('change', e=> editCoDraft.state = e.target.value);
     document.getElementById('editCoPincode').addEventListener('input', e=> editCoDraft.pincode = e.target.value);
-    document.getElementById('editCoCountry').addEventListener('input', e=> editCoDraft.country = e.target.value);
+    document.getElementById('editCoCountry').addEventListener('change', e=> editCoDraft.country = e.target.value);
     document.getElementById('editCoPhone').addEventListener('input', e=> editCoDraft.phone = e.target.value);
     document.getElementById('editCoMobile').addEventListener('input', e=> editCoDraft.mobile = e.target.value);
     document.getElementById('editCoEmail').addEventListener('input', e=> editCoDraft.email = e.target.value);
@@ -3673,7 +3705,11 @@ function editCompanyModal(){
             </div>
             <div class="field" style="flex:1;"><label>Pincode</label><input type="text" id="editCoPincode" value="${escapeAttr(editCoDraft.pincode)}"></div>
           </div>
-          <div class="field"><label>Country</label><input type="text" id="editCoCountry" value="${escapeAttr(editCoDraft.country||'India')}"></div>
+          <div class="field"><label>Country</label>
+            <select id="editCoCountry">
+              ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(editCoDraft.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+            </select>
+          </div>
 
           <div class="section-title" style="margin-top:14px;">Contact Details</div>
           <div class="row">
@@ -4921,7 +4957,9 @@ function renderGateway(){
             </div>
           </div>
           <label>Country</label>
-          <input type="text" id="coCountry" value="${escapeAttr(coform.country||'India')}">
+          <select id="coCountry">
+            ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(coform.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+          </select>
 
           <div class="section-title" style="margin-top:16px;">Contact Details</div>
           <div class="row" style="gap:10px;">
@@ -5021,7 +5059,7 @@ function renderGateway(){
   document.getElementById('coAddress').addEventListener('input', e=> coform.address = e.target.value);
   document.getElementById('coState').addEventListener('change', e=> coform.state = e.target.value);
   document.getElementById('coPincode').addEventListener('input', e=> coform.pincode = e.target.value);
-  document.getElementById('coCountry').addEventListener('input', e=> coform.country = e.target.value);
+  document.getElementById('coCountry').addEventListener('change', e=> coform.country = e.target.value);
   document.getElementById('coPhone').addEventListener('input', e=> coform.phone = e.target.value);
   document.getElementById('coMobile').addEventListener('input', e=> coform.mobile = e.target.value);
   document.getElementById('coEmail').addEventListener('input', e=> coform.email = e.target.value);
