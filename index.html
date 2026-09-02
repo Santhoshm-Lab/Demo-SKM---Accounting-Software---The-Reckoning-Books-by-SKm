@@ -637,6 +637,20 @@ const COUNTRIES = [
   'Yemen','Zambia','Zimbabwe',
 ];
 
+// India gets a proper State dropdown (INDIAN_STATES); every other country gets a free-text
+// State/Province field instead, since we don't maintain a full state/province list per country.
+// Shared by both the Create Company and Edit Company forms so the two stay in sync with whichever
+// country is currently selected — swap this control in whenever the Country field changes.
+function stateProvinceControl(id, country, value){
+  if((country||'India') === 'India'){
+    return `<select id="${id}">
+      <option value="">— Select —</option>
+      ${INDIAN_STATES.map(s=>`<option value="${s}" ${value===s?'selected':''}>${s}</option>`).join('')}
+    </select>`;
+  }
+  return `<input type="text" id="${id}" placeholder="State / Province / Region" value="${escapeAttr(value||'')}">`;
+}
+
 const GST_LEDGERS = [
   {id:'l_ocgst', name:'Output CGST', group:'duties', opening:0, gstType:'output_cgst'},
   {id:'l_osgst', name:'Output SGST', group:'duties', opening:0, gstType:'output_sgst'},
@@ -3573,9 +3587,21 @@ function render(){
     document.getElementById('editCoDirectory').addEventListener('input', e=> editCoDraft.directory = e.target.value);
     document.getElementById('editCoMailingName').addEventListener('input', e=> editCoDraft.mailingName = e.target.value);
     document.getElementById('editCoAddress').addEventListener('input', e=> editCoDraft.address = e.target.value);
-    document.getElementById('editCoState').addEventListener('change', e=> editCoDraft.state = e.target.value);
+    function bindEditCoStateField(){
+      const el = document.getElementById('editCoState');
+      if(!el) return;
+      el.addEventListener(el.tagName==='SELECT' ? 'change' : 'input', e=> editCoDraft.state = e.target.value);
+    }
+    bindEditCoStateField();
     document.getElementById('editCoPincode').addEventListener('input', e=> editCoDraft.pincode = e.target.value);
-    document.getElementById('editCoCountry').addEventListener('change', e=> editCoDraft.country = e.target.value);
+    document.getElementById('editCoCountry').addEventListener('change', e=>{
+      editCoDraft.country = e.target.value;
+      // Same India-only-dropdown rule as Create Company — swap the State/Province control to match
+      // the newly selected country and drop whatever state was picked under the old one.
+      editCoDraft.state = '';
+      document.getElementById('editCoStateWrap').innerHTML = stateProvinceControl('editCoState', editCoDraft.country, editCoDraft.state);
+      bindEditCoStateField();
+    });
     document.getElementById('editCoPhone').addEventListener('input', e=> editCoDraft.phone = e.target.value);
     document.getElementById('editCoMobile').addEventListener('input', e=> editCoDraft.mobile = e.target.value);
     document.getElementById('editCoEmail').addEventListener('input', e=> editCoDraft.email = e.target.value);
@@ -3697,11 +3723,8 @@ function editCompanyModal(){
           <div class="field"><label>Mailing Name (if different)</label><input type="text" id="editCoMailingName" value="${escapeAttr(editCoDraft.mailingName)}"></div>
           <div class="field"><label>Address</label><input type="text" id="editCoAddress" value="${escapeAttr(editCoDraft.address)}"></div>
           <div class="row">
-            <div class="field" style="flex:2;"><label>State</label>
-              <select id="editCoState">
-                <option value="">— Select —</option>
-                ${INDIAN_STATES.map(s=>`<option value="${s}" ${editCoDraft.state===s?'selected':''}>${s}</option>`).join('')}
-              </select>
+            <div class="field" style="flex:2;"><label>State / Province</label>
+              <div id="editCoStateWrap">${stateProvinceControl('editCoState', editCoDraft.country, editCoDraft.state)}</div>
             </div>
             <div class="field" style="flex:1;"><label>Pincode</label><input type="text" id="editCoPincode" value="${escapeAttr(editCoDraft.pincode)}"></div>
           </div>
@@ -4945,11 +4968,8 @@ function renderGateway(){
           <input type="text" id="coAddress" placeholder="Building, street, area" value="${escapeAttr(coform.address)}">
           <div class="row" style="gap:10px;">
             <div style="flex:2;">
-              <label>State</label>
-              <select id="coState">
-                <option value="">— Select —</option>
-                ${INDIAN_STATES.map(s=>`<option value="${s}" ${coform.state===s?'selected':''}>${s}</option>`).join('')}
-              </select>
+              <label>State / Province</label>
+              <div id="coStateWrap">${stateProvinceControl('coState', coform.country, coform.state)}</div>
             </div>
             <div style="flex:1;">
               <label>Pincode</label>
@@ -5057,9 +5077,22 @@ function renderGateway(){
   document.getElementById('coDirectory').addEventListener('input', e=> coform.directory = e.target.value);
   document.getElementById('coMailingName').addEventListener('input', e=> coform.mailingName = e.target.value);
   document.getElementById('coAddress').addEventListener('input', e=> coform.address = e.target.value);
-  document.getElementById('coState').addEventListener('change', e=> coform.state = e.target.value);
+  function bindCoStateField(){
+    const el = document.getElementById('coState');
+    if(!el) return;
+    el.addEventListener(el.tagName==='SELECT' ? 'change' : 'input', e=> coform.state = e.target.value);
+  }
+  bindCoStateField();
   document.getElementById('coPincode').addEventListener('input', e=> coform.pincode = e.target.value);
-  document.getElementById('coCountry').addEventListener('change', e=> coform.country = e.target.value);
+  document.getElementById('coCountry').addEventListener('change', e=>{
+    coform.country = e.target.value;
+    // The State/Province control depends on the selected country (India gets a dropdown of Indian
+    // states, everywhere else gets free text) — swap it in place and clear the old value, since a
+    // previously-picked Indian state wouldn't make sense once the country changes away from India.
+    coform.state = '';
+    document.getElementById('coStateWrap').innerHTML = stateProvinceControl('coState', coform.country, coform.state);
+    bindCoStateField();
+  });
   document.getElementById('coPhone').addEventListener('input', e=> coform.phone = e.target.value);
   document.getElementById('coMobile').addEventListener('input', e=> coform.mobile = e.target.value);
   document.getElementById('coEmail').addEventListener('input', e=> coform.email = e.target.value);
