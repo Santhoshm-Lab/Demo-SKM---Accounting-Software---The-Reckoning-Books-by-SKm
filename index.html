@@ -352,6 +352,28 @@
     .landing-hero-inner{padding:22px 18px 0;}
     .landing-section{padding:48px 18px;}
   }
+
+  /* ---- GST Format viewer (modal) ---- */
+  .fmt-chips{display:flex;flex-wrap:wrap;gap:6px;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--surface-strong);}
+  .fmt-chip{font-family:inherit;font-size:11px;font-weight:700;color:var(--ink-soft);background:#fff;border:1px solid var(--border-strong);border-radius:999px;padding:5px 11px;cursor:pointer;letter-spacing:.01em;}
+  .fmt-chip:hover{background:var(--surface-strong);}
+  .fmt-chip.active{background:var(--accent1);border-color:var(--accent1);color:#fff;}
+  .fmt-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:16px 20px 4px;}
+  .fmt-code{font-family:inherit;font-weight:800;font-size:16px;color:var(--accent2);}
+  .fmt-name{font-weight:700;font-size:14.5px;color:var(--ink);margin-left:10px;}
+  .fmt-tag{display:inline-block;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--surface-strong);color:var(--ink-soft);}
+  .fmt-due{font-size:11.5px;color:var(--ink-faint);margin-left:8px;}
+  .fmt-filer{font-size:12.5px;color:var(--ink-soft);padding:8px 20px 4px;line-height:1.6;}
+  .fmt-tbl{margin:6px 20px 4px;display:grid;grid-template-columns:auto 1fr;gap:0 14px;}
+  .fmt-tbl dt{font-family:inherit;font-size:11px;font-weight:800;color:var(--accent2);background:var(--credit-bg);border-radius:5px;padding:2px 7px;height:fit-content;margin:6px 0;white-space:nowrap;}
+  .fmt-tbl dd{margin:6px 0;font-size:12.5px;color:var(--ink);line-height:1.55;}
+  .fmt-note{margin:14px 20px 4px;padding:9px 13px;background:#FFF6E9;border-left:3px solid var(--gold);border-radius:0 7px 7px 0;font-size:11.5px;color:var(--ink-soft);}
+  .fmt-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 20px;border-top:1px solid var(--border);background:var(--surface-strong);}
+  .fmt-nav .fmt-pos{font-size:11.5px;color:var(--ink-faint);font-weight:700;}
+  @media (max-width:640px){
+    .fmt-tbl{grid-template-columns:1fr;}
+    .fmt-tbl dt{margin-bottom:1px;} .fmt-tbl dd{margin-top:0;margin-bottom:9px;}
+  }
 </style>
 </head>
 <body>
@@ -1080,6 +1102,183 @@ const GST_LEDGERS = [
   {id:'l_isgst', name:'Input SGST',  group:'ca',   opening:0, gstType:'input_sgst'},
   {id:'l_iigst', name:'Input IGST',  group:'ca',   opening:0, gstType:'input_igst'},
 ];
+
+// Reference data for the "GST Format" viewer on the GST screen — table-by-table breakdown of every
+// active GST return form, sourced and verified against ClearTax / TaxGuru / GSTN / Tally / Bajaj
+// Finserv / Godrej Capital / Razorpay / XflowPay (checked against CBIC notifications as of Sep 2026).
+// Each entry: code, name, freq tag ('monthly'|'quarterly'|'annual'|'once'), due date text, who files
+// it, and a tables[] of {t: table number/part, d: what goes in it}. `note` is an optional callout.
+const GST_FORMS = [
+  { code:'GSTR-1', name:'Outward Supplies', freq:'monthly', due:'11th, or 13th quarterly under QRMP',
+    filer:'Filed by every regular and casual taxpayer — invoice-level detail of everything sold in the period.',
+    tables:[
+      {t:'1–3', d:'GSTIN, legal name, ARN, aggregate turnover of the prior year'},
+      {t:'4', d:'B2B supplies to registered persons — 4A taxable invoices, 4B under reverse charge'},
+      {t:'5', d:'B2C large — interstate invoices over ₹1 lakh'},
+      {t:'6', d:'Zero-rated supplies (exports) and deemed exports'},
+      {t:'7', d:'B2C small — rate-wise summary, 7A intrastate, 7B interstate'},
+      {t:'8', d:'Nil-rated, exempt, and non-GST supplies'},
+      {t:'9', d:'Amendments to Tables 4/5/6, and to credit/debit notes'},
+      {t:'10', d:'Amendments to Table 7 (B2C small)'},
+      {t:'11', d:'Advances received and adjusted in the period'},
+      {t:'12', d:'HSN-wise summary of outward supplies, split into B2B and B2C'},
+      {t:'13', d:'Summary of documents issued — invoice, credit note and debit note serial ranges'},
+      {t:'14–15', d:'E-commerce supplies under Section 9(5), and their amendments'},
+    ],
+    note:'GSTR-1A — an optional companion filed after GSTR-1 but before GSTR-3B, for the same period. Since July 2025 it\'s the only way to correct sales figures once GSTR-3B locks them.' },
+
+  { code:'GSTR-2B', name:'Auto-Drafted ITC Statement', freq:'monthly', due:'Generated 14th — view only',
+    filer:'Not filed — auto-generated for every taxpayer from suppliers\' GSTR-1/5/6 filings, used to reconcile ITC before filing GSTR-3B.',
+    tables:[
+      {t:'Pt A', d:'ITC available — B2B invoices and debit notes, ISD credit, reverse-charge inward supplies, import of goods (incl. from SEZ)'},
+      {t:'Pt A · Rev.', d:'ITC reversal — credit notes and amendments landing under "Others"'},
+      {t:'Pt B', d:'ITC not available — the same categories, for credit that can\'t be claimed (e.g. supplier filed late)'},
+    ] },
+
+  { code:'GSTR-3B', name:'Tax Liability Summary', freq:'monthly', due:'20th, or 22nd/24th quarterly under QRMP',
+    filer:'Filed by every regular and casual taxpayer — the self-assessed summary that actually pays the tax, largely auto-filled from GSTR-1 and GSTR-2B.',
+    tables:[
+      {t:'3.1', d:'Outward taxable supplies, zero-rated, nil-rated/exempt, non-GST, and reverse-charge inward — each by IGST/CGST/SGST/cess'},
+      {t:'3.1.1', d:'E-commerce supplies under Section 9(5)'},
+      {t:'3.2', d:'Interstate supplies to unregistered persons, composition dealers, and UIN holders'},
+      {t:'4(A)', d:'Eligible ITC available — imports, reverse charge, ISD, all other ITC'},
+      {t:'4(B)', d:'ITC reversed — Rules 38/42/43 and Section 17(5) ineligible credit'},
+      {t:'4(C)', d:'Net ITC — auto-calculated as 4(A) minus 4(B)'},
+      {t:'4(D)', d:'Reclaimed reversals and Section 16(4) time-barred credit'},
+      {t:'5', d:'Inward exempt/nil-rated/non-GST supplies, split interstate and intrastate'},
+      {t:'6.1', d:'Tax payable vs. ITC used vs. cash paid, plus interest and late fee'},
+      {t:'6.2', d:'TDS/TCS credit for the period'},
+    ] },
+
+  { code:'GSTR-9', name:'Annual Return', freq:'annual', due:'31 December',
+    filer:'Filed by regular taxpayers with turnover above ₹2 crore (optional below that). Composition dealers, casual taxpayers, ISDs, non-residents and TDS/TCS-only registrants are exempt entirely.',
+    tables:[
+      {t:'Pt I', d:'Basic details — FY, GSTIN, legal and trade name'},
+      {t:'Pt II · 4–5', d:'Outward supplies for the year — Table 4 taxable, Table 5 exempt/nil/non-GST, both reconciled against monthly returns'},
+      {t:'Pt III · 6–8', d:'ITC — Table 6 availed, Table 7 reversed, Table 8 reconciled against GSTR-2B'},
+      {t:'Pt IV · 9', d:'Tax paid for the year, by head'},
+      {t:'Pt V · 10–13', d:'Prior-year transactions declared in this year\'s returns — amendments, ITC reversed and availed'},
+      {t:'Pt VI · 14–19', d:'Differential tax, demands and refunds, HSN summaries (outward and inward), late fee'},
+    ] },
+
+  { code:'GSTR-9C', name:'Reconciliation Statement', freq:'annual', due:'31 December, with GSTR-9',
+    filer:'Filed by taxpayers with turnover above ₹5 crore — reconciles GSTR-9\'s figures against the audited books. Self-certified by the taxpayer; a CA/CMA sign-off is no longer required.',
+    tables:[
+      {t:'Pt A · I', d:'Basic details'},
+      {t:'Pt A · II', d:'Turnover reconciled between audited financials and GSTR-9'},
+      {t:'Pt A · III', d:'Tax paid, reconciled the same way'},
+      {t:'Pt A · IV', d:'Input tax credit, reconciled the same way'},
+      {t:'Pt A · V', d:'Additional liability arising from unreconciled amounts'},
+      {t:'Pt B', d:'Certification — self-declared accuracy of the reconciliation'},
+    ] },
+
+  { code:'CMP-08', name:'Statement-cum-Challan', freq:'quarterly', due:'18th after quarter-end',
+    filer:'Filed by composition dealers every quarter to self-assess and pay tax — the quarterly counterpart to GSTR-3B for this scheme.',
+    tables:[
+      {t:'3(1)', d:'Outward supplies, including exempt supplies, for the quarter'},
+      {t:'3(2)', d:'Inward supplies attracting reverse charge, including imports of services'},
+      {t:'4', d:'Tax payable — auto-computed by IGST/CGST/SGST/cess'},
+      {t:'5', d:'Interest payable, if any'},
+      {t:'6', d:'Total tax and interest paid for the quarter'},
+    ] },
+
+  { code:'GSTR-4', name:'Composition Annual Return', freq:'annual', due:'30 April',
+    filer:'Filed once a year by composition dealers — rolls up the four CMP-08 statements plus purchase-side detail CMP-08 never asked for.',
+    tables:[
+      {t:'1–3', d:'GSTIN, legal/trade name, aggregate turnover of the prior year'},
+      {t:'4A–4D', d:'Inward supplies — from registered suppliers (with and without reverse charge), from unregistered suppliers, and imported services'},
+      {t:'5', d:'Self-assessed tax liability, auto-populated from the year\'s four CMP-08 filings'},
+      {t:'6', d:'Outward supplies and reverse-charge inward supplies, rate-wise'},
+      {t:'7', d:'TDS/TCS credit received from suppliers or e-commerce operators'},
+      {t:'8', d:'Tax, interest and late fee payable and paid'},
+      {t:'9', d:'Refund claimed from the electronic cash ledger'},
+    ] },
+
+  { code:'GSTR-5', name:'Non-Resident Taxable Person Return', freq:'monthly', due:'13th, or within 7 days of registration lapsing',
+    filer:'Filed by a non-resident foreign taxpayer with temporary Indian operations — no separate registration for import/export beyond this.',
+    tables:[
+      {t:'3', d:'Import of goods — port code, Bill of Entry, taxable value, ITC claimed'},
+      {t:'4', d:'Amendments to imports declared in an earlier period'},
+      {t:'5', d:'Outward supplies to registered persons (B2B), invoice-wise'},
+      {t:'6', d:'B2C large — interstate invoices over ₹1 lakh'},
+      {t:'7', d:'B2C small, 7A intrastate / 7B interstate'},
+      {t:'8', d:'Credit and debit notes, registered and unregistered'},
+      {t:'9–10', d:'Total tax liability, computed from the tables above'},
+      {t:'11', d:'ITC availed for the period'},
+      {t:'12–13', d:'Tax and interest payable and paid'},
+      {t:'14', d:'Refund claimed from the electronic cash ledger, if the registration is closing'},
+    ] },
+
+  { code:'GSTR-5A', name:'OIDAR Service Return', freq:'monthly', due:'20th',
+    filer:'Filed by foreign OIDAR providers (streaming, cloud software, digital downloads) selling to Indian consumers. No ITC is available on this registration.',
+    tables:[
+      {t:'1–4', d:'GSTIN, legal/trade name, authorised Indian representative, and the period'},
+      {t:'5', d:'Taxable outward supplies to consumers in India — place of supply, rate, taxable value, IGST, cess'},
+      {t:'5A', d:'Amendments to supplies declared in an earlier period'},
+      {t:'6', d:'Calculation of interest, penalty or any other amount due'},
+      {t:'7', d:'Tax, interest and late fee payable and paid'},
+    ] },
+
+  { code:'GSTR-6', name:'Input Service Distributor Return', freq:'monthly', due:'13th',
+    filer:'Filed by an Input Service Distributor — typically a head office — to pass pooled ITC on to its branches.',
+    tables:[
+      {t:'1–2', d:'GSTIN and legal name'},
+      {t:'3', d:'ITC received for distribution — auto-populated, invoice-wise, from suppliers\' filings'},
+      {t:'4', d:'Total ITC, split into eligible and ineligible'},
+      {t:'5', d:'Distribution of ITC to each recipient branch'},
+      {t:'5A–5C', d:'Amendments — to Table 3 invoices, to credit/debit notes received, and to those notes\' amendments'},
+      {t:'6', d:'Corrections arising from ITC mismatches'},
+      {t:'7', d:'Redistribution adjustments following Table 6'},
+      {t:'8', d:'Corrections to ITC wrongly distributed in an earlier return'},
+      {t:'9', d:'Late fee paid'},
+      {t:'10', d:'Refund claimed from the electronic cash ledger'},
+    ] },
+
+  { code:'GSTR-7', name:'TDS Return', freq:'monthly', due:'10th',
+    filer:'Filed by government departments and notified entities required to deduct TDS on payments to suppliers under GST.',
+    tables:[
+      {t:'1–2', d:'GSTIN, and legal/trade name, auto-populated'},
+      {t:'3', d:'TDS deducted — deductee\'s GSTIN, contract/supply value, and TDS by CGST/SGST/IGST'},
+      {t:'4', d:'Amendments to TDS details filed earlier, which also update the deductee\'s GSTR-7A certificate'},
+      {t:'5', d:'TDS paid to government, by tax head'},
+      {t:'6', d:'Interest and late fee, payable and paid'},
+      {t:'7', d:'Refund of TDS claimed from the electronic cash ledger'},
+      {t:'8', d:'Electronic cash ledger debit entries, auto-populated after payment'},
+    ] },
+
+  { code:'GSTR-8', name:'E-commerce Operator Return', freq:'monthly', due:'10th',
+    filer:'Filed by e-commerce marketplaces to report Tax Collected at Source on behalf of the sellers on their platform. Cannot be revised once filed.',
+    tables:[
+      {t:'1–2', d:'GSTIN and legal name of the operator'},
+      {t:'3', d:'Supplies made through the platform — gross value, returns, and net amount subject to TCS, split registered/unregistered sellers'},
+      {t:'4', d:'Amendments to a prior month\'s Table 3'},
+      {t:'5', d:'Interest, where TCS wasn\'t deposited on time'},
+      {t:'6', d:'Tax payable and paid, by CGST/SGST/IGST'},
+      {t:'7', d:'Interest payable and paid'},
+      {t:'8', d:'Refund claimed from the electronic cash ledger'},
+      {t:'9', d:'Debit entries, populated after payment — these flow into each seller\'s GSTR-2A'},
+    ] },
+
+  { code:'GSTR-10', name:'Final Return', freq:'once', due:'Within 3 months of cancellation',
+    filer:'Filed once, by anyone whose GST registration is cancelled or surrendered — settles the tax owed on whatever stock remains.',
+    tables:[
+      {t:'1–2', d:'GSTIN and ARN, auto-populated'},
+      {t:'3', d:'Effective date of cancellation and the cancellation order\'s date and reference number'},
+      {t:'6', d:'Closing stock — inputs with invoices, inputs in semi-finished/finished goods, and capital goods/machinery'},
+      {t:'7', d:'Tax payable on that closing stock, by CGST/SGST/IGST/cess'},
+      {t:'8', d:'Verification — signed with DSC or Aadhaar-based e-sign'},
+    ] },
+
+  { code:'GSTR-11', name:'UIN Holder Statement', freq:'quarterly', due:'No fixed deadline — filed as needed',
+    filer:'Filed by UIN holders — foreign embassies, consulates and UN bodies — to reclaim the GST they paid on purchases in India.',
+    tables:[
+      {t:'Pt I', d:'UIN and taxpayer details, auto-populated from the login'},
+      {t:'Pt II', d:'Inward supplies received — supplier GSTIN, invoice number and date, taxable value, tax by IGST/CGST/SGST/cess, place of supply'},
+      {t:'Pt III', d:'Refund claimed — auto-calculated from Part II'},
+      {t:'Pt IV', d:'Verification — DSC or EVC'},
+    ] },
+];
+const GST_FREQ_LABEL = { monthly:'Monthly', quarterly:'Quarterly', annual:'Annual', once:'One-time' };
 const DEFAULT_LEDGERS = [
   {id:'l_cash',  name:'Cash',            group:'cash',  opening:0},
   {id:'l_bank',  name:'Bank Account',    group:'bank',  opening:0},
@@ -1136,6 +1335,7 @@ let verifyLinkNotice = '';         // inline success/status message on the sign-
 let verifyLinkError = '';          // inline error message on the sign-up form
 let coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
 let modal = null;          // null | 'editCompany' | 'help' | 'isDetail'
+let gstFormatIndex = 0;    // which GST_FORMS entry the "GST Format" modal is showing
 let viewMenuOpen = false;  // View menu dropdown toggle
 let editCoDraft = null;    // draft for the Edit Company modal
 let fileMenuOpen = false;  // Gateway File menu dropdown toggle
@@ -3895,6 +4095,7 @@ function render(){
     ${modal==='assetsHelp' ? assetsHelpModal() : ''}
     ${modal==='partiesHelp' ? partiesHelpModal() : ''}
     ${modal==='fyPicker' ? fyPickerModal() : ''}
+    ${modal==='gstFormats' ? gstFormatsModal() : ''}
     ${qaWidget()}
   `;
   attachHandlers();
@@ -3992,6 +4193,18 @@ function render(){
       if(e.target.id==='modalOverlayBg'){ modal = null; render(); }
     });
     document.getElementById('modalClose')?.addEventListener('click', ()=>{ modal = null; render(); });
+  }
+  if(modal==='gstFormats'){
+    document.querySelectorAll('[data-fmt-jump]').forEach(el=>{
+      el.addEventListener('click', ()=>{ gstFormatIndex = Number(el.dataset.fmtJump); render(); });
+    });
+    document.getElementById('fmtPrevBtn')?.addEventListener('click', ()=>{
+      if(gstFormatIndex>0){ gstFormatIndex--; render(); }
+    });
+    document.getElementById('fmtNextBtn')?.addEventListener('click', ()=>{
+      if(gstFormatIndex<GST_FORMS.length-1){ gstFormatIndex++; render(); }
+    });
+    document.getElementById('fmtDownloadBtn')?.addEventListener('click', ()=> downloadGSTFormat(gstFormatIndex));
   }
   if(modal==='help'){
     wireContactSupportHandlers(render);
@@ -9522,7 +9735,12 @@ function viewGST(){
     ${masthead('GST','Output tax, input credit, and filing-ready statements')}
 
     <div class="panel">
-      <div class="panel-head"><h2>GST Summary</h2><button class="btn secondary small" id="downloadGSTBtn" type="button">⬇ Download GST Statement</button></div>
+      <div class="panel-head"><h2>GST Summary</h2>
+        <div style="display:flex;gap:8px;">
+          <button class="btn secondary small" id="viewGSTFormatsBtn" type="button">📋 GST Format</button>
+          <button class="btn secondary small" id="downloadGSTBtn" type="button">⬇ Download GST Statement</button>
+        </div>
+      </div>
       <div class="panel-body" style="padding:0;">
         <table>
           <tr><th>Tax Head</th><th class="num">Output (Payable)</th><th class="num">Input (Credit)</th></tr>
@@ -9563,6 +9781,91 @@ function viewGST(){
     </div></div>
     <p class="muted" style="font-size:11.5px;">Note: only Sales/Purchase vouchers where GST was applied via the GST Calculator appear here. Use the Voucher tab to record a taxable sale or purchase.</p>
   `;
+}
+
+// "GST Format" — a browsable, one-by-one reference for every active GST return form (GSTR-1 through
+// GSTR-11, plus CMP-08), each individually downloadable. Data lives in GST_FORMS above.
+function gstFormatsModal(){
+  if(gstFormatIndex<0) gstFormatIndex = 0;
+  if(gstFormatIndex>=GST_FORMS.length) gstFormatIndex = GST_FORMS.length-1;
+  const f = GST_FORMS[gstFormatIndex];
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:660px;max-height:88vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+        <div class="panel-head" style="padding:16px 20px;"><h2>GST Return Formats</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div class="fmt-chips">
+          ${GST_FORMS.map((x,i)=>`<button type="button" class="fmt-chip ${i===gstFormatIndex?'active':''}" data-fmt-jump="${i}">${x.code}</button>`).join('')}
+        </div>
+        <div style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
+          <div class="fmt-head">
+            <div><span class="fmt-code">${f.code}</span><span class="fmt-name">${escapeHtml(f.name)}</span></div>
+            <div><span class="fmt-tag">${GST_FREQ_LABEL[f.freq]}</span><span class="fmt-due">${escapeHtml(f.due)}</span></div>
+          </div>
+          <p class="fmt-filer">${f.filer}</p>
+          <dl class="fmt-tbl">
+            ${f.tables.map(x=>`<dt>${escapeHtml(x.t)}</dt><dd>${x.d}</dd>`).join('')}
+          </dl>
+          ${f.note ? `<div class="fmt-note"><strong>Note:</strong> ${f.note}</div>` : ''}
+        </div>
+        <div class="fmt-nav">
+          <button class="btn secondary small" id="fmtPrevBtn" type="button" ${gstFormatIndex===0?'disabled':''}>← Prev</button>
+          <span class="fmt-pos">${gstFormatIndex+1} of ${GST_FORMS.length}</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn secondary small" id="fmtDownloadBtn" type="button">⬇ Download this format</button>
+            <button class="btn small" id="fmtNextBtn" type="button" ${gstFormatIndex===GST_FORMS.length-1?'disabled':''}>Next →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+// Downloads one GST_FORMS entry as a standalone, printable HTML file — no external dependencies, so
+// it opens/prints (Ctrl+P → Save as PDF) the same way whether or not the app itself is online.
+function downloadGSTFormat(index){
+  const f = GST_FORMS[index];
+  if(!f) return;
+  const rows = f.tables.map(x=>`<tr><td class="tcode">${escapeHtml(x.t)}</td><td>${x.d}</td></tr>`).join('');
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${f.code} — ${escapeHtml(f.name)} Format</title>
+<style>
+  body{font-family: Arial, Helvetica, sans-serif; color:#1B2420; margin:0; padding:34px; font-size:13px; max-width:760px;}
+  .hd{border-bottom:2px solid #111; padding-bottom:14px; margin-bottom:18px;}
+  .hd .code{font-size:13px;font-weight:800;color:#1E7A12;letter-spacing:.03em;}
+  .hd h1{margin:6px 0 4px;font-size:21px;}
+  .meta{font-size:12px;color:#555;}
+  .meta b{color:#111;}
+  .filer{font-size:12.5px;color:#444;margin:16px 0;line-height:1.6;}
+  table{width:100%;border-collapse:collapse;margin-bottom:14px;}
+  th{background:#EEF3EF;text-align:left;padding:8px;font-size:11px;text-transform:uppercase;border-bottom:2px solid #111;}
+  td{padding:8px;border-bottom:1px solid #ddd;font-size:12.5px;vertical-align:top;}
+  td.tcode{font-weight:700;color:#1E7A12;white-space:nowrap;width:90px;}
+  .note{margin-top:14px;padding:10px 14px;background:#FFF6E9;border-left:3px solid #F2994A;font-size:12px;}
+  .footer{margin-top:26px;font-size:10.5px;color:#888;border-top:1px solid #ddd;padding-top:10px;}
+  @media print{ body{padding:0;} }
+</style>
+</head><body>
+  <div class="hd">
+    <div class="code">${f.code}</div>
+    <h1>${escapeHtml(f.name)}</h1>
+    <div class="meta"><b>${GST_FREQ_LABEL[f.freq]}</b> · Due: ${escapeHtml(f.due)}</div>
+  </div>
+  <div class="filer">${f.filer}</div>
+  <table>
+    <tr><th>Table / Part</th><th>What goes in it</th></tr>
+    ${rows}
+  </table>
+  ${f.note ? `<div class="note"><strong>Note:</strong> ${f.note}</div>` : ''}
+  <div class="footer">Downloaded from The Reckoning Books by SKm on ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}. GST formats change by CBIC notification — reconfirm before relying on this for a filing.</div>
+</body></html>`;
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${f.code.replace(/[^a-z0-9]+/gi,'_')}_Format.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  toast(`${f.code} format downloaded`);
 }
 
 function reconcileDateLabel(d){
@@ -10531,6 +10834,11 @@ function attachHandlers(){
 
   if(view==='gst'){
     document.getElementById('downloadGSTBtn')?.addEventListener('click', downloadGSTStatement);
+    document.getElementById('viewGSTFormatsBtn')?.addEventListener('click', ()=>{
+      gstFormatIndex = 0;
+      modal = 'gstFormats';
+      render();
+    });
   }
 
   if(view==='reconcile'){
