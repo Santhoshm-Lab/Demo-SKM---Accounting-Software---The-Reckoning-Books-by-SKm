@@ -1279,6 +1279,176 @@ const GST_FORMS = [
     ] },
 ];
 const GST_FREQ_LABEL = { monthly:'Monthly', quarterly:'Quarterly', annual:'Annual', once:'One-time' };
+
+// The REAL, CBIC-notified table/column layout of each GST return form — as prescribed by the GST
+// Council under the CGST Rules, 2017 (the "FORM GSTR-X" annexures to Rules 59-97), cross-checked
+// against the official form PDFs mirrored on state GST portals (e.g. gst.kar.nic.in, gstzen.in) and
+// the GSTN tutorial portal. This is deliberately separate from GST_FORMS above (which is the
+// plain-English "what does this table mean" reference) — GST_OFFICIAL_FORMS drives the "GST Format"
+// download, which renders an actual blank, fillable replica of the government form: real header
+// fields, real table numbers and titles, and the real column headers, ready to fill by hand or use
+// as a structural reference. Column lists cover every table's primary layout; a handful of the most
+// granular amendment sub-tables (e.g. GSTR-1's 9A original-vs-revised split) are folded into their
+// parent table's columns rather than reproduced as separate grids, to keep each form a usable size.
+const GST_OFFICIAL_FORMS = {
+  'GSTR-1': { rule:'rule 59(1)', legalTitle:'Details of outward supplies of goods or services',
+    header:['1. GSTIN','2. (a) Legal name of the registered person   (b) Trade name, if any','3. (a) Aggregate turnover in the preceding financial year   (b) Aggregate turnover — April to June, 2017'],
+    tables:[
+      { num:'4', title:'Taxable outward supplies made to registered persons (including UIN-holders), other than supplies covered by Table 6', sub:'4A: other than reverse charge & e-commerce · 4B: attracting reverse charge · 4C: through e-commerce operator liable to collect TCS', cols:['GSTIN/UIN','Invoice No.','Invoice Date','Invoice Value','Place of Supply','Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'5', title:'Taxable outward inter-State supplies to unregistered persons where invoice value is more than ₹2.5 lakh', sub:'5A: other than through e-commerce · 5B: through e-commerce operator liable to collect TCS', cols:['Place of Supply (State/UT)','Invoice No.','Invoice Date','Invoice Value','Rate','Taxable Value','Integrated Tax','Cess'] },
+      { num:'6', title:'Zero rated supplies and deemed exports', sub:'6A: exports · 6B: supplies to SEZ unit/developer · 6C: deemed exports', cols:['GSTIN of Recipient','Invoice No.','Invoice Date','Invoice Value','Shipping Bill No.','Shipping Bill Date','Rate','Taxable Value','Integrated Tax','Cess'] },
+      { num:'7', title:'Taxable supplies (net of debit/credit notes) to unregistered persons other than those covered in Table 5', sub:'7A: Intra-State, rate-wise (incl. through e-commerce) · 7B: Inter-State, rate-wise (incl. through e-commerce)', cols:['Rate of Tax','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'8', title:'Nil rated, exempted and non-GST outward supplies', sub:'8A: Inter-State to registered · 8B: Intra-State to registered · 8C: Inter-State to unregistered · 8D: Intra-State to unregistered', cols:['Description','Nil Rated Supplies','Exempted (other than Nil rated/non-GST)','Non-GST Supplies'] },
+      { num:'9', title:'Amendments to taxable outward supply details furnished in returns for earlier tax periods in Tables 4, 5 and 6, and amendments to Credit/Debit Notes', sub:'9A: amended invoices/shipping bills · 9B: original credit/debit notes · 9C: amended credit/debit notes', cols:['GSTIN/UIN','Original Invoice/Note No.','Original Date','Revised Invoice/Note No.','Revised Date','Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Place of Supply'] },
+      { num:'10', title:'Amendments to taxable outward supplies to unregistered persons furnished in returns for earlier tax periods in Table 7', sub:'10A: Intra-State, rate-wise · 10B: Inter-State, rate-wise', cols:['Tax Period','Rate of Tax','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'11', title:'Consolidated statement of advances received / advances adjusted in this tax period / amendments of information furnished in earlier tax period', sub:'11A: advances received · 11B: advances adjusted · 11(II): amendments to earlier periods', cols:['Rate','Gross Advance Received / Adjusted','Place of Supply','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'12', title:'HSN-wise summary of outward supplies', cols:['Sr. No.','HSN','Description','UQC','Total Quantity','Total Value','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'13', title:'Documents issued during the tax period', cols:['Sr. No.','Nature of Document','Sr. No. From','Sr. No. To','Total Number','Cancelled','Net Issued'] },
+    ] },
+
+  'GSTR-2B': { rule:'rule 60(7)', legalTitle:'Auto-drafted Input Tax Credit Statement (system-generated — not manually filed)',
+    header:['1. GSTIN','2. Legal name (auto)','3. Return Period'],
+    tables:[
+      { num:'Pt A', title:'ITC Available', sub:'B2B — Invoices · B2B — Debit Notes · B2B — Amendments · ISD Credit (incl. amendments) · Import of Goods (incl. from SEZ)', cols:['GSTIN of Supplier','Trade/Legal Name','Invoice/Note No.','Invoice/Note Date','Invoice/Note Value','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Applicable % of Tax Rate (RCM only)','ITC Availability (Yes/No)'] },
+      { num:'Pt A · Reversal', title:'ITC Reversal', sub:'B2B Credit Notes and their amendments, landing under "Others"', cols:['GSTIN of Supplier','Trade/Legal Name','Note No.','Note Date','Note Value','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'Pt B', title:'ITC Not Available', sub:'Same categories as Part A, for credit that cannot be claimed (e.g. supplier filed after the recipient\'s GSTR-3B due date, or Section 16(4) time-barred)', cols:['GSTIN of Supplier','Trade/Legal Name','Invoice/Note No.','Invoice/Note Date','Invoice/Note Value','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Reason ITC Not Available'] },
+    ] },
+
+  'GSTR-3B': { rule:'rule 61(6)', legalTitle:'Monthly/Quarterly Summary Return',
+    header:['Year','Month/Quarter','1. GSTIN','2. Legal name of the registered person (auto-populated)'],
+    tables:[
+      { num:'3.1', title:'Details of outward supplies and inward supplies liable to reverse charge', sub:'(a) Outward taxable supplies (other than zero rated, nil rated & exempted) · (b) Outward taxable supplies (zero rated) · (c) Other outward supplies (nil rated, exempted) · (d) Inward supplies (liable to reverse charge) · (e) Non-GST outward supplies', cols:['Nature of Supplies','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'3.1.1', title:'Supplies notified under section 9(5) of the CGST Act, 2017 and corresponding provisions in IGST/UTGST/SGST Acts', sub:'(i) Taxable supplies on which e-commerce operator pays tax u/s 9(5) — by registered/unregistered supplier · (ii) Taxable supplies made by e-commerce operator on his own account', cols:['Description','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'3.2', title:'Inter-State supplies made to unregistered persons, composition taxable persons and UIN holders (out of supplies shown in 3.1(a) & 3.1.1(i))', sub:'Place-of-supply state-wise, split by recipient type', cols:['Place of Supply (State/UT)','Total Taxable Value','Amount of Integrated Tax'] },
+      { num:'4', title:'Eligible ITC', sub:'(A) ITC Available: (1) Import of goods (2) Import of services (3) Inward supplies liable to RCM (4) Inward supplies from ISD (5) All other ITC — (B) ITC Reversed: (1) As per Rules 38,42,43 (2) Others — (C) Net ITC Available (A−B) — (D) Ineligible ITC: (1) As per Section 17(5) (2) Others', cols:['Details','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'5', title:'Values of exempt, nil-rated and non-GST inward supplies', sub:'Row 1: from a supplier under composition scheme, exempt & nil rated supply · Row 2: non-GST supply', cols:['Nature of Supplies','Inter-State Supplies','Intra-State Supplies'] },
+      { num:'5.1', title:'Interest and late fee for the previous tax period', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'6.1', title:'Payment of tax', sub:'Rows: Integrated Tax · Central Tax · State/UT Tax · Cess', cols:['Description','Tax Payable','Paid through ITC','Tax paid TDS/TCS','Tax/Cess Paid in Cash','Interest Paid in Cash','Late Fee Paid in Cash'] },
+      { num:'6.2', title:'TDS/TCS Credit', cols:['Details','Integrated Tax','Central Tax','State/UT Tax'] },
+    ] },
+
+  'CMP-08': { rule:'rule 62', legalTitle:'Statement for payment of self-assessed tax',
+    header:['1. GSTIN','2. Legal name of the registered person (auto)','3. Trade name, if any (auto)','4. ARN (auto, after filing)','5. Date of ARN (auto, after filing)'],
+    tables:[
+      { num:'3', title:'Summary of self-assessed liability', sub:'Row 1: Outward supplies, including exempt supplies · Row 2: Inward supplies attracting reverse charge, including import of services · Row 3: Tax payable (1+2) · Row 4: Interest payable, if any · Row 5: Tax and interest paid', cols:['Description','Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+    ] },
+
+  'GSTR-4': { rule:'rule 62', legalTitle:'Return for financial year of a registered person who has opted for composition levy or availing benefit of Notification No. 02/2019-Central Tax (Rate)',
+    header:['1. Financial Year','2. GSTIN','3. (a) Legal name of the registered person (auto)   (b) Trade name, if any (auto)','4. ARN and date (auto, after filing)'],
+    tables:[
+      { num:'4', title:'Inward supplies, including supplies on which tax is to be paid on reverse charge', sub:'4A: from registered supplier (other than reverse charge) · 4B: from registered supplier (reverse charge) · 4C: from unregistered supplier · 4D: import of service', cols:['GSTIN of Supplier','Trade/Legal Name','Invoice/Debit-Credit Note No.','Date','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'5', title:'Summary of self-assessed liability as per FORM GST CMP-08 (net of advances, credit and debit notes and any other adjustment due to amendments)', sub:'Rows: Quarter 1 · Quarter 2 · Quarter 3 · Quarter 4', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'6', title:'Tax rate wise details of outward supplies/inward supplies (net of advances, credit and debit notes and any other adjustment due to amendments) and RCM inward supplies', sub:'Rows by rate slab (1%, 5%, etc.) plus reverse-charge inward supplies', cols:['Description','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Total Tax'] },
+      { num:'7', title:'TDS/TCS credit received', cols:['GSTIN of Deductor/Collector','Gross Value','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'8', title:'Tax, interest, late fee payable and paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess','Interest','Late Fee'] },
+      { num:'9', title:'Refund claimed from electronic cash ledger', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess','Interest','Bank Account'] },
+    ] },
+
+  'GSTR-5': { rule:'rule 63', legalTitle:'Return for Non-resident taxable person',
+    header:['Year','Month','1. GSTIN','2. (a) Legal name (auto)   (b) Trade name, if any (auto)','3. Validity period of registration (From – To)'],
+    tables:[
+      { num:'3', title:'Imports of goods made during the tax period (including amendments/Bill of Entry)', cols:['Bill of Entry No.','Bill of Entry Date','Bill of Entry Value','Rate','Taxable Value','Integrated Tax','Cess','ITC Available — Integrated Tax','ITC Available — Cess'] },
+      { num:'4', title:'Amendments in the details furnished in any earlier return', cols:['Original Bill of Entry No.','Original Date','Revised Bill of Entry No.','Revised Date','Taxable Value','Integrated Tax','Cess','Differential ITC'] },
+      { num:'5', title:'Taxable outward supplies made to registered persons (including UIN-holders)', cols:['GSTIN/UIN','Invoice No.','Invoice Date','Invoice Value','Place of Supply','Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'6', title:'Taxable outward inter-State supplies to unregistered persons where invoice value is more than ₹2.5 lakh', cols:['Place of Supply','Invoice No.','Invoice Date','Invoice Value','Rate','Taxable Value','Integrated Tax','Cess'] },
+      { num:'7', title:'Taxable supplies (net of debit/credit notes) to unregistered persons other than those in Table 6', sub:'7A: Intra-State, rate-wise · 7B: Inter-State, rate-wise', cols:['Rate','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'8', title:'Amendments to taxable outward supplies in Tables 5 and 6 of earlier tax periods', cols:['GSTIN/UIN','Original Invoice No.','Original Date','Revised Invoice No.','Revised Date','Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Place of Supply'] },
+      { num:'9', title:'Amendments to taxable supplies to unregistered persons furnished in Table 7 of earlier tax periods', cols:['Tax Period','Rate','Total Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'10', title:'Total tax liability', cols:['Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'11', title:'Tax payable and paid', cols:['Description','Tax Payable','Paid in Cash','Paid through ITC','Tax Paid'] },
+      { num:'12', title:'Interest, late fee and any other amount payable and paid', cols:['Description','Amount Payable','Amount Paid'] },
+      { num:'13', title:'Refund claimed from electronic cash ledger', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess','Bank Account'] },
+      { num:'14', title:'Debit entries in electronic cash/credit ledger (to be populated after filing)', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+    ] },
+
+  'GSTR-5A': { rule:'rule 64', legalTitle:'Details of supplies of online information and database access or retrieval (OIDAR) services by a person located outside India, made to non-taxable persons in India',
+    header:['1. GSTIN','2. (a) Legal name (auto)   (b) Trade name, if any (auto)','3. ARN and date (auto)','4. Name of the authorised representative in India'],
+    tables:[
+      { num:'5', title:'Taxable outward supplies made to consumers in India', cols:['Place of Supply (State)','Rate of Tax','Taxable Value','Integrated Tax','Cess'] },
+      { num:'5A', title:'Amendments to taxable outward supplies to consumers furnished in Table 5 of earlier tax periods', cols:['Tax Period','Place of Supply (State)','Rate of Tax','Taxable Value','Integrated Tax','Cess'] },
+      { num:'6', title:'Calculation of interest or any other amount', cols:['Description','Amount on which Interest/Amount Calculated','Interest/Amount'] },
+      { num:'7', title:'Tax, interest, late fee and any other amount payable and paid', cols:['Description','Integrated Tax','Cess','Interest','Late Fee'] },
+    ] },
+
+  'GSTR-6': { rule:'rule 65', legalTitle:'Return for Input Service Distributor',
+    header:['Year','Month','1. GSTIN','2. (a) Legal name of the registered person (auto)   (b) Trade name, if any (auto)'],
+    tables:[
+      { num:'3', title:'Input tax credit received for distribution', cols:['GSTIN of Supplier','Invoice No.','Invoice Date','Invoice Value','ITC Amount — Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'4', title:'Total ITC / eligible ITC / ineligible ITC to be distributed for the tax period', cols:['Details','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'5', title:'Distribution of input tax credit reported in Table 4', sub:'5A: distribution of eligible ITC · 5B: distribution of ineligible ITC', cols:['GSTIN of Recipient','ISD Invoice No.','ISD Invoice Date','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'6', title:'Amendments in information furnished in earlier returns in Table No. 3', sub:'6A: amendments to Table 3 details · 6B: original debit/credit notes · 6C: amended debit/credit notes', cols:['GSTIN of Supplier','Original Invoice/Note No.','Original Date','Revised Invoice/Note No.','Revised Date','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'7', title:'Input tax credit mismatches and reclaims to be distributed in the tax period', sub:'7A: ITC mismatch · 7B: ITC reclaimed on rectification', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'8', title:'Distribution of input tax credit reported in Table 6 and 7 (plus/minus)', sub:'8A: eligible ITC · 8B: ineligible ITC', cols:['GSTIN of Recipient','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'9', title:'Redistribution of ITC distributed to a wrong recipient (plus/minus)', sub:'9A: eligible ITC · 9B: ineligible ITC', cols:['GSTIN of Recipient (Original)','GSTIN of Recipient (Correct)','Integrated Tax','Central Tax','State/UT Tax','Cess'] },
+      { num:'10', title:'Late fee', cols:['Description','Central Tax','State/UT Tax'] },
+      { num:'11', title:'Refund claimed from electronic cash ledger', cols:['Description','Central Tax','State/UT Tax','Debit Entry No.'] },
+    ] },
+
+  'GSTR-7': { rule:'rule 66(1)', legalTitle:'Return for Tax Deducted at Source',
+    header:['Year','Month','1. GSTIN','2. (a) Legal name of the deductor (auto)   (b) Trade name, if any (auto)'],
+    tables:[
+      { num:'3', title:'Details of the tax deducted at source', cols:['GSTIN of Deductee','Amount Paid to Deductee on which Tax is Deducted','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'4', title:'Amendments to details of tax deducted at source in respect of any earlier tax period', cols:['GSTIN of Deductee','Original Amount Paid','Revised Amount Paid','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'5', title:'Tax deduction at source and paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'6', title:'Interest, late fee payable and paid', sub:'6(a) payable · 6(b) paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'7', title:'Refund claimed from electronic cash ledger', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Interest','Debit Entry No.','Bank Account'] },
+      { num:'8', title:'Debit entries in electronic cash ledger for TDS/interest payment (populated after payment of tax and filing of return)', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+    ] },
+
+  'GSTR-8': { rule:'rule 67(1)', legalTitle:'Statement for tax collection at source',
+    header:['Year','Month','1. GSTIN','2. (a) Legal name of the e-commerce operator (auto)   (b) Trade name, if any (auto)'],
+    tables:[
+      { num:'3', title:'Details of supplies made through the e-commerce operator', cols:['GSTIN of Supplier','Gross Value of Supplies (Registered)','Value of Supplies Returned (Registered)','Gross Value of Supplies (Unregistered)','Value of Supplies Returned (Unregistered)','Net Amount Liable for TCS','Rate','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'4', title:'Amendments to details of supplies in respect of any earlier statement', cols:['GSTIN of Supplier','Original Gross Value','Revised Gross Value','Revised Value Returned','Net Amount Liable for TCS','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'5', title:'Details of interest', sub:'5(a) on account of TCS · 5(b) paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'6', title:'Tax payable and paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'7', title:'Interest payable and paid', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+      { num:'8', title:'Refund claimed from electronic cash ledger', cols:['Description','Integrated Tax','Central Tax','State/UT Tax','Interest','Debit Entry No.','Bank Account'] },
+      { num:'9', title:'Debit entries in cash ledger for TCS/interest payment (populated after payment of tax and filing of statement)', cols:['Description','Integrated Tax','Central Tax','State/UT Tax'] },
+    ] },
+
+  'GSTR-9': { rule:'rule 80', legalTitle:'Annual Return',
+    header:['1. Financial Year','2. GSTIN','3A. Legal Name (auto)','3B. Trade Name, if any (auto)'],
+    tables:[
+      { num:'4', title:'Details of advances, inward and outward supplies made during the financial year on which tax is payable', sub:'4A B2C · 4B B2B · 4C zero-rated (with tax) · 4D SEZ (with tax) · 4E deemed exports · 4F advances (tax paid, invoice pending) · 4G inward supplies (RCM) · 4H sub-total · 4I credit notes · 4J debit notes · 4K amendments (+) · 4L amendments (−) · 4M sub-total · 4N total (H+M)', cols:['Description','Taxable Value','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'5', title:'Details of outward supplies made during the financial year on which tax is not payable', sub:'5A zero-rated (without tax) · 5B SEZ (without tax) · 5C RCM (recipient pays) · 5D exempted · 5E nil rated · 5F non-GST supply · 5G sub-total · 5H credit notes · 5I debit notes · 5J/5K amendments · 5L sub-total · 5M turnover not payable · 5N total turnover', cols:['Description','Taxable Value','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'6', title:'Details of ITC availed during the financial year', sub:'6A total ITC per GSTR-3B (auto) · 6B inward supplies (inputs/capital goods/input services) · 6C inward from unregistered (RCM) · 6D inward from registered (RCM) · 6E import of goods · 6F import of services · 6G ITC from ISD · 6H ITC reclaimed · 6I sub-total · 6J difference · 6K–6L transition credit TRAN-I/II · 6M other ITC · 6N sub-total · 6O total ITC availed', cols:['Description','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'7', title:'Details of ITC reversed and ineligible ITC for the financial year', sub:'7A Rule 37 · 7B Rule 39 · 7C Rule 42 · 7D Rule 43 · 7E Section 17(5) · 7F–7G TRAN-I/II reversal · 7H other reversals · 7I total reversed · 7J net ITC available (6O−7I)', cols:['Description','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'8', title:'Other ITC-related information', sub:'8A ITC per GSTR-2A (auto) · 8B ITC per 6(B)+6(H) (auto) · 8C ITC on prior-FY supplies availed this FY · 8D difference · 8E available but not availed · 8F available but ineligible · 8G IGST paid on imports · 8H IGST credit availed (auto) · 8I difference · 8J available but not availed on imports · 8K total ITC lapsed', cols:['Description','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'9', title:'Details of tax paid as declared in returns filed during the financial year', cols:['Description','Tax Payable','Paid through Cash','Paid through ITC — Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'10–14', title:'Particulars of transactions for the previous FY declared in returns of April to September of the current FY (or up to the date of filing of Annual Return, whichever is earlier)', sub:'10 supplies/tax declared (amendments, net of debit notes) · 11 supplies/tax reduced (amendments, net of credit notes) · 12 reversal of ITC availed for the previous FY · 13 ITC availed for the previous FY · 14 differential tax paid on 10 & 11 (Payable/Paid)', cols:['Description','Taxable Value','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'15', title:'Particulars of demands and refunds', cols:['Description','Central Tax','State/UT Tax','Integrated Tax','Cess','Interest','Penalty','Late Fee/Others'] },
+      { num:'16', title:'Supplies received from composition taxpayers, deemed supply under Section 143 and goods sent on approval basis', cols:['Description','Taxable Value','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'17', title:'HSN-wise summary of outward supplies', cols:['HSN Code','UQC','Total Quantity','Taxable Value','Rate of Tax','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'18', title:'HSN-wise summary of inward supplies', cols:['HSN Code','UQC','Total Quantity','Taxable Value','Rate of Tax','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'19', title:'Late fee payable and paid', cols:['Description','Payable','Paid'] },
+    ] },
+
+  'GSTR-9C': { rule:'rule 80(3)', legalTitle:'Reconciliation Statement',
+    header:['1. Financial Year','2. GSTIN','3A. Legal Name (auto)','3B. Trade Name, if any (auto)','4. Are you liable to audit under any Act?'],
+    tables:[
+      { num:'Pt A · 5', title:'Reconciliation of gross turnover', sub:'A turnover per audited financials · B unbilled revenue (opening, +) · C unadjusted advances (closing, +) · D deemed supply Sch. I (+) · E credit notes post-FY (−) · F non-permissible trade discounts (+) · G Apr–Jun 2017 turnover (−) · H unbilled revenue (closing, −) · I unadjusted advances (opening, −) · J non-permissible credit notes (+) · K SEZ/DTA adjustments (−) · L composition turnover (−) · M Section 15 valuation (±) · N forex fluctuation (±) · O other adjustments (±) · P annual turnover after adjustments (auto) · Q turnover per Annual Return · R un-reconciled turnover (Q−P)', cols:['Description','Amount'] },
+      { num:'Pt A · 7', title:'Reconciliation of taxable turnover', sub:'A turnover after adjustments (from 5P, auto) · B exempted/nil/non-GST/no-supply turnover · C zero-rated without tax payment · D reverse-charge supplies · E taxable turnover derived (auto) · F taxable turnover per Annual Return · G un-reconciled taxable turnover', cols:['Description','Amount'] },
+      { num:'Pt A · 9', title:'Reconciliation of rate-wise liability and amount payable', sub:'Rows for 5%, 5% (RC), 12%, 12% (RC), 18%, 18% (RC), 28%, 28% (RC), 3%, 0.25%, 0.1%, interest, late fee, penalty, others · P total payable (auto) · Q total paid per Annual Return · R unreconciled payment', cols:['Rate/Description','Taxable Value','Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'Pt A · 12', title:'Reconciliation of Net Input Tax Credit (ITC)', sub:'A ITC per audited financials · B ITC of earlier FY claimed in current FY (+) · C ITC of current FY claimed in later FY (−) · D ITC per books (auto) · E ITC claimed in Annual Return · F un-reconciled ITC', cols:['Description','Amount'] },
+      { num:'Pt A · 14', title:'Reconciliation of ITC declared in Annual Return with ITC availed on expenses as per audited financials', sub:'Rows: Purchases, Freight/Carriage, Power & Fuel, Imported goods (incl. SEZ), Rent & Insurance, Goods lost/stolen/destroyed/written off/gifted/samples, Royalties, Employees’ Cost, Conveyance, Bank Charges, Entertainment, Stationery, Repair & Maintenance, Other expenses, Capital goods, Any other expense · R total eligible ITC (auto) · S ITC claimed in Annual Return · T un-reconciled ITC', cols:['Description','Value','Total ITC','Eligible ITC Availed'] },
+      { num:'Pt B', title:'Certification', sub:'Self-certified declaration by the registered person that the particulars in FORM GSTR-9C are true and correct, verified with reference to the books of account and other records — no separate CA/CMA auditor certification is required.', cols:['Verification / Declaration'] },
+    ] },
+
+  'GSTR-10': { rule:'rule 81', legalTitle:'Final Return',
+    header:['1. GSTIN','2. Legal name (auto)','3. Trade name, if any (auto)','4. Address for future correspondence','5. Effective date of cancellation of registration','6. Reference number of cancellation order','7. Date of cancellation order'],
+    tables:[
+      { num:'8', title:'Particulars of closing stock held on the date on which registration is cancelled, and the tax payable thereon', sub:'8(a) inputs held in stock (invoices available) · 8(b) inputs in semi-finished/finished goods (invoices available) · 8(c) capital goods/plant & machinery · 8(d) inputs held in stock or in semi-finished/finished goods (invoices not available — taxable value at market price)', cols:['Sr. No.','GSTIN','Invoice/Bill of Entry No.','Date','Description of Goods','UQC','Qty','Value (as adjusted by Dr/Cr Note)','ITC/Tax Payable — Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'9', title:'Amount of tax payable and paid', cols:['Description','Amount of Tax Payable','Tax Paid through Cash Ledger','Tax Paid through Credit Ledger — Central Tax','State/UT Tax','Integrated Tax','Cess'] },
+      { num:'10', title:'Interest, late fee payable and paid', cols:['Description','Amount Payable','Amount Paid'] },
+    ] },
+
+  'GSTR-11': { rule:'rule 82', legalTitle:'Statement of inward supplies by persons having Unique Identification Number (UIN)',
+    header:['1. UIN','2. Name of the person having UIN (auto)','3. Address (auto)'],
+    tables:[
+      { num:'3', title:'Details of inward supplies received', sub:'3A: invoices received · 3B: credit/debit notes received', cols:['GSTIN of Supplier','Invoice/Note No.','Invoice/Note Date','Invoice/Note Value','Rate','Taxable Value','Integrated Tax','Central Tax','State/UT Tax','Cess','Eligible Amount of Refund'] },
+    ] },
+};
 const DEFAULT_LEDGERS = [
   {id:'l_cash',  name:'Cash',            group:'cash',  opening:0},
   {id:'l_bank',  name:'Bank Account',    group:'bank',  opening:0},
@@ -9956,7 +10126,7 @@ function gstFormatsModal(){
           <button class="btn secondary small" id="fmtPrevBtn" type="button" ${gstFormatIndex===0?'disabled':''}>← Prev</button>
           <span class="fmt-pos">${gstFormatIndex+1} of ${GST_FORMS.length}</span>
           <div style="display:flex;gap:8px;">
-            <button class="btn secondary small" id="fmtDownloadBtn" type="button">⬇ Download this format</button>
+            <button class="btn secondary small" id="fmtDownloadBtn" type="button">⬇ Download official format (blank)</button>
             <button class="btn small" id="fmtNextBtn" type="button" ${gstFormatIndex===GST_FORMS.length-1?'disabled':''}>Next →</button>
           </div>
         </div>
@@ -9966,7 +10136,95 @@ function gstFormatsModal(){
 }
 // Downloads one GST_FORMS entry as a standalone, printable HTML file — no external dependencies, so
 // it opens/prints (Ctrl+P → Save as PDF) the same way whether or not the app itself is online.
+// Fills a form's official header-field boxes with whatever this company record actually has, so the
+// blank template downloads pre-labelled the way a real filer would start filling it in. Anything the
+// form asks for that the app doesn't hold (ARN, financial year, tax period, etc.) is left blank.
+function officialFormHeaderValue(labelText){
+  const l = labelText.toLowerCase();
+  if(l.includes('gstin') || l.includes('uin')) return currentCompany.gstin||'';
+  if(l.includes('legal name')) return currentCompany.name||'';
+  if(l.includes('trade name')) return currentCompany.name||'';
+  if(l.includes('address')) return currentCompany.address||'';
+  return '';
+}
+// Downloads the REAL, CBIC-notified layout of a GST return form — an actual blank, fillable replica
+// (official title, header boxes, and every table with its real column headers and blank rows) built
+// from GST_OFFICIAL_FORMS, not a description of what the form covers. Falls back to the plain-English
+// reference (GST_FORMS) only if a form is somehow missing from the official-layout data.
 function downloadGSTFormat(index){
+  const f = GST_FORMS[index];
+  if(!f) return;
+  const off = GST_OFFICIAL_FORMS[f.code];
+  if(!off){ downloadGSTFormatTheory(index); return; }
+
+  const headerRows = off.header.map(h=>{
+    const val = officialFormHeaderValue(h);
+    return `<div class="idfield"><div class="idlabel">${escapeHtml(h)}</div><div class="idbox">${val?escapeHtml(val):'&nbsp;'}</div></div>`;
+  }).join('');
+
+  const tableBlocks = off.tables.map(t=>{
+    const blankRows = Array.from({length:6}).map((_,i)=>`<tr>${t.cols.map((c,ci)=> ci===0 ? `<td class="rownum">${i+1}</td>` : `<td>&nbsp;</td>`).join('')}</tr>`).join('');
+    return `
+    <div class="tblock">
+      <div class="tnum">${escapeHtml(t.num)}</div>
+      <div class="ttitle">${escapeHtml(t.title)}</div>
+      ${t.sub ? `<div class="tsub">${escapeHtml(t.sub)}</div>` : ''}
+      <div class="tscroll">
+        <table>
+          <tr>${t.cols.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr>
+          ${blankRows}
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${f.code} — Official Format</title>
+<style>
+  body{font-family: Arial, Helvetica, sans-serif; color:#111; margin:0; padding:30px; font-size:11.5px;}
+  .formhd{text-align:center;border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:16px;}
+  .formhd .fnum{font-size:19px;font-weight:800;letter-spacing:.02em;}
+  .formhd .frule{font-size:11px;color:#555;margin-top:2px;}
+  .formhd .ftitle{font-size:13px;font-weight:700;margin-top:8px;}
+  .idgrid{display:flex;flex-wrap:wrap;gap:10px 22px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #ccc;}
+  .idfield{min-width:220px;flex:1;}
+  .idlabel{font-size:10.5px;color:#555;margin-bottom:3px;}
+  .idbox{border:1px solid #999;border-radius:3px;padding:6px 8px;min-height:14px;font-size:12px;font-weight:600;background:#FAFBFA;}
+  .tblock{margin-bottom:22px;page-break-inside:avoid;}
+  .tnum{display:inline-block;background:#1E7A12;color:#fff;font-weight:800;font-size:11px;border-radius:4px;padding:2px 8px;margin-bottom:4px;}
+  .ttitle{font-weight:700;font-size:12.5px;margin-bottom:3px;}
+  .tsub{font-size:10.5px;color:#666;margin-bottom:8px;font-style:italic;}
+  .tscroll{overflow-x:auto;}
+  table{border-collapse:collapse;width:100%;min-width:520px;}
+  th{background:#EEF3EF;text-align:left;padding:6px 7px;font-size:9.5px;text-transform:uppercase;letter-spacing:.01em;border:1px solid #999;white-space:nowrap;}
+  td{padding:9px 7px;border:1px solid #ccc;font-size:11px;min-width:70px;}
+  td.rownum{color:#888;font-size:10px;width:24px;text-align:center;background:#FAFBFA;}
+  .footer{margin-top:20px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px;}
+  @media print{ body{padding:8px;} .tblock{page-break-inside:avoid;} }
+</style>
+</head><body>
+  <div class="formhd">
+    <div class="fnum">FORM ${f.code}</div>
+    <div class="frule">[See ${escapeHtml(off.rule)}]</div>
+    <div class="ftitle">${escapeHtml(off.legalTitle)}</div>
+  </div>
+  <div class="idgrid">${headerRows}</div>
+  ${tableBlocks}
+  <div class="footer">Blank official-format replica generated by The Reckoning Books by SKm on ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}, from the CBIC-notified table/column layout under the CGST Rules, 2017. This is a template for reference/manual filling — always file through the GST portal (gst.gov.in), and reconfirm against the current CGST Rules before relying on this for an actual filing, since forms and thresholds change by notification.</div>
+</body></html>`;
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${f.code.replace(/[^a-z0-9]+/gi,'_')}_Official_Format.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  toast(`${f.code} official format downloaded`);
+}
+// Fallback used only if a form code is ever missing from GST_OFFICIAL_FORMS — downloads the older
+// plain-English "what goes in each table" reference instead of the real form layout.
+function downloadGSTFormatTheory(index){
   const f = GST_FORMS[index];
   if(!f) return;
   const rows = f.tables.map(x=>`<tr><td class="tcode">${escapeHtml(x.t)}</td><td>${x.d}</td></tr>`).join('');
