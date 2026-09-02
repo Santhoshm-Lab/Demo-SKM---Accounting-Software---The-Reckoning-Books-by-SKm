@@ -637,15 +637,88 @@ const COUNTRIES = [
   'Yemen','Zambia','Zimbabwe',
 ];
 
-// India gets a proper State dropdown (INDIAN_STATES); every other country gets a free-text
-// State/Province field instead, since we don't maintain a full state/province list per country.
-// Shared by both the Create Company and Edit Company forms so the two stay in sync with whichever
-// country is currently selected — swap this control in whenever the Country field changes.
+// Curated State/Province lists, keyed by exact COUNTRIES entry. Covers India plus the countries
+// most likely to actually be picked here; any country not listed falls back to a free-text field
+// in stateProvinceControl() below rather than pretending to have a dropdown for it.
+const STATES_BY_COUNTRY = {
+  'India': INDIAN_STATES,
+  'United States of America': [
+    'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware',
+    'District of Columbia','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas',
+    'Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi',
+    'Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico','New York',
+    'North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania','Rhode Island',
+    'South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont','Virginia','Washington',
+    'West Virginia','Wisconsin','Wyoming',
+  ],
+  'Canada': [
+    'Alberta','British Columbia','Manitoba','New Brunswick','Newfoundland and Labrador',
+    'Northwest Territories','Nova Scotia','Nunavut','Ontario','Prince Edward Island','Quebec',
+    'Saskatchewan','Yukon',
+  ],
+  'United Kingdom': ['England','Scotland','Wales','Northern Ireland'],
+  'Australia': [
+    'Australian Capital Territory','New South Wales','Northern Territory','Queensland',
+    'South Australia','Tasmania','Victoria','Western Australia',
+  ],
+  'United Arab Emirates': [
+    'Abu Dhabi','Ajman','Dubai','Fujairah','Ras Al Khaimah','Sharjah','Umm Al Quwain',
+  ],
+  'Germany': [
+    'Baden-Württemberg','Bavaria','Berlin','Brandenburg','Bremen','Hamburg','Hesse',
+    'Lower Saxony','Mecklenburg-Vorpommern','North Rhine-Westphalia','Rhineland-Palatinate',
+    'Saarland','Saxony','Saxony-Anhalt','Schleswig-Holstein','Thuringia',
+  ],
+  'France': [
+    'Auvergne-Rhône-Alpes','Bourgogne-Franche-Comté','Brittany','Centre-Val de Loire','Corsica',
+    'Grand Est','Hauts-de-France','Île-de-France','Normandy','Nouvelle-Aquitaine','Occitanie',
+    'Pays de la Loire',"Provence-Alpes-Côte d'Azur",
+  ],
+  'Pakistan': [
+    'Punjab','Sindh','Khyber Pakhtunkhwa','Balochistan','Islamabad Capital Territory',
+    'Azad Jammu and Kashmir','Gilgit-Baltistan',
+  ],
+  'Bangladesh': [
+    'Barishal','Chittagong','Dhaka','Khulna','Mymensingh','Rajshahi','Rangpur','Sylhet',
+  ],
+  'Sri Lanka': [
+    'Central','Eastern','North Central','Northern','North Western','Sabaragamuwa','Southern',
+    'Uva','Western',
+  ],
+  'Nepal': [
+    'Koshi','Madhesh','Bagmati','Gandaki','Lumbini','Karnali','Sudurpashchim',
+  ],
+  'Malaysia': [
+    'Johor','Kedah','Kelantan','Malacca','Negeri Sembilan','Pahang','Penang','Perak','Perlis',
+    'Sabah','Sarawak','Selangor','Terengganu','Kuala Lumpur','Labuan','Putrajaya',
+  ],
+  'South Africa': [
+    'Eastern Cape','Free State','Gauteng','KwaZulu-Natal','Limpopo','Mpumalanga',
+    'Northern Cape','North West','Western Cape',
+  ],
+  'Nigeria': [
+    'Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno','Cross River',
+    'Delta','Ebonyi','Edo','Ekiti','Enugu','Federal Capital Territory','Gombe','Imo','Jigawa',
+    'Kaduna','Kano','Katsina','Kebbi','Kogi','Kwara','Lagos','Nasarawa','Niger','Ogun','Ondo',
+    'Osun','Oyo','Plateau','Rivers','Sokoto','Taraba','Yobe','Zamfara',
+  ],
+  'New Zealand': [
+    'Auckland','Bay of Plenty','Canterbury','Gisborne',"Hawke's Bay",'Manawatū-Whanganui',
+    'Marlborough','Nelson','Northland','Otago','Southland','Taranaki','Tasman','Waikato',
+    'Wellington','West Coast',
+  ],
+};
+// India gets its full dropdown as before; the countries above get their own real state/province
+// dropdown too; every other country falls back to a free-text field, since we don't maintain a
+// full state/province list for all ~195 countries. Shared by both the Create Company and Edit
+// Company forms so the two stay in sync with whichever country is currently selected — swap this
+// control in whenever the Country field changes.
 function stateProvinceControl(id, country, value){
-  if((country||'India') === 'India'){
+  const list = STATES_BY_COUNTRY[country||'India'];
+  if(list){
     return `<select id="${id}">
       <option value="">— Select —</option>
-      ${INDIAN_STATES.map(s=>`<option value="${s}" ${value===s?'selected':''}>${s}</option>`).join('')}
+      ${list.map(s=>`<option value="${escapeAttr(s)}" ${value===s?'selected':''}>${escapeHtml(s)}</option>`).join('')}
     </select>`;
   }
   return `<input type="text" id="${id}" placeholder="State / Province / Region" value="${escapeAttr(value||'')}">`;
@@ -3722,16 +3795,16 @@ function editCompanyModal(){
           <div class="field"><label>Directory</label><input type="text" id="editCoDirectory" value="${escapeAttr(editCoDraft.directory)}"></div>
           <div class="field"><label>Mailing Name (if different)</label><input type="text" id="editCoMailingName" value="${escapeAttr(editCoDraft.mailingName)}"></div>
           <div class="field"><label>Address</label><input type="text" id="editCoAddress" value="${escapeAttr(editCoDraft.address)}"></div>
+          <div class="field"><label>Country</label>
+            <select id="editCoCountry">
+              ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(editCoDraft.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+            </select>
+          </div>
           <div class="row">
             <div class="field" style="flex:2;"><label>State / Province</label>
               <div id="editCoStateWrap">${stateProvinceControl('editCoState', editCoDraft.country, editCoDraft.state)}</div>
             </div>
             <div class="field" style="flex:1;"><label>Pincode</label><input type="text" id="editCoPincode" value="${escapeAttr(editCoDraft.pincode)}"></div>
-          </div>
-          <div class="field"><label>Country</label>
-            <select id="editCoCountry">
-              ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(editCoDraft.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
-            </select>
           </div>
 
           <div class="section-title" style="margin-top:14px;">Contact Details</div>
@@ -4966,6 +5039,10 @@ function renderGateway(){
           <input type="text" id="coMailingName" placeholder="Same as company name if left blank" value="${escapeAttr(coform.mailingName)}">
           <label>Address</label>
           <input type="text" id="coAddress" placeholder="Building, street, area" value="${escapeAttr(coform.address)}">
+          <label>Country</label>
+          <select id="coCountry">
+            ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(coform.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+          </select>
           <div class="row" style="gap:10px;">
             <div style="flex:2;">
               <label>State / Province</label>
@@ -4976,10 +5053,6 @@ function renderGateway(){
               <input type="text" id="coPincode" placeholder="e.g. 600001" value="${escapeAttr(coform.pincode)}">
             </div>
           </div>
-          <label>Country</label>
-          <select id="coCountry">
-            ${COUNTRIES.map(c=>`<option value="${escapeAttr(c)}" ${(coform.country||'India')===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
-          </select>
 
           <div class="section-title" style="margin-top:16px;">Contact Details</div>
           <div class="row" style="gap:10px;">
