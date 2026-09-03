@@ -226,6 +226,30 @@
   .login-footer{text-align:center;font-size:11.5px;color:var(--ink-faint);letter-spacing:.02em;}
   .login-footer strong{color:var(--accent1);font-weight:800;}
   .login-footer em{font-style:italic;opacity:.85;}
+  .login-support-tip{position:relative;display:inline-block;color:var(--accent1);font-weight:600;text-decoration:none;border-bottom:1px dotted var(--accent1);cursor:help;}
+  .login-support-tip:hover, .login-support-tip:focus{color:var(--accent2);}
+  .login-support-tip-email{position:absolute;left:50%;bottom:calc(100% + 9px);transform:translateX(-50%) translateY(4px);background:var(--ink);color:#fff;padding:10px 13px;border-radius:8px;width:240px;text-align:left;white-space:normal;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .15s ease, transform .15s ease;box-shadow:0 8px 20px rgba(20,30,25,0.3);z-index:20;cursor:auto;}
+  .login-support-tip-email::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--ink);}
+  .login-support-tip:hover .login-support-tip-email, .login-support-tip:focus .login-support-tip-email{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0);}
+  .login-support-tip-email-addr{display:block;font-size:12px;font-weight:800;letter-spacing:.01em;color:#fff;}
+  .login-support-tip-note{display:block;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.16);font-size:10.5px;font-weight:500;line-height:1.5;color:rgba(255,255,255,0.82);letter-spacing:0;}
+  /* Titlebar placement (top right of the login page) needs the tooltip bubble flipped to open
+     downward — anchored above the trigger like the footer version would run off the top of the
+     page here — plus a shorter label so it doesn't crowd the brand link on narrow screens. */
+  .login-support-tip-titlebar{font-size:11.5px;font-weight:700;white-space:nowrap;}
+  .login-support-tip-titlebar .login-support-tip-email{bottom:auto;top:calc(100% + 9px);transform:translateX(-50%) translateY(-4px);}
+  .login-support-tip-titlebar .login-support-tip-email::after{top:auto;bottom:100%;border-top-color:transparent;border-bottom-color:var(--ink);}
+  .login-support-tip-titlebar:hover .login-support-tip-email, .login-support-tip-titlebar:focus .login-support-tip-email{transform:translateX(-50%) translateY(0);}
+  .login-support-tip-titlebar .login-support-tip-short{display:none;}
+  @media (max-width:560px){
+    .login-support-tip-titlebar .login-support-tip-full{display:none;}
+    .login-support-tip-titlebar .login-support-tip-short{display:inline;}
+    /* Anchored from the right edge instead of centered here, so the bubble stays on-screen next
+       to a trigger sitting right up against the titlebar's right edge on narrow phones. */
+    .login-support-tip-titlebar .login-support-tip-email{left:auto;right:0;transform:translateY(-4px);}
+    .login-support-tip-titlebar .login-support-tip-email::after{left:auto;right:14px;transform:none;}
+    .login-support-tip-titlebar:hover .login-support-tip-email, .login-support-tip-titlebar:focus .login-support-tip-email{transform:translateY(0);}
+  }
   .login-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:380px;max-width:100%;box-shadow:0 20px 50px rgba(20,30,25,0.14);padding:34px 30px 30px;text-align:center;}
   .login-logo{width:60px;height:60px;border-radius:16px;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:21px;letter-spacing:-.02em;color:#fff;background:linear-gradient(135deg, #F2A900, var(--accent1));box-shadow:0 8px 20px rgba(44,160,28,0.28);}
   .login-card h1{margin:0;font-size:19px;font-weight:800;color:var(--ink);letter-spacing:-.01em;}
@@ -5660,6 +5684,14 @@ function renderLogin(){
       <div class="rb-content">
         <div class="titlebar">
           <span id="backToLandingLink" style="cursor:pointer;">← The Reckoning Books by SKm</span>
+          <a class="login-support-tip login-support-tip-titlebar" href="mailto:thereckoningbook@gmail.com" tabindex="0">
+            <span class="login-support-tip-full">Any problem in Login? Contact the administrator</span>
+            <span class="login-support-tip-short">Contact administrator</span>
+            <span class="login-support-tip-email">
+              <span class="login-support-tip-email-addr">thereckoningbook@gmail.com</span>
+              <span class="login-support-tip-note">Admin can create a Login ID if you share your Name, Email ID and Mobile Number.</span>
+            </span>
+          </a>
           <span class="winbtns"><span>_</span><span>▢</span><span>✕</span></span>
         </div>
         <div class="login-shell">
