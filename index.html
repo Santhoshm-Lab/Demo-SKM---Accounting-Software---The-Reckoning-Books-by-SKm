@@ -6765,6 +6765,11 @@ function renderGateway(){
     document.getElementById('addUserForm')?.addEventListener('submit', async (e)=>{
       e.preventDefault();
       if(adminAddUserBusy) return;
+      // Belt-and-suspenders: disable the button in the live DOM immediately, synchronously, so a
+      // stray double-click/double-tap can never fire a second submit before the next render (which
+      // also disables it, driven by adminAddUserBusy) has a chance to run.
+      const submitBtnEl = document.getElementById('addUserSubmitBtn');
+      if(submitBtnEl) submitBtnEl.disabled = true;
       if(!isFullAdmin()){ adminAddUserError = 'Only a full Administrator can add users.'; renderGateway(); return; }
       const draft = {
         name: (document.getElementById('addUserName')?.value || '').trim(),
@@ -6779,6 +6784,17 @@ function renderGateway(){
       if(!isValidEmail(draft.email)){ adminAddUserError = 'Please enter a valid email address.'; renderGateway(); return; }
       if(!isValidMobile(draft.mobile)){ adminAddUserError = 'Please enter a valid 10-digit phone number.'; renderGateway(); return; }
       if(!draft.password || draft.password.length < 6){ adminAddUserError = 'Password must be at least 6 characters.'; renderGateway(); return; }
+      // Check email uniqueness against the accounts already loaded in the Admin Panel first — this
+      // is what makes the error message specific ("already used by @username") instead of the generic
+      // "email already in use" Firebase's own check would otherwise be the only source of, which read
+      // as a mysterious failure rather than telling the admin exactly which existing account it is.
+      const emailKey = draft.email.toLowerCase();
+      const existingByEmail = users.find(u => (u.email||'').toLowerCase() === emailKey);
+      if(existingByEmail){
+        adminAddUserError = `An account with this email already exists — used by @${existingByEmail.username} (${existingByEmail.name}). Use "Reset Password" from the Users list if they need a new password, or use a different email.`;
+        renderGateway();
+        return;
+      }
       adminAddUserBusy = true;
       adminAddUserError = '';
       renderGateway();
@@ -6797,12 +6813,14 @@ function renderGateway(){
         adminAddUserOpen = false;
         adminAddUserBusy = false;
         adminAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
-        toast('User created — they can now log in with those credentials.');
+        toast(`User @${profile.username} created — they can log in now with the credentials you set.`);
         renderGateway();
       }catch(err){
         console.error('Add user failed:', err);
         adminAddUserBusy = false;
-        adminAddUserError = authErrorMessage(err, true);
+        adminAddUserError = err && err.code==='auth/email-already-in-use'
+          ? 'An account with this email already exists. Use "Reset Password" from the Users list if they need a new password, or use a different email.'
+          : authErrorMessage(err, true);
         renderGateway();
       }
     });
@@ -7439,18 +7457,38 @@ function adminAddUserModal(){
   const d = adminAddUserDraft;
   return `
     <div class="modal-overlay" id="addUserOverlayBg">
-      <div class="modal-card" style="width:92vw;max-width:440px;">
-        <div class="panel-head"><h2>Add User</h2><button class="btn secondary small" id="addUserClose" type="button">✕</button></div>
-        <form id="addUserForm">
-          <div class="field"><label>Name</label><input type="text" id="addUserName" value="${escapeAttr(d.name)}" placeholder="e.g. Priya Sharma" autocomplete="off" required></div>
-          <div class="field"><label>Username</label><input type="text" id="addUserUsername" value="${escapeAttr(d.username)}" placeholder="e.g. priya.sharma" autocomplete="off" required></div>
-          <div class="field"><label>Email</label><input type="email" id="addUserEmail" value="${escapeAttr(d.email)}" placeholder="e.g. priya@example.com" autocomplete="off" required></div>
-          <div class="field"><label>Phone Number</label><input type="tel" id="addUserMobile" value="${escapeAttr(d.mobile)}" placeholder="10-digit mobile number" maxlength="10" autocomplete="off" required></div>
-          <div class="field"><label>Password</label><input type="text" id="addUserPassword" value="${escapeAttr(d.password)}" placeholder="Set a password for this user" autocomplete="off" required></div>
-          ${adminAddUserError ? `<div style="margin-top:-6px;margin-bottom:14px;color:var(--debit);font-size:12.5px;">${escapeHtml(adminAddUserError)}</div>` : ''}
-          <div style="display:flex;gap:8px;margin-top:14px;">
-            <button class="btn" type="submit" id="addUserSubmitBtn" ${adminAddUserBusy?'disabled':''}>${adminAddUserBusy?'Creating…':'Create User'}</button>
-            <button class="btn secondary" id="addUserCancelBtn" type="button">Cancel</button>
+      <div class="modal-card" style="width:94vw;max-width:640px;">
+        <div class="panel-head" style="padding:20px 24px;align-items:flex-start;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <div style="width:46px;height:46px;border-radius:12px;background:var(--credit-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--accent1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+            </div>
+            <div>
+              <h2 style="margin:0;">Add User</h2>
+              <div class="muted" style="font-size:12px;margin-top:3px;max-width:380px;">Create a ready-to-use account with credentials you set — the user can log in immediately, no email verification needed.</div>
+            </div>
+          </div>
+          <button class="btn secondary small" id="addUserClose" type="button">✕</button>
+        </div>
+        <form id="addUserForm" style="padding:22px 24px 24px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 18px;">
+            <div class="field"><label>Name</label><input type="text" id="addUserName" value="${escapeAttr(d.name)}" placeholder="e.g. Priya Sharma" autocomplete="off" required></div>
+            <div class="field"><label>Username</label><input type="text" id="addUserUsername" value="${escapeAttr(d.username)}" placeholder="e.g. priya.sharma" autocomplete="off" required></div>
+            <div class="field"><label>Email</label><input type="email" id="addUserEmail" value="${escapeAttr(d.email)}" placeholder="e.g. priya@example.com" autocomplete="off" required></div>
+            <div class="field"><label>Phone Number</label><input type="tel" id="addUserMobile" value="${escapeAttr(d.mobile)}" placeholder="10-digit mobile number" maxlength="10" autocomplete="off" required></div>
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="text" id="addUserPassword" value="${escapeAttr(d.password)}" placeholder="Set a password for this user" autocomplete="off" required>
+            <div class="muted" style="font-size:11px;margin-top:5px;">Share this password with the user directly — it's visible here so you can pass it on.</div>
+          </div>
+          ${adminAddUserError ? `<div style="display:flex;gap:9px;align-items:flex-start;background:var(--debit-bg);border:1px solid rgba(214,69,69,0.3);border-radius:var(--radius-sm);padding:11px 13px;margin-top:6px;color:var(--debit);font-size:12.5px;line-height:1.45;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            <span>${escapeHtml(adminAddUserError)}</span>
+          </div>` : ''}
+          <div style="display:flex;gap:10px;margin-top:20px;padding-top:18px;border-top:1px solid var(--border);">
+            <button class="btn" type="submit" id="addUserSubmitBtn" style="flex:1;padding:11px;font-size:13.5px;" ${adminAddUserBusy?'disabled':''}>${adminAddUserBusy?'Creating…':'Create User'}</button>
+            <button class="btn secondary" id="addUserCancelBtn" type="button" style="padding:11px 22px;">Cancel</button>
           </div>
         </form>
       </div>
