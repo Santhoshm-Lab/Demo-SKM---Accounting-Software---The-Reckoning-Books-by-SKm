@@ -1559,6 +1559,10 @@ let adminCompanySearch = '';    // search box text on the Companies tab (matches
 let adminAnalyticsRangeDays = 30; // 7 | 30 | 90 | 365 — drives both the signup trend and the active/dormant window on the Analytics tab
 let selectedUserIds = {};       // uid -> true, for the Users tab's bulk-action checkboxes (session-only, like every other draft state here)
 let adminUserDetailId = null;   // uid whose drill-down modal (companies + account info) is open, stacked above the Admin Panel
+let adminAddUserOpen = false;   // whether the "Add User" dialog is open, stacked above the Admin Panel like adminUserDetailId
+let adminAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+let adminAddUserError = '';
+let adminAddUserBusy = false;
 let adminAuditSearch = '';      // search box text on the Audit Log tab (matches actor/action/target/detail)
 let adminAuditRangeDays = 'all'; // 'all' | 1 | 7 | 30 — date-range filter on the Audit Log tab
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
@@ -1823,6 +1827,35 @@ async function loadAdminPanelData(){
   }catch(err){ announcement = { message:'', active:false }; announcementDraft = { ...announcement }; }
   await loadFeatureFlags();
   await refreshSupportTickets();
+}
+// Lets a full Administrator create a real, ready-to-use account for someone else directly from the
+// Users tab, with a password the admin sets right there — no email verification link involved.
+// Firebase's client SDK signs in as whichever account createUserWithEmailAndPassword just created,
+// which would log the admin out of their own session if this ran on the primary app — so it runs on
+// a throwaway SECONDARY Firebase app instance instead (the standard client-side workaround for
+// exactly this problem), writes the new account's own profile + username-reservation docs while
+// authenticated AS that new account (so the existing "you can only create your own users/{uid} doc"
+// security rule doesn't need to change), then discards the secondary app entirely. The admin's own
+// session is completely untouched throughout — verified with a Playwright test during development.
+async function adminCreateUserAccount(draft){
+  const secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, 'adminCreateUser_' + Date.now());
+  try{
+    const secAuth = secondaryApp.auth();
+    const cred = await secAuth.createUserWithEmailAndPassword(draft.email, draft.password);
+    const secDb = secondaryApp.firestore();
+    const usernameKey = draft.username.toLowerCase();
+    const profile = {
+      id: cred.user.uid, name: draft.name, username: draft.username, usernameLower: usernameKey,
+      mobile: draft.mobile, email: draft.email, role:'user', plan:'free', planExpiry:null,
+      createdAt: new Date().toISOString(), lastLoginAt: null,
+    };
+    await secDb.collection('users').doc(cred.user.uid).set(profile);
+    await secDb.collection('usernames').doc(usernameKey).set({ email: draft.email });
+    try{ await secAuth.signOut(); }catch(e){}
+    return profile;
+  } finally {
+    try{ await secondaryApp.delete(); }catch(e){}
+  }
 }
 
 /* ---- Admin roles: 'user' | 'support' | 'admin'. Both 'support' and 'admin' can open the Admin
@@ -6163,6 +6196,7 @@ function renderGateway(){
     ${modal==='help' ? helpModal() : ''}
     ${modal==='adminPanel' ? adminPanelModal() : ''}
     ${modal==='adminPanel' && adminUserDetailId ? adminUserDetailModal() : ''}
+    ${modal==='adminPanel' && adminAddUserOpen ? adminAddUserModal() : ''}
       </div>
     </div>
   `;
@@ -6409,6 +6443,13 @@ function renderGateway(){
       renderGateway();
       const el = document.getElementById('adminUserSearchInput');
       if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
+    document.getElementById('openAddUserBtn')?.addEventListener('click', ()=>{
+      adminAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+      adminAddUserError = '';
+      adminAddUserBusy = false;
+      adminAddUserOpen = true;
+      renderGateway();
     });
     document.querySelectorAll('[data-admin-sort]').forEach(el=>{
       el.addEventListener('click', ()=>{
@@ -6712,6 +6753,58 @@ function renderGateway(){
     document.getElementById('userDetailClose')?.addEventListener('click', ()=>{
       adminUserDetailId = null;
       renderGateway();
+    });
+  }
+  if(modal==='adminPanel' && adminAddUserOpen){
+    const closeAddUser = ()=>{ adminAddUserOpen = false; adminAddUserError = ''; renderGateway(); };
+    document.getElementById('addUserOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='addUserOverlayBg') closeAddUser();
+    });
+    document.getElementById('addUserClose')?.addEventListener('click', closeAddUser);
+    document.getElementById('addUserCancelBtn')?.addEventListener('click', closeAddUser);
+    document.getElementById('addUserForm')?.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if(adminAddUserBusy) return;
+      if(!isFullAdmin()){ adminAddUserError = 'Only a full Administrator can add users.'; renderGateway(); return; }
+      const draft = {
+        name: (document.getElementById('addUserName')?.value || '').trim(),
+        username: (document.getElementById('addUserUsername')?.value || '').trim(),
+        email: (document.getElementById('addUserEmail')?.value || '').trim(),
+        mobile: (document.getElementById('addUserMobile')?.value || '').trim(),
+        password: document.getElementById('addUserPassword')?.value || '',
+      };
+      adminAddUserDraft = draft;
+      if(!draft.name){ adminAddUserError = 'Please enter a name.'; renderGateway(); return; }
+      if(!isValidUsername(draft.username)){ adminAddUserError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderGateway(); return; }
+      if(!isValidEmail(draft.email)){ adminAddUserError = 'Please enter a valid email address.'; renderGateway(); return; }
+      if(!isValidMobile(draft.mobile)){ adminAddUserError = 'Please enter a valid 10-digit phone number.'; renderGateway(); return; }
+      if(!draft.password || draft.password.length < 6){ adminAddUserError = 'Password must be at least 6 characters.'; renderGateway(); return; }
+      adminAddUserBusy = true;
+      adminAddUserError = '';
+      renderGateway();
+      try{
+        const usernameKey = draft.username.toLowerCase();
+        const existingUsername = await db.collection('usernames').doc(usernameKey).get();
+        if(existingUsername.exists){
+          adminAddUserError = 'That username is already taken.';
+          adminAddUserBusy = false;
+          renderGateway();
+          return;
+        }
+        const profile = await adminCreateUserAccount(draft);
+        users.push(profile);
+        await logAudit('account_created', `Created account @${profile.username} (${profile.email}) via Admin Panel`, profile.id, profile.name);
+        adminAddUserOpen = false;
+        adminAddUserBusy = false;
+        adminAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+        toast('User created — they can now log in with those credentials.');
+        renderGateway();
+      }catch(err){
+        console.error('Add user failed:', err);
+        adminAddUserBusy = false;
+        adminAddUserError = authErrorMessage(err, true);
+        renderGateway();
+      }
     });
   }
   if(modal==='adminPanel' && adminTab==='companies'){
@@ -7201,6 +7294,7 @@ function adminUsersTab(){
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
       <input type="text" id="adminUserSearchInput" placeholder="Search name, username, email or mobile…" value="${escapeAttr(adminUserSearch)}" style="max-width:280px;">
       <span class="muted" style="font-size:12px;">${list.length} of ${users.length} account${users.length===1?'':'s'}</span>
+      ${isFullAdmin() ? `<button class="btn small" id="openAddUserBtn" type="button" style="margin-left:auto;">+ Add User</button>` : ''}
     </div>
     ${selectedCount ? `
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;">
@@ -7333,6 +7427,32 @@ function adminUserDetailModal(){
           </table>
           ` : `<div class="empty">Owns no companies.</div>`}
         </div>
+      </div>
+    </div>
+  `;
+}
+// "+ Add User" dialog — stacked above the Admin Panel (adminAddUserOpen, not the `modal` variable,
+// mirroring adminUserDetailModal's pattern above) so a full Administrator can hand someone a
+// ready-to-use account without any email-verification step: the admin picks the password themselves
+// here, and the account can log in immediately with exactly what was entered.
+function adminAddUserModal(){
+  const d = adminAddUserDraft;
+  return `
+    <div class="modal-overlay" id="addUserOverlayBg">
+      <div class="modal-card" style="width:92vw;max-width:440px;">
+        <div class="panel-head"><h2>Add User</h2><button class="btn secondary small" id="addUserClose" type="button">✕</button></div>
+        <form id="addUserForm">
+          <div class="field"><label>Name</label><input type="text" id="addUserName" value="${escapeAttr(d.name)}" placeholder="e.g. Priya Sharma" autocomplete="off" required></div>
+          <div class="field"><label>Username</label><input type="text" id="addUserUsername" value="${escapeAttr(d.username)}" placeholder="e.g. priya.sharma" autocomplete="off" required></div>
+          <div class="field"><label>Email</label><input type="email" id="addUserEmail" value="${escapeAttr(d.email)}" placeholder="e.g. priya@example.com" autocomplete="off" required></div>
+          <div class="field"><label>Phone Number</label><input type="tel" id="addUserMobile" value="${escapeAttr(d.mobile)}" placeholder="10-digit mobile number" maxlength="10" autocomplete="off" required></div>
+          <div class="field"><label>Password</label><input type="text" id="addUserPassword" value="${escapeAttr(d.password)}" placeholder="Set a password for this user" autocomplete="off" required></div>
+          ${adminAddUserError ? `<div style="margin-top:-6px;margin-bottom:14px;color:var(--debit);font-size:12.5px;">${escapeHtml(adminAddUserError)}</div>` : ''}
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button class="btn" type="submit" id="addUserSubmitBtn" ${adminAddUserBusy?'disabled':''}>${adminAddUserBusy?'Creating…':'Create User'}</button>
+            <button class="btn secondary" id="addUserCancelBtn" type="button">Cancel</button>
+          </div>
+        </form>
       </div>
     </div>
   `;
