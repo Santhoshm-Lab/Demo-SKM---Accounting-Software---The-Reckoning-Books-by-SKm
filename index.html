@@ -5611,6 +5611,15 @@ function renderLogin(){
   const verifyLinkCooldownActive = Date.now() < verifyLinkCooldownUntil;
   const verifyBtnLabel = verifyLinkSending ? 'Sending…' : (verifyLinkAwaiting ? (verifyLinkCooldownActive ? 'Sent ✓' : 'Resend Link') : 'Verify Email');
   const verifyBtnDisabled = verifyLinkSending || (verifyLinkAwaiting && verifyLinkCooldownActive);
+  // The step-1 Name/Username/Mobile only survive the reload that happens when the verification
+  // link is opened (see savePendingSignupDraft()/handleEmailLinkReturn()) via localStorage on
+  // THIS browser — opening the link in a different browser or app (very common on mobile: tapping
+  // the link from a mail app often opens a different in-app browser than wherever signup started)
+  // has no access to that. Email survives either way (it's recovered via a prompt() as a fallback),
+  // but there's no such fallback for the other fields — so rather than dead-ending the person into
+  // "start over" (which means requesting a whole new verification email), step 2 asks for whichever
+  // of the three is missing right here, since the account is already verified and signed in.
+  const needsSignupDetails = isSignup && !!pendingVerifyUser && (!authDraft.name || !authDraft.username || !authDraft.mobile);
   app.innerHTML = `
     <div class="rb-bg">
       <span class="rb-letter rb-letter-r">R</span>
@@ -5628,10 +5637,23 @@ function renderLogin(){
             <p class="login-tagline">${isSignup ? 'Create your account to start keeping the books.' : 'Log in to continue.'}</p>
 
             ${isSignup ? (pendingVerifyUser ? `
+            ${needsSignupDetails ? `
+            <div class="muted" style="font-size:11.5px;background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+              ${escapeHtml(authDraft.email||'')} · <span style="color:var(--accent1);font-weight:600;">✓ Email Verified</span><br>
+              Your email's confirmed — we just lost the rest of your details along the way (this can happen when the verification link opens in a different browser). Fill them in again to finish — no need to re-verify.
+            </div>
+            <label style="margin-top:12px;">Full Name</label>
+            <input type="text" id="authName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(authDraft.name)}" autocomplete="name">
+            <label style="margin-top:12px;">Username</label>
+            <input type="text" id="authUsername" placeholder="Choose a username" value="${escapeAttr(authDraft.username)}" autocomplete="username">
+            <label style="margin-top:12px;">Mobile Number</label>
+            <input type="tel" id="authMobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric" value="${escapeAttr(authDraft.mobile)}" autocomplete="tel">
+            ` : `
             <div style="background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
               <div style="font-size:12.5px;font-weight:600;">${escapeHtml(authDraft.name||'')}</div>
               <div class="muted" style="font-size:11.5px;">@${escapeHtml(authDraft.username||'')} · ${escapeHtml(authDraft.email||'')} · <span style="color:var(--accent1);">✓ Verified</span></div>
             </div>
+            `}
             <p style="margin:6px 0 0;"><a id="signupStartOverLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Not you? Start over</a></p>
 
             <label style="margin-top:12px;">Password</label>
@@ -5715,11 +5737,23 @@ function renderLogin(){
     const submitBtn = document.getElementById('authSubmitBtn');
     if(isSignup){
       // Step 2 only — by the time this button exists at all, the email is already verified
-      // (pendingVerifyUser) and name/username/mobile/email already live in authDraft from step 1.
+      // (pendingVerifyUser) and name/username/mobile/email normally already live in authDraft from
+      // step 1. If that draft didn't survive the reload (see needsSignupDetails in renderLogin()),
+      // these fields are re-collected right here instead — pick up whatever was just (re)typed.
       if(!pendingVerifyUser){ authError = 'Please verify your email first.'; renderLogin(); return; }
+      const nameEl = document.getElementById('authName');
+      const usernameEl = document.getElementById('authUsername');
+      const mobileEl = document.getElementById('authMobile');
+      if(nameEl) authDraft.name = nameEl.value.trim();
+      if(usernameEl) authDraft.username = usernameEl.value.trim();
+      if(mobileEl) authDraft.mobile = mobileEl.value.trim();
       const { name, username, mobile, email } = authDraft;
       const confirm = document.getElementById('authConfirmPassword').value || '';
-      if(!name || !username || !mobile || !email){ authError = 'Some of your details were lost — please start over.'; renderLogin(); return; }
+      if(!name || !username || !mobile || !email){ authError = 'Please fill in your name, username and mobile number.'; renderLogin(); return; }
+      // Same format checks step 1 (onVerifyEmailClick) normally already ran before the link was sent
+      // — needed here too now that a lost draft lets someone type these in for the first time here.
+      if(!isValidUsername(username)){ authError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
+      if(!isValidMobile(mobile)){ authError = 'Mobile number must be exactly 10 digits.'; renderLogin(); return; }
       if(!password){ authError = 'Please create a password.'; renderLogin(); return; }
       if(password.length<6){ authError = 'Password must be at least 6 characters.'; renderLogin(); return; }
       if(password!==confirm){ authError = 'Passwords do not match.'; renderLogin(); return; }
