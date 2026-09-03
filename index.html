@@ -1600,6 +1600,31 @@ let adminAddUserError = '';
 let adminAddUserBusy = false;
 let adminAuditSearch = '';      // search box text on the Audit Log tab (matches actor/action/target/detail)
 let adminAuditRangeDays = 'all'; // 'all' | 1 | 7 | 30 — date-range filter on the Audit Log tab
+
+/* ---------------- Group Admin panel state (Support role) ----------------
+   A 'support' user is a scoped "group admin": they get their own separate panel limited to the
+   up-to-groupUserLimit accounts they personally created — never platform-wide data. That boundary
+   is enforced by scoped Firestore queries (see loadGroupAdminData()) whose *shape* the security
+   rules can validate, not just client-side filtering after a broad read. Opened via the "Admin"
+   menu tab (visible only to role==='support'), fully separate from the full Admin Panel's
+   adminTab / modal==='adminPanel' state above — a support user never reaches that modal at all. */
+let groupAdminTab = 'overview';   // 'overview' | 'users' | 'support' | 'settings' | 'audit' — which tab the Group Admin modal shows
+let groupMembers = [];            // cache: users where groupOwnerId === currentUser.id
+let groupCompanies = [];          // cache: companies owned by any group member (for read-only viewing + stats)
+let groupTickets = [];            // cache: support tickets raised by group members
+let groupAuditLog = [];           // cache: audit log entries where actorUid or targetUid is the support user or a group member
+let groupUserDetailId = null;     // uid whose drill-down modal (companies + account info) is open, stacked above the Group Admin panel
+let groupAddUserOpen = false;     // whether the "Add User" dialog is open, stacked above the Group Admin panel
+let groupAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+let groupAddUserError = '';
+let groupAddUserBusy = false;
+let groupEditingTicketId = null;  // id of the ticket row currently showing its note editor, on the Group Admin Support tab
+let groupTicketNoteDraft = '';
+let groupTicketStatusFilter = 'all'; // 'all' | 'open' | 'in_progress' | 'resolved'
+let groupNameDraft = '';          // editable "group name" field on the Group Admin Settings tab
+let groupSettingsBusy = false;
+let groupSettingsNotice = '';
+
 let ledgerDetailId = null;   // which ledger was clicked in the Balance Sheet, for the detail modal
 let cfDetailBucket = null;   // which Cash Flow bucket (operating/investing/financing) was clicked, for the detail modal
 let partyDetailLedgerId = null; // which party ledger's invoice-by-invoice ageing detail modal is showing
@@ -1903,6 +1928,90 @@ function roleLabel(u){
   if(u.role==='admin') return 'Admin';
   if(u.role==='support') return 'Support';
   return 'User';
+}
+
+/* ---------------- Group Admin panel (Support role) ----------------
+   A 'support' user is a scoped group admin: they see and manage only the users they personally
+   created (users/{uid}.groupOwnerId === their own uid), up to their own groupUserLimit (default 10,
+   raisable only by a full Administrator — see the Users tab's drill-down in the full Admin Panel).
+   Every loader below queries by that scope directly rather than reading a whole collection and
+   filtering client-side, so the query SHAPE matches what the Firestore rules can validate (see
+   RECOMMENDED_FIRESTORE_RULES's groupOwnerOf() helper) — the rules are the real enforcement; this
+   just keeps the client from ever attempting the broader read in the first place. */
+// Firestore 'in' queries are capped per query (10 on older SDKs, up to 30 on newer ones) — chunking
+// at 10 stays safe everywhere, and also comfortably covers a group raised well past the default cap.
+function chunkArray(arr, size){
+  const out = [];
+  for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
+  return out;
+}
+async function fetchByIdsIn(collectionName, field, ids){
+  if(!ids || !ids.length) return [];
+  const chunks = chunkArray(ids, 10);
+  const results = await Promise.all(chunks.map(chunk =>
+    db.collection(collectionName).where(field,'in',chunk).get()
+  ));
+  // `id: d.id` first so a doc that already stores its own `id` field (companies, supportTickets)
+  // keeps that value; auditLog docs don't store one, so this is what gives those an id at all.
+  return results.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+}
+async function loadGroupAdminData(){
+  if(!currentUser) return;
+  try{
+    const snap = await db.collection('users').where('groupOwnerId','==',currentUser.id).get();
+    groupMembers = snap.docs.map(d=>d.data());
+  }catch(err){ groupMembers = []; toast('Could not load your users'); }
+  const memberIds = groupMembers.map(u=>u.id);
+  try{
+    groupCompanies = await fetchByIdsIn('companies', 'ownerId', memberIds);
+  }catch(err){ groupCompanies = []; }
+  try{
+    groupTickets = (await fetchByIdsIn('supportTickets', 'userId', memberIds))
+      .sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  }catch(err){ groupTickets = []; }
+  try{
+    const actorSnap = await db.collection('auditLog').where('actorUid','==',currentUser.id).get();
+    const asActor = actorSnap.docs.map(d=>({ id: d.id, ...d.data() }));
+    const asTarget = await fetchByIdsIn('auditLog', 'targetUid', memberIds);
+    const byId = new Map();
+    [...asActor, ...asTarget].forEach(e=> byId.set(e.id, e));
+    groupAuditLog = Array.from(byId.values()).sort((a,b)=>(b.at||'').localeCompare(a.at||'')).slice(0,200);
+  }catch(err){ groupAuditLog = []; }
+  groupNameDraft = currentUser.groupName || '';
+}
+function computeGroupAdminStats(){
+  const totalCompanies = groupCompanies.length;
+  const blocked = groupMembers.filter(u=>u.blocked).length;
+  const weekAgo = Date.now() - 7*24*60*60*1000;
+  const newThisWeek = groupMembers.filter(u=>u.createdAt && new Date(u.createdAt).getTime()>=weekAgo).length;
+  const limit = (currentUser && currentUser.groupUserLimit) || 10;
+  return { totalUsers: groupMembers.length, limit, totalCompanies, blocked, newThisWeek };
+}
+// Lets a Support (group admin) user create a real, ready-to-use account for one of their own group
+// members, mirroring adminCreateUserAccount() exactly except the new profile also carries
+// groupOwnerId so it's scoped into this Support user's group from the moment it's created. Runs on a
+// throwaway secondary Firebase app instance for the same reason adminCreateUserAccount() does — so
+// creating the account doesn't sign the Support user out of their own session.
+async function groupCreateUserAccount(draft){
+  const secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, 'groupCreateUser_' + Date.now());
+  try{
+    const secAuth = secondaryApp.auth();
+    const cred = await secAuth.createUserWithEmailAndPassword(draft.email, draft.password);
+    const secDb = secondaryApp.firestore();
+    const usernameKey = draft.username.toLowerCase();
+    const profile = {
+      id: cred.user.uid, name: draft.name, username: draft.username, usernameLower: usernameKey,
+      mobile: draft.mobile, email: draft.email, role:'user', plan:'free', planExpiry:null,
+      groupOwnerId: currentUser.id,
+      createdAt: new Date().toISOString(), lastLoginAt: null,
+    };
+    await secDb.collection('users').doc(cred.user.uid).set(profile);
+    await secDb.collection('usernames').doc(usernameKey).set({ email: draft.email });
+    try{ await secAuth.signOut(); }catch(e){}
+    return profile;
+  } finally {
+    try{ await secondaryApp.delete(); }catch(e){}
+  }
 }
 
 /* ---------------- Analytics tab (computed client-side from users/companies already in memory —
@@ -2274,7 +2383,7 @@ function visibleCompanies(){
 async function loadCompanies(){
   if(!currentUser){ companies = []; return; }
   try{
-    if(currentUser.isAdmin){
+    if(isFullAdmin()){
       const snap = await db.collection('companies').get();
       companies = snap.docs.map(d=>d.data());
     }else{
@@ -4537,12 +4646,13 @@ function render(){
       <span id="menuView" style="position:relative;">View${viewMenuOpen?viewDropdown():''}</span>
       <span id="menuBackup">Backup</span>
       <span id="menuHelp">Help</span>
+      ${currentUser && currentUser.role==='support' ? `<span id="menuGroupAdmin">Admin</span>` : ''}
       <span id="menuDeleteCompany" class="menu-danger">Delete Company</span>
     </div>
     ${adminViewOnlyCompanyId===currentCompany.id ? `
     <div style="background:#F2A900;color:#2a2200;padding:8px 18px;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
-      <span>👁 Viewing "${escapeHtml(currentCompany.name)}" as Administrator — read-only, nothing you do here is saved.</span>
-      <button class="btn secondary small" id="exitAdminViewBtn" type="button" style="background:#fff;">Exit to Admin Panel</button>
+      <span>👁 Viewing "${escapeHtml(currentCompany.name)}" as ${currentUser && currentUser.role==='support' ? 'a group admin' : 'Administrator'} — read-only, nothing you do here is saved.</span>
+      <button class="btn secondary small" id="exitAdminViewBtn" type="button" style="background:#fff;">${currentUser && currentUser.role==='support' ? 'Exit to Admin' : 'Exit to Admin Panel'}</button>
     </div>
     ` : (!adminViewOnlyCompanyId && isReadOnlyMode() && currentCompany.id===SK_DEMO_COMPANY_ID) ? `
     <div style="background:#F2A900;color:#2a2200;padding:8px 18px;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -4606,8 +4716,15 @@ function render(){
     if(adminViewOnlyCompanyId){
       adminViewOnlyCompanyId = null;
       currentCompany = null;
-      modal = 'adminPanel';
-      adminTab = 'companies';
+      if(currentUser && currentUser.role==='support'){
+        modal = 'groupAdmin';
+        groupAdminTab = 'users';
+        groupUserDetailId = null;
+      }else{
+        modal = 'adminPanel';
+        adminTab = 'companies';
+        adminUserDetailId = null;
+      }
     }
     screen = 'gateway';
     renderGateway();
@@ -4616,8 +4733,15 @@ function render(){
   document.getElementById('exitAdminViewBtn')?.addEventListener('click', ()=>{
     adminViewOnlyCompanyId = null;
     currentCompany = null;
-    modal = 'adminPanel';
-    adminTab = 'companies';
+    if(currentUser && currentUser.role==='support'){
+      modal = 'groupAdmin';
+      groupAdminTab = 'users';
+      groupUserDetailId = null;
+    }else{
+      modal = 'adminPanel';
+      adminTab = 'companies';
+      adminUserDetailId = null;
+    }
     screen = 'gateway';
     renderGateway();
     pushHistory();
@@ -4669,6 +4793,14 @@ function render(){
     }
     render();
     if(helpTab==='tickets'){ await markMyTicketsSeen(); render(); }
+  });
+  document.getElementById('menuGroupAdmin')?.addEventListener('click', async ()=>{
+    await loadGroupAdminData();
+    groupAdminTab = 'overview';
+    modal = 'groupAdmin';
+    screen = 'gateway';
+    renderGateway();
+    pushHistory();
   });
   document.getElementById('menuDeleteCompany').addEventListener('click', async ()=>{
     const deleted = await deleteCompanyById(currentCompany.id);
@@ -5960,7 +6092,7 @@ function renderLogin(){
           return;
         }
         const role = profile.role==='admin' ? 'admin' : (profile.role==='support' ? 'support' : 'user');
-        currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null };
+        currentUser = { id: cred.user.uid, name: profile.name || username, username: profile.username || username, isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null, groupUserLimit: profile.groupUserLimit || 10, groupName: profile.groupName || '' };
         lastUsername = username;
         authDraft = { name:'', username:'', mobile:'', email:'' };
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
@@ -6011,7 +6143,7 @@ function renderLogin(){
           return;
         }
         const role = profile.role==='admin' ? 'admin' : (profile.role==='support' ? 'support' : 'user');
-        currentUser = { id: cred.user.uid, name: profile.name || cred.user.displayName || '', username: profile.username || '', isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null };
+        currentUser = { id: cred.user.uid, name: profile.name || cred.user.displayName || '', username: profile.username || '', isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null, groupUserLimit: profile.groupUserLimit || 10, groupName: profile.groupName || '' };
         lastUsername = profile.username || lastUsername;
         try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
         try{ await db.collection('users').doc(cred.user.uid).update({ lastLoginAt: new Date().toISOString() }); }catch(e){}
@@ -6276,7 +6408,8 @@ function renderGateway(){
       <span id="gwMenuFile" style="position:relative;">File${fileMenuOpen?fileDropdown():''}</span>
       <span id="gwMenuCompany">Company</span>
       <span id="gwMenuHelp">Help</span>
-      ${currentUser && currentUser.isAdmin ? `<span id="gwMenuServices" style="position:relative;">Services${servicesMenuOpen?servicesDropdown():''}</span>` : ''}
+      ${currentUser && currentUser.role==='support' ? `<span id="gwMenuGroupAdmin">Admin</span>` : ''}
+      ${isFullAdmin() ? `<span id="gwMenuServices" style="position:relative;">Services${servicesMenuOpen?servicesDropdown():''}</span>` : ''}
     </div>
     ${currentUser && !currentUser.isAdmin && announcement.active && announcement.message && !announcementDismissed ? `
     <div style="background:#F2A900;color:#2a2200;padding:10px 20px;font-size:12.5px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;">
@@ -6396,6 +6529,9 @@ function renderGateway(){
     ${modal==='adminPanel' ? adminPanelModal() : ''}
     ${modal==='adminPanel' && adminUserDetailId ? adminUserDetailModal() : ''}
     ${modal==='adminPanel' && adminAddUserOpen ? adminAddUserModal() : ''}
+    ${modal==='groupAdmin' ? groupAdminModal() : ''}
+    ${modal==='groupAdmin' && groupUserDetailId ? groupUserDetailModal() : ''}
+    ${modal==='groupAdmin' && groupAddUserOpen ? groupAddUserModal() : ''}
       </div>
     </div>
   `;
@@ -6508,6 +6644,14 @@ function renderGateway(){
     renderGateway();
     if(helpTab==='tickets'){ await markMyTicketsSeen(); renderGateway(); }
   });
+  document.getElementById('gwMenuGroupAdmin')?.addEventListener('click', async ()=>{
+    fileMenuOpen = false;
+    servicesMenuOpen = false;
+    await loadGroupAdminData();
+    groupAdminTab = 'overview';
+    modal = 'groupAdmin';
+    renderGateway();
+  });
   document.getElementById('gwMenuServices')?.addEventListener('click', (e)=>{
     e.stopPropagation();
     servicesMenuOpen = !servicesMenuOpen;
@@ -6565,21 +6709,18 @@ function renderGateway(){
       pushHistory();
     });
   }
-  if(modal==='help' || modal==='adminPanel'){
-    document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
-      if(e.target.id==='modalOverlayBg'){
-        modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
-        editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
-        adminUserDetailId = null; selectedUserIds = {};
-        renderGateway();
-      }
-    });
-    document.getElementById('modalClose')?.addEventListener('click', ()=>{
+  if(modal==='help' || modal==='adminPanel' || modal==='groupAdmin'){
+    const closeTopModal = ()=>{
       modal = null; editingUserId = null; editingPlanUserId = null; reassigningCompanyId = null;
       editingTicketId = null; contactSupportOpen = false; contactSupportNotice = '';
       adminUserDetailId = null; selectedUserIds = {};
+      groupUserDetailId = null; groupEditingTicketId = null;
       renderGateway();
+    };
+    document.getElementById('modalOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='modalOverlayBg') closeTopModal();
     });
+    document.getElementById('modalClose')?.addEventListener('click', closeTopModal);
   }
   if(modal==='help'){
     wireContactSupportHandlers(renderGateway);
@@ -6953,6 +7094,27 @@ function renderGateway(){
       adminUserDetailId = null;
       renderGateway();
     });
+    document.getElementById('saveGroupUserLimitBtn')?.addEventListener('click', async ()=>{
+      if(!isFullAdmin()) return;
+      const uid = adminUserDetailId;
+      const u = users.find(x=>x.id===uid);
+      if(!u) return;
+      const input = document.getElementById('groupUserLimitInput');
+      const nextLimit = Math.max(0, Math.min(500, Number(input?.value) || 0));
+      const btn = document.getElementById('saveGroupUserLimitBtn');
+      btn.disabled = true;
+      try{
+        await db.collection('users').doc(uid).set({ groupUserLimit: nextLimit }, {merge:true});
+        u.groupUserLimit = nextLimit;
+        await logAudit('group_limit_changed', `Set ${u.name}'s group user limit to ${nextLimit}`, uid, u.name);
+        toast('Group limit saved');
+        renderGateway();
+      }catch(err){
+        console.error('Save group limit failed:', err);
+        toast('Could not save the group limit — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+      }
+    });
   }
   if(modal==='adminPanel' && adminAddUserOpen){
     const closeAddUser = ()=>{ adminAddUserOpen = false; adminAddUserError = ''; renderGateway(); };
@@ -7225,6 +7387,287 @@ function renderGateway(){
       renderGateway();
     });
   }
+  if(modal==='groupAdmin'){
+    document.querySelectorAll('[data-group-admin-tab]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        groupAdminTab = el.dataset.groupAdminTab;
+        editingUserId = null; groupEditingTicketId = null; groupUserDetailId = null;
+        renderGateway();
+      });
+    });
+  }
+  if(modal==='groupAdmin' && groupAdminTab==='users'){
+    document.getElementById('openGroupAddUserBtn')?.addEventListener('click', ()=>{
+      const limit = (currentUser && currentUser.groupUserLimit) || 10;
+      if(groupMembers.length >= limit) return; // belt-and-braces — the button is disabled at the cap already
+      groupAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+      groupAddUserError = '';
+      groupAddUserBusy = false;
+      groupAddUserOpen = true;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-edit-user]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const uid = el.dataset.groupEditUser;
+        const u = groupMembers.find(x=>x.id===uid);
+        if(!u) return;
+        editUserDraft = { name: u.name||'', mobile: u.mobile||'', email: u.email||'' };
+        editingUserId = uid;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelGroupEditUserBtn')?.addEventListener('click', ()=>{
+      editingUserId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-save-user]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.groupSaveUser;
+        const u = groupMembers.find(x=>x.id===uid);
+        if(!u) return;
+        const name = (document.querySelector(`[data-edit-name="${uid}"]`).value||'').trim();
+        const mobile = (document.querySelector(`[data-edit-mobile="${uid}"]`).value||'').trim();
+        const email = (document.querySelector(`[data-edit-email="${uid}"]`).value||'').trim();
+        if(!name || !mobile || !email){ toast('Name, mobile and email are all required'); return; }
+        if(!isValidMobile(mobile)){ toast('Mobile number must be exactly 10 digits'); return; }
+        if(!isValidEmail(email)){ toast('Please enter a valid email address'); return; }
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ name, mobile, email }, {merge:true});
+          u.name = name; u.mobile = mobile; u.email = email;
+          editingUserId = null;
+          await logAudit('profile_edited', `Updated profile details`, uid, name);
+          toast('Profile updated');
+          renderGateway();
+        }catch(err){
+          console.error('Save profile failed:', err);
+          toast('Could not save that profile — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-group-reset-password]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.groupResetPassword;
+        const u = groupMembers.find(x=>x.id===uid);
+        if(!u || !u.email) return;
+        el.disabled = true;
+        try{
+          await fbAuth.sendPasswordResetEmail(u.email);
+          await logAudit('password_reset_sent', `Sent a password reset email to ${u.email}`, uid, u.name);
+          toast('Password reset email sent to ' + u.email);
+        }catch(err){
+          console.error('Send reset email failed:', err);
+          toast('Could not send the reset email — ' + (err && (err.code || err.message) || 'unknown error'));
+        }
+        el.disabled = false;
+      });
+    });
+    document.querySelectorAll('[data-group-update-status]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const uid = el.dataset.groupUpdateStatus;
+        const select = document.querySelector(`[data-group-status-select="${uid}"]`);
+        if(!select) return;
+        const nextBlocked = select.value === 'blocked';
+        el.disabled = true;
+        try{
+          await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
+          const u = groupMembers.find(x=>x.id===uid);
+          if(u) u.blocked = nextBlocked;
+          await logAudit(nextBlocked?'account_blocked':'account_unblocked', '', uid, u?u.name:uid);
+          toast(nextBlocked ? 'Account blocked' : 'Account unblocked');
+          renderGateway();
+        }catch(err){
+          console.error('Update account status failed:', err);
+          toast('Could not update that account — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll('[data-group-view-user-detail]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        groupUserDetailId = el.dataset.groupViewUserDetail;
+        renderGateway();
+      });
+    });
+  }
+  if(modal==='groupAdmin' && groupUserDetailId){
+    document.getElementById('userDetailOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='userDetailOverlayBg'){ groupUserDetailId = null; renderGateway(); }
+    });
+    document.getElementById('userDetailClose')?.addEventListener('click', ()=>{
+      groupUserDetailId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-view-company]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const cid = el.dataset.groupViewCompany;
+        const c = groupCompanies.find(x=>x.id===cid);
+        if(!c) return;
+        await logAudit('company_viewed', `Opened "${c.name}" in read-only View mode`, cid, c.name);
+        await enterCompanyApp(c, {adminViewOnly:true});
+      });
+    });
+  }
+  if(modal==='groupAdmin' && groupAddUserOpen){
+    const closeGroupAddUser = ()=>{ groupAddUserOpen = false; groupAddUserError = ''; renderGateway(); };
+    document.getElementById('addUserOverlayBg')?.addEventListener('click', (e)=>{
+      if(e.target.id==='addUserOverlayBg') closeGroupAddUser();
+    });
+    document.getElementById('addUserClose')?.addEventListener('click', closeGroupAddUser);
+    document.getElementById('addUserCancelBtn')?.addEventListener('click', closeGroupAddUser);
+    document.getElementById('groupAddUserForm')?.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if(groupAddUserBusy) return;
+      const submitBtnEl = document.getElementById('groupAddUserSubmitBtn');
+      if(submitBtnEl) submitBtnEl.disabled = true;
+      const limit = (currentUser && currentUser.groupUserLimit) || 10;
+      if(groupMembers.length >= limit){ groupAddUserError = `You've reached your limit of ${limit} users — ask an Administrator to raise it.`; renderGateway(); return; }
+      const draft = {
+        name: (document.getElementById('groupAddUserName')?.value || '').trim(),
+        username: (document.getElementById('groupAddUserUsername')?.value || '').trim(),
+        email: (document.getElementById('groupAddUserEmail')?.value || '').trim(),
+        mobile: (document.getElementById('groupAddUserMobile')?.value || '').trim(),
+        password: document.getElementById('groupAddUserPassword')?.value || '',
+      };
+      groupAddUserDraft = draft;
+      if(!draft.name){ groupAddUserError = 'Please enter a name.'; renderGateway(); return; }
+      if(!isValidUsername(draft.username)){ groupAddUserError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderGateway(); return; }
+      if(!isValidEmail(draft.email)){ groupAddUserError = 'Please enter a valid email address.'; renderGateway(); return; }
+      if(!isValidMobile(draft.mobile)){ groupAddUserError = 'Please enter a valid 10-digit phone number.'; renderGateway(); return; }
+      if(!draft.password || draft.password.length < 6){ groupAddUserError = 'Password must be at least 6 characters.'; renderGateway(); return; }
+      groupAddUserBusy = true;
+      groupAddUserError = '';
+      renderGateway();
+      try{
+        const usernameKey = draft.username.toLowerCase();
+        const existingUsername = await db.collection('usernames').doc(usernameKey).get();
+        if(existingUsername.exists){
+          groupAddUserError = 'That username is already taken.';
+          groupAddUserBusy = false;
+          renderGateway();
+          return;
+        }
+        const profile = await groupCreateUserAccount(draft);
+        groupMembers.push(profile);
+        await logAudit('account_created', `Created account @${profile.username} (${profile.email}) via Group Admin panel`, profile.id, profile.name);
+        groupAddUserOpen = false;
+        groupAddUserBusy = false;
+        groupAddUserDraft = { name:'', username:'', mobile:'', email:'', password:'' };
+        toast(`User @${profile.username} created — they can log in now with the credentials you set.`);
+        renderGateway();
+      }catch(err){
+        console.error('Add group user failed:', err);
+        groupAddUserBusy = false;
+        groupAddUserError = err && err.code==='auth/email-already-in-use'
+          ? 'An account with this email already exists. Use "Reset Password" from your Users list if they need a new password, or use a different email.'
+          : authErrorMessage(err, true);
+        renderGateway();
+      }
+    });
+  }
+  if(modal==='groupAdmin' && groupAdminTab==='support'){
+    document.getElementById('groupTicketStatusFilterSelect')?.addEventListener('change', (e)=>{
+      groupTicketStatusFilter = e.target.value;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-ticket-status]').forEach(el=>{
+      el.addEventListener('change', async ()=>{
+        const tid = el.dataset.groupTicketStatus;
+        const t = groupTickets.find(x=>x.id===tid);
+        if(!t) return;
+        const nextStatus = el.value;
+        try{
+          await db.collection('supportTickets').doc(tid).set({ status: nextStatus, updatedAt: new Date().toISOString(), seenByUser: false }, {merge:true});
+          t.status = nextStatus;
+          t.seenByUser = false;
+          await logAudit('ticket_status_changed', `Set ticket "${t.subject}" to ${nextStatus}`, t.userId, t.userName);
+          toast('Ticket updated');
+          renderGateway();
+        }catch(err){
+          console.error('Update ticket failed:', err);
+          toast('Could not update that ticket — ' + (err && (err.code || err.message) || 'unknown error'));
+        }
+      });
+    });
+    document.querySelectorAll('[data-group-edit-ticket-note]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const tid = el.dataset.groupEditTicketNote;
+        const t = groupTickets.find(x=>x.id===tid);
+        groupTicketNoteDraft = t ? (t.adminNote||'') : '';
+        groupEditingTicketId = tid;
+        renderGateway();
+      });
+    });
+    document.getElementById('cancelGroupTicketNoteBtn')?.addEventListener('click', ()=>{
+      groupEditingTicketId = null;
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-save-ticket-note]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const tid = el.dataset.groupSaveTicketNote;
+        const t = groupTickets.find(x=>x.id===tid);
+        if(!t) return;
+        const noteInput = document.querySelector(`[data-group-ticket-note="${tid}"]`);
+        const note = noteInput ? noteInput.value.trim() : '';
+        el.disabled = true;
+        try{
+          await db.collection('supportTickets').doc(tid).set({ adminNote: note, updatedAt: new Date().toISOString(), seenByUser: false }, {merge:true});
+          t.adminNote = note;
+          t.seenByUser = false;
+          groupEditingTicketId = null;
+          toast('Note saved');
+          renderGateway();
+        }catch(err){
+          console.error('Save ticket note failed:', err);
+          toast('Could not save that note — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+  }
+  if(modal==='groupAdmin' && groupAdminTab==='settings'){
+    document.getElementById('saveGroupNameBtn')?.addEventListener('click', async ()=>{
+      const groupName = (document.getElementById('groupNameInput')?.value || '').trim();
+      const btn = document.getElementById('saveGroupNameBtn');
+      btn.disabled = true;
+      try{
+        await db.collection('users').doc(currentUser.id).set({ groupName }, {merge:true});
+        currentUser.groupName = groupName;
+        groupNameDraft = groupName;
+        groupSettingsNotice = 'Group name saved.';
+        toast('Group name saved');
+        renderGateway();
+      }catch(err){
+        console.error('Save group name failed:', err);
+        toast('Could not save the group name — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('saveGroupOwnProfileBtn')?.addEventListener('click', async ()=>{
+      const name = (document.getElementById('groupOwnNameInput')?.value || '').trim();
+      const mobile = (document.getElementById('groupOwnMobileInput')?.value || '').trim();
+      const email = (document.getElementById('groupOwnEmailInput')?.value || '').trim();
+      if(!name || !mobile || !email){ toast('Name, mobile and email are all required'); return; }
+      if(!isValidMobile(mobile)){ toast('Mobile number must be exactly 10 digits'); return; }
+      if(!isValidEmail(email)){ toast('Please enter a valid email address'); return; }
+      groupSettingsBusy = true;
+      renderGateway();
+      try{
+        await db.collection('users').doc(currentUser.id).set({ name, mobile, email }, {merge:true});
+        currentUser.name = name; currentUser.mobile = mobile; currentUser.email = email;
+        groupSettingsBusy = false;
+        groupSettingsNotice = 'Profile saved.';
+        toast('Profile updated');
+        renderGateway();
+      }catch(err){
+        console.error('Save profile failed:', err);
+        toast('Could not save that profile — ' + (err && (err.code || err.message) || 'unknown error'));
+        groupSettingsBusy = false;
+        renderGateway();
+      }
+    });
+  }
 }
 function fileDropdown(){
   return `<div class="menu-dropdown"><a id="gwNewCompanyLink">New Company</a><a id="gwLogOutLink">Log Out</a></div>`;
@@ -7251,7 +7694,6 @@ function adminPanelModal(){
           ${adminTabBtn('auditLog','Audit Log')}
         </div>
         <div class="panel-body" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
-          ${!isFullAdmin() ? `<p class="muted" style="font-size:11.5px;background:var(--surface-strong);padding:8px 12px;border-radius:6px;margin-bottom:14px;">You're signed in as <strong>Support</strong> — you can view and assist accounts, but role changes, deletions, reassignments, and platform settings are limited to a full Administrator.</p>` : ''}
           ${adminTab==='overview' ? adminOverviewTab() : ''}
           ${adminTab==='users' ? adminUsersTab() : ''}
           ${adminTab==='companies' ? adminCompaniesTab() : ''}
@@ -7389,44 +7831,75 @@ function adminSupportTab(){
 // Reference-only — shown (with a copy button) on the Settings tab. This app talks to Firestore
 // directly from the browser via the client SDK, which has no API to deploy security rules, so this
 // is never applied automatically; an admin has to paste it into the Firebase Console themselves.
+//
+// 'support' is a scoped GROUP ADMIN, not a junior full-admin: a Support user may only read/touch
+// their own group — the users whose users/{uid}.groupOwnerId equals their own uid, and only up to
+// their groupUserLimit's worth of them — plus those members' companies (read-only), support tickets
+// and audit-log entries. groupOwnerOf(uid) is the one cross-document lookup that makes the latter
+// three possible: those docs carry a user's uid (ownerId / userId / targetUid), not a groupOwnerId of
+// their own, so the rule has to look up THAT uid's own groupOwnerId to decide whether it's inside the
+// requesting Support user's group. A full Administrator (role=='admin') still sees everything, same
+// as before.
 const RECOMMENDED_FIRESTORE_RULES = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn() { return request.auth != null; }
     function isOwnerUid(uid) { return isSignedIn() && request.auth.uid == uid; }
     function myRole() { return isSignedIn() ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : null; }
-    function isSupportOrAdmin() { return myRole() == 'support' || myRole() == 'admin'; }
     function isAdmin() { return myRole() == 'admin'; }
+    function isSupport() { return myRole() == 'support'; }
+    // Cross-document lookup: the groupOwnerId of the user identified by uid, or null if uid is
+    // missing or has no such document — guarded so a stray null/blocked-account uid on a company,
+    // ticket or audit-log doc can never error the whole rule evaluation.
+    function groupOwnerOf(uid) {
+      return uid != null && exists(/databases/$(database)/documents/users/$(uid))
+        ? get(/databases/$(database)/documents/users/$(uid)).data.groupOwnerId
+        : null;
+    }
 
     match /users/{uid} {
-      allow read: if isOwnerUid(uid) || isSupportOrAdmin();
+      // A Support user may read their own group's member docs directly (groupOwnerId lives right
+      // on this document, so no extra lookup is needed here, unlike the collections below).
+      allow read: if isOwnerUid(uid) || isAdmin() || (isSupport() && resource.data.groupOwnerId == request.auth.uid);
       allow create: if isOwnerUid(uid);
-      allow update: if isOwnerUid(uid) || isAdmin();
+      // A Support user may edit their own group members' everyday profile fields (and block/unblock
+      // them), but never their role, groupOwnerId or groupUserLimit — those stay admin-only, so a
+      // Support user can never promote themselves, re-home a member into someone else's group, or
+      // raise their own cap.
+      allow update: if isOwnerUid(uid) || isAdmin() || (
+        isSupport() && resource.data.groupOwnerId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','mobile','email','blocked'])
+      );
       allow delete: if isAdmin();
     }
     match /usernames/{name} {
       allow read, write: if isSignedIn();
     }
     match /companies/{cid} {
-      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isSupportOrAdmin());
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin() || (isSupport() && groupOwnerOf(resource.data.ownerId) == request.auth.uid));
       allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
+      // Support's access to a group member's company is READ-ONLY (view their books, never edit or
+      // delete them) — only the owner themselves or a full Administrator may write here.
       allow update, delete: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
     }
     match /auditLog/{id} {
-      allow read, create: if isSupportOrAdmin();
+      allow read: if isAdmin() || (isSignedIn() && resource.data.actorUid == request.auth.uid) || (isSupport() && groupOwnerOf(resource.data.targetUid) == request.auth.uid);
+      // Anyone signed in may log an event, but only as themselves — actorUid can never be spoofed
+      // to someone else's uid.
+      allow create: if isSignedIn() && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
     match /errorLog/{id} {
-      allow read, delete: if isSupportOrAdmin();
+      allow read, delete: if isAdmin();
       allow create: if isSignedIn();
       allow update: if false;
     }
     match /supportTickets/{id} {
-      allow read: if isSupportOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid) || (isSupport() && groupOwnerOf(resource.data.userId) == request.auth.uid);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
       // The ticket's own user may only flip seenByUser (to dismiss the "updated" badge once they've
-      // viewed it) — every other field, including status and adminNote, stays support/admin-only.
-      allow update: if isSupportOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenByUser']));
+      // viewed it) — every other field, including status and adminNote, stays admin/group-admin-only.
+      allow update: if isAdmin() || (isSupport() && groupOwnerOf(resource.data.userId) == request.auth.uid) || (isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenByUser']));
       allow delete: if isAdmin();
     }
     match /settings/{docId} {
@@ -7643,6 +8116,14 @@ function adminUserDetailModal(){
             }).join('')}
           </table>
           ` : `<div class="empty">Owns no companies.</div>`}
+          ${u.role==='support' ? `
+          <div class="section-title">Group Admin Limit</div>
+          <p class="muted" style="font-size:12px;margin-top:0;">This Support user's own scoped "Admin" panel — the group of accounts they can create and manage themselves. Currently at ${users.filter(x=>x.groupOwnerId===u.id).length} of ${u.groupUserLimit||10}.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="number" id="groupUserLimitInput" min="0" max="500" value="${escapeAttr(String(u.groupUserLimit||10))}" style="max-width:120px;" ${isFullAdmin()?'':'disabled'}>
+            <button class="btn secondary small" id="saveGroupUserLimitBtn" type="button" ${isFullAdmin()?'':'disabled'}>Save Limit</button>
+          </div>
+          ` : ''}
         </div>
       </div>
     </div>
@@ -7763,6 +8244,288 @@ function adminAuditLogTab(){
     </table>
     </div>
     ` : `<div class="empty">${(adminAuditSearch || adminAuditRangeDays!=='all') ? 'No events match your filters.' : 'No activity recorded yet.'}</div>`}
+  `;
+}
+
+/* ---------------- Group Admin panel (Support role) — modal + tabs ----------------
+   Deliberately a SEPARATE, smaller set of render functions rather than reusing adminPanelModal()'s
+   with extra conditionals threaded through it: the full Admin Panel's Users/Companies/Analytics tabs
+   carry platform-wide actions (role changes, reassignment, bulk delete, feature flags) that a Support
+   user must never be able to reach even by a UI slip — keeping the two panels' markup and handlers
+   fully separate is what makes "Support can never see admin panel data" true by construction, not
+   just by convention. */
+function groupAdminTabBtn(id, label){
+  const active = groupAdminTab===id;
+  return `<button class="btn ${active?'':'secondary'} small" data-group-admin-tab="${id}" type="button" style="border-radius:8px 8px 0 0;">${label}</button>`;
+}
+function groupAdminModal(){
+  const openTickets = groupTickets.filter(t=>t.status==='open').length;
+  return `
+    <div class="modal-overlay" id="modalOverlayBg">
+      <div class="modal-card" style="width:96vw;max-width:1180px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="panel-head"><h2>Admin — ${escapeHtml(currentUser && currentUser.groupName ? currentUser.groupName : 'My Group')}</h2><button class="btn secondary small" id="modalClose" type="button">✕</button></div>
+        <div style="display:flex;gap:6px;padding:10px 18px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+          ${groupAdminTabBtn('overview','Overview')}
+          ${groupAdminTabBtn('users','Users')}
+          ${groupAdminTabBtn('support','Support'+(openTickets?` (${openTickets})`:''))}
+          ${groupAdminTabBtn('settings','Settings')}
+          ${groupAdminTabBtn('audit','Audit')}
+        </div>
+        <div class="panel-body" style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
+          <p class="muted" style="font-size:11.5px;background:var(--surface-strong);padding:8px 12px;border-radius:6px;margin-bottom:14px;">This is your own group's admin area — it only ever shows the users you've created here and their data, never anything else on the platform.</p>
+          ${groupAdminTab==='overview' ? groupAdminOverviewTab() : ''}
+          ${groupAdminTab==='users' ? groupAdminUsersTab() : ''}
+          ${groupAdminTab==='support' ? groupAdminSupportTab() : ''}
+          ${groupAdminTab==='settings' ? groupAdminSettingsTab() : ''}
+          ${groupAdminTab==='audit' ? groupAdminAuditTab() : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function groupAdminOverviewTab(){
+  const stats = computeGroupAdminStats();
+  return `
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat"><div class="label">Your Users</div><div class="val">${stats.totalUsers} / ${stats.limit}</div></div>
+      <div class="stat"><div class="label">Their Companies</div><div class="val">${stats.totalCompanies}</div></div>
+      <div class="stat"><div class="label">Blocked Accounts</div><div class="val ${stats.blocked?'neg':''}">${stats.blocked}</div></div>
+      <div class="stat"><div class="label">New This Week</div><div class="val ${stats.newThisWeek?'pos':''}">${stats.newThisWeek}</div></div>
+    </div>
+    <div class="section-title">Companies</div>
+    ${groupCompanies.length ? `
+    <table>
+      <tr><th>Company</th><th>Owner</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th></tr>
+      ${groupCompanies.map(c=>{
+        const owner = groupMembers.find(u=>u.id===c.ownerId);
+        const lastActivity = companyLastActivity(c);
+        return `<tr>
+          <td>${escapeHtml(c.name)}</td>
+          <td class="muted">${owner ? `${escapeHtml(owner.name)} (@${escapeHtml(owner.username)})` : '—'}</td>
+          <td class="num">${(c.ledgers||[]).length}</td>
+          <td class="num">${(c.vouchers||[]).length}</td>
+          <td class="muted" style="font-size:11px;">${lastActivity ? escapeHtml(lastActivity) : '—'}</td>
+        </tr>`;
+      }).join('')}
+    </table>
+    ` : `<div class="empty">Nobody in your group has created a company yet.</div>`}
+  `;
+}
+function groupAdminUsersTab(){
+  const stats = computeGroupAdminStats();
+  const atCap = stats.totalUsers >= stats.limit;
+  return `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <span class="muted" style="font-size:12px;">${stats.totalUsers} of ${stats.limit} user${stats.limit===1?'':'s'} used</span>
+      <button class="btn small" id="openGroupAddUserBtn" type="button" style="margin-left:auto;" ${atCap?'disabled':''} title="${atCap?'You have reached your user limit — ask an Administrator to raise it':''}">+ Add User</button>
+    </div>
+    ${groupMembers.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>#</th><th>Account</th><th>Mobile</th><th>Email</th><th>Signed Up</th><th class="num">Companies</th><th>Status</th><th>Actions</th></tr>
+      ${groupMembers.map((u,i)=>{
+        const isEditing = editingUserId===u.id;
+        return `<tr>
+          <td class="muted">${i+1}</td>
+          <td>
+            ${isEditing ? `<input type="text" data-edit-name="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.name)}" style="margin-bottom:4px;">` : escapeHtml(u.name)}
+            <div class="muted" style="font-size:10.5px;">@${escapeHtml(u.username)}</div>
+          </td>
+          <td class="muted">${isEditing ? `<input type="tel" data-edit-mobile="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.mobile)}" maxlength="10">` : escapeHtml(u.mobile||'—')}</td>
+          <td class="muted">${isEditing ? `<input type="email" data-edit-email="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.email)}">` : escapeHtml(u.email||'—')}</td>
+          <td class="muted" style="font-size:11px;">${fmtTimestamp(u.createdAt)}</td>
+          <td class="num">${groupCompanies.filter(c=>c.ownerId===u.id).length}</td>
+          <td>
+            <select data-group-status-select="${escapeAttr(u.id)}">
+              <option value="active" ${!u.blocked?'selected':''}>Active</option>
+              <option value="blocked" ${u.blocked?'selected':''}>Blocked</option>
+            </select>
+          </td>
+          <td style="min-width:160px;">
+            <div style="display:flex;flex-wrap:wrap;gap:4px;">
+              ${isEditing ? `
+                <button class="btn small" data-group-save-user="${escapeAttr(u.id)}" type="button">Save</button>
+                <button class="btn secondary small" id="cancelGroupEditUserBtn" type="button">Cancel</button>
+              ` : `<button class="btn secondary small" data-group-edit-user="${escapeAttr(u.id)}" type="button">Edit</button>`}
+              <button class="btn secondary small" data-group-view-user-detail="${escapeAttr(u.id)}" type="button">Details</button>
+              <button class="btn secondary small" data-group-reset-password="${escapeAttr(u.id)}" type="button" ${u.email?'':'disabled'}>Reset Password</button>
+              <button class="btn secondary small" data-group-update-status="${escapeAttr(u.id)}" type="button">Update Status</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">You haven't created any users yet.</div>`}
+  `;
+}
+// Per-group-member drill-down — stacked above the Group Admin panel (groupUserDetailId, not `modal`,
+// mirroring adminUserDetailModal()'s pattern), listing this member's companies with a read-only
+// "View" button (enterCompanyApp(..., {adminViewOnly:true})) — the group admin can look at their
+// books but never edit them, per isReadOnlyMode()'s guard.
+function groupUserDetailModal(){
+  const u = groupMembers.find(x=>x.id===groupUserDetailId);
+  if(!u) return '';
+  const owned = groupCompanies.filter(c=>c.ownerId===u.id);
+  return `
+    <div class="modal-overlay" id="userDetailOverlayBg">
+      <div class="modal-card" style="width:92vw;max-width:640px;max-height:86vh;display:flex;flex-direction:column;">
+        <div class="panel-head"><h2>${escapeHtml(u.name)}</h2><button class="btn secondary small" id="userDetailClose" type="button">✕</button></div>
+        <div style="overflow-y:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;">
+          <div class="grid" style="grid-template-columns:repeat(2,1fr);">
+            <div class="stat"><div class="label">Username</div><div class="val" style="font-size:15px;">@${escapeHtml(u.username)}</div></div>
+            <div class="stat"><div class="label">Status</div><div class="val" style="font-size:15px;">${u.blocked?'Blocked':'Active'}</div></div>
+          </div>
+          <table style="margin-top:12px;">
+            <tr><th>Mobile</th><td>${escapeHtml(u.mobile||'—')}</td></tr>
+            <tr><th>Email</th><td>${escapeHtml(u.email||'—')}</td></tr>
+            <tr><th>Signed Up</th><td>${fmtTimestamp(u.createdAt)}</td></tr>
+            <tr><th>Last Active</th><td>${u.lastLoginAt ? fmtTimestamp(u.lastLoginAt) : '—'}</td></tr>
+          </table>
+          <div class="section-title">Companies (${owned.length})</div>
+          ${owned.length ? `
+          <table>
+            <tr><th>Company</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th><th></th></tr>
+            ${owned.map(c=>{
+              const lastActivity = companyLastActivity(c);
+              return `<tr>
+                <td>${escapeHtml(c.name)}</td>
+                <td class="num">${(c.ledgers||[]).length}</td>
+                <td class="num">${(c.vouchers||[]).length}</td>
+                <td class="muted" style="font-size:11px;">${lastActivity ? escapeHtml(lastActivity) : '—'}</td>
+                <td><button class="btn secondary small" data-group-view-company="${escapeAttr(c.id)}" type="button">View</button></td>
+              </tr>`;
+            }).join('')}
+          </table>
+          ` : `<div class="empty">Owns no companies.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+// "+ Add User" dialog for a group admin — mirrors adminAddUserModal()'s markup exactly, but submits
+// through groupCreateUserAccount() (which stamps groupOwnerId) and is capped by groupUserLimit.
+function groupAddUserModal(){
+  const d = groupAddUserDraft;
+  return `
+    <div class="modal-overlay" id="addUserOverlayBg">
+      <div class="modal-card" style="width:94vw;max-width:640px;">
+        <div class="panel-head" style="padding:20px 24px;align-items:flex-start;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <div style="width:46px;height:46px;border-radius:12px;background:var(--credit-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--accent1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+            </div>
+            <div>
+              <h2 style="margin:0;">Add User</h2>
+              <div class="muted" style="font-size:12px;margin-top:3px;max-width:380px;">Create a ready-to-use account in your group with credentials you set — they can log in immediately.</div>
+            </div>
+          </div>
+          <button class="btn secondary small" id="addUserClose" type="button">✕</button>
+        </div>
+        <form id="groupAddUserForm" style="padding:22px 24px 24px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 18px;">
+            <div class="field"><label>Name</label><input type="text" id="groupAddUserName" value="${escapeAttr(d.name)}" placeholder="e.g. Priya Sharma" autocomplete="off" required></div>
+            <div class="field"><label>Username</label><input type="text" id="groupAddUserUsername" value="${escapeAttr(d.username)}" placeholder="e.g. priya.sharma" autocomplete="off" required></div>
+            <div class="field"><label>Email</label><input type="email" id="groupAddUserEmail" value="${escapeAttr(d.email)}" placeholder="e.g. priya@example.com" autocomplete="off" required></div>
+            <div class="field"><label>Phone Number</label><input type="tel" id="groupAddUserMobile" value="${escapeAttr(d.mobile)}" placeholder="10-digit mobile number" maxlength="10" autocomplete="off" required></div>
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="text" id="groupAddUserPassword" value="${escapeAttr(d.password||'')}" placeholder="Set a password for this user" autocomplete="off" required>
+            <div class="muted" style="font-size:11px;margin-top:5px;">Share this password with the user directly — it's visible here so you can pass it on.</div>
+          </div>
+          ${groupAddUserError ? `<div style="display:flex;gap:9px;align-items:flex-start;background:var(--debit-bg);border:1px solid rgba(214,69,69,0.3);border-radius:var(--radius-sm);padding:11px 13px;margin-top:6px;color:var(--debit);font-size:12.5px;line-height:1.45;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            <span>${escapeHtml(groupAddUserError)}</span>
+          </div>` : ''}
+          <div style="display:flex;gap:10px;margin-top:20px;padding-top:18px;border-top:1px solid var(--border);">
+            <button class="btn" type="submit" id="groupAddUserSubmitBtn" style="flex:1;padding:11px;font-size:13.5px;" ${groupAddUserBusy?'disabled':''}>${groupAddUserBusy?'Creating…':'Create User'}</button>
+            <button class="btn secondary" id="addUserCancelBtn" type="button" style="padding:11px 22px;">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+function groupAdminSupportTab(){
+  const filtered = groupTicketStatusFilter==='all' ? groupTickets : groupTickets.filter(t=>t.status===groupTicketStatusFilter);
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <select id="groupTicketStatusFilterSelect" style="max-width:180px;">
+        <option value="all" ${groupTicketStatusFilter==='all'?'selected':''}>All statuses</option>
+        <option value="open" ${groupTicketStatusFilter==='open'?'selected':''}>Open</option>
+        <option value="in_progress" ${groupTicketStatusFilter==='in_progress'?'selected':''}>In Progress</option>
+        <option value="resolved" ${groupTicketStatusFilter==='resolved'?'selected':''}>Resolved</option>
+      </select>
+      <span class="muted" style="font-size:12px;">${filtered.length} of ${groupTickets.length} ticket${groupTickets.length===1?'':'s'} from your group</span>
+    </div>
+    ${filtered.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>From</th><th>Subject</th><th>Message</th><th>Status</th><th>Actions</th></tr>
+      ${filtered.map(t=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.createdAt)}</td>
+        <td>${escapeHtml(t.userName||'—')}${t.username?`<div class="muted" style="font-size:10px;">@${escapeHtml(t.username)}</div>`:''}</td>
+        <td>${escapeHtml(t.subject||'—')}</td>
+        <td class="muted" style="font-size:11.5px;max-width:260px;">${escapeHtml(t.message||'')}
+          ${groupEditingTicketId===t.id ? `
+            <textarea data-group-ticket-note="${escapeAttr(t.id)}" rows="2" placeholder="Internal note (not sent to the user)" style="margin-top:6px;font-size:11px;">${escapeHtml(groupTicketNoteDraft)}</textarea>
+            <div style="margin-top:4px;display:flex;gap:4px;">
+              <button class="btn small" data-group-save-ticket-note="${escapeAttr(t.id)}" type="button">Save Note</button>
+              <button class="btn secondary small" id="cancelGroupTicketNoteBtn" type="button">Cancel</button>
+            </div>
+          ` : (t.adminNote ? `<div class="muted" style="margin-top:6px;font-size:10.5px;border-top:1px dashed var(--border);padding-top:4px;"><strong>Note:</strong> ${escapeHtml(t.adminNote)}</div>` : '')}
+        </td>
+        <td>
+          <select data-group-ticket-status="${escapeAttr(t.id)}">
+            <option value="open" ${t.status==='open'?'selected':''}>Open</option>
+            <option value="in_progress" ${t.status==='in_progress'?'selected':''}>In Progress</option>
+            <option value="resolved" ${t.status==='resolved'?'selected':''}>Resolved</option>
+          </select>
+        </td>
+        <td>${groupEditingTicketId===t.id ? '' : `<button class="btn secondary small" data-group-edit-ticket-note="${escapeAttr(t.id)}" type="button">${t.adminNote?'Edit Note':'Add Note'}</button>`}</td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">No support tickets${groupTicketStatusFilter!=='all'?' with this status':''} from your group yet.</div>`}
+  `;
+}
+function groupAdminSettingsTab(){
+  const gp = currentUser || {};
+  return `
+    <div class="section-title" style="margin-top:0;">Group</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">A name for your own reference — shown at the top of this panel. This does not affect anything else on the platform.</p>
+    <div class="field"><label>Group Name</label><input type="text" id="groupNameInput" value="${escapeAttr(groupNameDraft)}" placeholder="e.g. Sharma & Co. Clients"></div>
+    <button class="btn secondary small" id="saveGroupNameBtn" type="button">Save Group Name</button>
+
+    <div class="section-title">Your Profile</div>
+    <p class="muted" style="font-size:12px;margin-top:0;">Your own account's contact details — not visible to your group's users.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 18px;">
+      <div class="field"><label>Name</label><input type="text" id="groupOwnNameInput" value="${escapeAttr(gp.name||'')}"></div>
+      <div class="field"><label>Mobile</label><input type="tel" id="groupOwnMobileInput" value="${escapeAttr(gp.mobile||'')}" maxlength="10"></div>
+      <div class="field"><label>Email</label><input type="email" id="groupOwnEmailInput" value="${escapeAttr(gp.email||'')}"></div>
+    </div>
+    <button class="btn secondary small" id="saveGroupOwnProfileBtn" type="button" style="margin-top:8px;" ${groupSettingsBusy?'disabled':''}>Save Profile</button>
+    ${groupSettingsNotice ? `<p class="muted" style="font-size:12px;margin-top:8px;">${escapeHtml(groupSettingsNotice)}</p>` : ''}
+  `;
+}
+function groupAdminAuditTab(){
+  return `
+    <p class="muted" style="font-size:12px;margin-top:0;">${groupAuditLog.length} event${groupAuditLog.length===1?'':'s'} involving you or your group, newest first.</p>
+    ${groupAuditLog.length ? `
+    <div style="overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+      ${groupAuditLog.map(e=>`<tr>
+        <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
+        <td>${escapeHtml(e.actorName||'—')}</td>
+        <td>${escapeHtml(e.action||'—')}</td>
+        <td class="muted">${escapeHtml(e.targetName||'—')}</td>
+        <td class="muted" style="font-size:11.5px;">${escapeHtml(e.detail||'')}</td>
+      </tr>`).join('')}
+    </table>
+    </div>
+    ` : `<div class="empty">No activity recorded yet.</div>`}
   `;
 }
 
