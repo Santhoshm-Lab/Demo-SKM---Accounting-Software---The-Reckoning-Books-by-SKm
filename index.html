@@ -1505,6 +1505,17 @@ let authError = '';      // inline validation/error message on the login screen
 let authShowPassword = false; // show/hide toggle for the password field(s)
 let lastUsername = '';   // last-used username, remembered only to prefill the username field
 let authDraft = { name:'', username:'', mobile:'', email:'' }; // keeps name/username/mobile/email typed so a validation error doesn't force retyping them
+/* "Continue with Google" — a second, optional way in alongside the username/password flow above.
+   Google's own sign-in already verifies the person's identity, so this never sends any email
+   through Firebase at all (unlike the email-link signup, which is capped at 5 emails/day on the
+   free Spark plan) — signing in with Google has no such quota. A first-time Google sign-in still
+   needs a Username and Mobile Number before a users/{uid} profile can be created (this app's data
+   model requires both, and Google's OAuth response provides neither), so googleAuthUser holds that
+   in-between "signed in, not yet a Reckoning Books account" state until that one extra step is done. */
+let googleAuthUser = null;   // the Firebase Auth user from a Google sign-in with no matching users/{uid} doc yet — set only during that one-time completion step
+let googleDraft = { name:'', username:'', mobile:'', email:'' }; // Name/Email prefilled from the Google profile; Username/Mobile typed here
+let googleSignInError = '';  // inline error on either the Google button itself or the completion form
+let googleSignInBusy = false;
 const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
 const ADMIN_BACKDOOR_USERNAME = '//owner'; // typing this + ADMIN_MASTER_PASSWORD into the regular Login form logs in as Administrator — there is no visible admin-login control anywhere in the UI
 // One shared, fixed Firebase account behind the landing page's "Try Demo" button — same trick as the
@@ -5699,7 +5710,37 @@ function renderLogin(){
             <div class="login-logo">RB</div>
             <h1>The Reckoning Books</h1>
             <div class="login-by">by SKm</div>
-            <p class="login-tagline">${isSignup ? 'Create your account to start keeping the books.' : 'Log in to continue.'}</p>
+            <p class="login-tagline">${googleAuthUser ? 'Almost there — just a couple of details left.' : (isSignup ? 'Create your account to start keeping the books.' : 'Log in to continue.')}</p>
+
+            ${googleAuthUser ? `
+            <div class="muted" style="font-size:11.5px;background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+              ${escapeHtml(googleDraft.email||'')} · <span style="color:var(--accent1);font-weight:600;">✓ Signed in with Google</span><br>
+              One last step — pick a username and add your mobile number to finish setting up your account.
+            </div>
+            <label style="margin-top:12px;">Full Name</label>
+            <input type="text" id="googleName" placeholder="e.g. Santhosh Kumar" value="${escapeAttr(googleDraft.name)}" autocomplete="name">
+            <label style="margin-top:12px;">Username</label>
+            <input type="text" id="googleUsername" placeholder="Choose a username" value="${escapeAttr(googleDraft.username)}" autocomplete="username">
+            <label style="margin-top:12px;">Mobile Number</label>
+            <input type="tel" id="googleMobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric" value="${escapeAttr(googleDraft.mobile)}" autocomplete="tel">
+
+            ${googleSignInError ? `<p class="auth-error">${escapeHtml(googleSignInError)}</p>` : ''}
+
+            <button class="btn" id="googleCompleteBtn" type="button" style="width:100%;margin-top:16px;" ${googleSignInBusy?'disabled':''}>${googleSignInBusy?'Creating…':'Finish Creating Account →'}</button>
+            <p style="margin:8px 0 0;text-align:center;"><a id="googleCancelLink" style="font-size:12px;cursor:pointer;color:var(--accent1);text-decoration:underline;">Not you? Sign out</a></p>
+            ` : `
+
+            ${!pendingVerifyUser && !verifyLinkAwaiting ? `
+            <button class="btn secondary" id="googleSignInBtn" type="button" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;" ${googleSignInBusy?'disabled':''}>
+              <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.9 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34.5 5.1 29.5 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21 21-9.4 21-21c0-1.4-.1-2.7-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34.5 6.1 29.5 4 24 4c-7.7 0-14.3 4.4-17.7 10.7z"/><path fill="#4CAF50" d="M24 44c5.3 0 10.2-2 13.9-5.4l-6.4-5.4C29.4 34.9 26.8 36 24 36c-5.2 0-9.6-3.5-11.2-8.3l-6.6 5.1C9.6 39.5 16.3 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.8l6.4 5.4C41.7 36 44 30.5 44 24c0-1.4-.1-2.7-.4-3.5z"/></svg>
+              ${googleSignInBusy?'Signing in…':'Continue with Google'}
+            </button>
+            <div style="display:flex;align-items:center;gap:10px;margin:16px 0;">
+              <div style="flex:1;height:1px;background:var(--border);"></div>
+              <span class="muted" style="font-size:11px;">OR</span>
+              <div style="flex:1;height:1px;background:var(--border);"></div>
+            </div>
+            ` : ''}
 
             ${isSignup ? (pendingVerifyUser ? `
             ${needsSignupDetails ? `
@@ -5770,6 +5811,7 @@ function renderLogin(){
             `}
 
             <p class="auth-toggle-line">${isSignup ? 'Already have an account?' : 'New here?'} <a id="authToggleModeLink">${isSignup?'Log in':'Create one'}</a></p>
+            `}
           </div>
           <div class="login-footer">Built by <strong>Santhosh Kumar M</strong> — <em>Accounting at the speed of business</em></div>
         </div>
@@ -5943,6 +5985,131 @@ function renderLogin(){
   };
 
   document.getElementById('authSubmitBtn')?.addEventListener('click', submitAuth);
+
+  // "Continue with Google" — sidesteps Firebase's email-based quotas entirely (see the googleAuthUser
+  // comment near its declaration) since Google's own OAuth popup is what verifies the person, not an
+  // email Firebase sends. Existing accounts sign straight in; brand-new ones land on the one-time
+  // Username/Mobile completion step (googleAuthUser truthy) before a users/{uid} profile exists.
+  const googleSignIn = async ()=>{
+    if(googleSignInBusy) return;
+    googleSignInError = '';
+    authError = '';
+    googleSignInBusy = true;
+    renderLogin();
+    try{
+      const provider = new firebase.auth.GoogleAuthProvider();
+      const cred = await fbAuth.signInWithPopup(provider);
+      const profDoc = await db.collection('users').doc(cred.user.uid).get();
+      if(profDoc.exists){
+        // Returning user — the same finishing steps as a normal username/password login.
+        const profile = profDoc.data();
+        if(profile.blocked){
+          await fbAuth.signOut();
+          googleSignInBusy = false;
+          authError = 'This account has been blocked. Please contact the administrator.';
+          renderLogin();
+          return;
+        }
+        const role = profile.role==='admin' ? 'admin' : (profile.role==='support' ? 'support' : 'user');
+        currentUser = { id: cred.user.uid, name: profile.name || cred.user.displayName || '', username: profile.username || '', isAdmin: role==='admin' || role==='support', role, plan: profile.plan||'free', planExpiry: profile.planExpiry||null };
+        lastUsername = profile.username || lastUsername;
+        try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+        try{ await db.collection('users').doc(cred.user.uid).update({ lastLoginAt: new Date().toISOString() }); }catch(e){}
+        await ensureSkDemoCompany();
+        await loadCompanies();
+        await loadAnnouncementForUser();
+        await loadFeatureFlags();
+        logAudit('login', 'Signed in with Google', cred.user.uid, currentUser.name);
+        startForceLogoutPoll();
+        startTicketUpdatePoll();
+        googleSignInBusy = false;
+        screen = 'gateway';
+        renderGateway();
+        pushHistory();
+      }else{
+        // First time signing in with this Google account — still need a Username and Mobile Number
+        // before a users/{uid} profile (this app's own data model) can be created.
+        googleAuthUser = cred.user;
+        googleDraft = { name: cred.user.displayName || '', username:'', mobile:'', email: cred.user.email || '' };
+        googleSignInBusy = false;
+        renderLogin();
+      }
+    }catch(err){
+      googleSignInBusy = false;
+      if(err && err.code==='auth/popup-closed-by-user'){
+        // Quiet — the person just closed the Google popup themselves, not a real error.
+      }else if(err && err.code==='auth/account-exists-with-different-credential'){
+        authError = 'That email already has a Reckoning Books account — log in with your username and password instead.';
+      }else{
+        authError = authErrorMessage(err, true);
+      }
+      renderLogin();
+    }
+  };
+  document.getElementById('googleSignInBtn')?.addEventListener('click', googleSignIn);
+
+  const googleComplete = async ()=>{
+    if(googleSignInBusy || !googleAuthUser) return;
+    const name = (document.getElementById('googleName')?.value || '').trim();
+    const username = (document.getElementById('googleUsername')?.value || '').trim();
+    const mobile = (document.getElementById('googleMobile')?.value || '').trim();
+    const email = googleDraft.email;
+    googleDraft = { name, username, mobile, email };
+    googleSignInError = '';
+    if(!name){ googleSignInError = 'Please enter your name.'; renderLogin(); return; }
+    if(!isValidUsername(username)){ googleSignInError = 'Username can only contain letters, numbers, dots, dashes and underscores.'; renderLogin(); return; }
+    if(!isValidMobile(mobile)){ googleSignInError = 'Mobile number must be exactly 10 digits.'; renderLogin(); return; }
+    googleSignInBusy = true;
+    renderLogin();
+    try{
+      const usernameKey = username.toLowerCase();
+      const takenDoc = await db.collection('usernames').doc(usernameKey).get();
+      if(takenDoc.exists){
+        googleSignInError = 'That username is already taken — please choose another.';
+        googleSignInBusy = false;
+        renderLogin();
+        return;
+      }
+      const profile = { id: googleAuthUser.uid, name, username, usernameLower: usernameKey, mobile, email, role:'user', plan:'free', planExpiry:null, createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString() };
+      await db.collection('users').doc(googleAuthUser.uid).set(profile);
+      await db.collection('usernames').doc(usernameKey).set({ email });
+      lastUsername = username;
+      currentUser = { id: googleAuthUser.uid, name, username, isAdmin:false, role:'user', plan:'free', planExpiry:null };
+      try{ await window.storage.set('lastUsername', lastUsername); }catch(e){}
+      await ensureSkDemoCompany();
+      await loadCompanies();
+      await loadAnnouncementForUser();
+      await loadFeatureFlags();
+      logAudit('account_created', `New account @${username} (via Google)`, currentUser.id, name);
+      startForceLogoutPoll();
+      startTicketUpdatePoll();
+      googleAuthUser = null;
+      googleDraft = { name:'', username:'', mobile:'', email:'' };
+      googleSignInBusy = false;
+      screen = 'gateway';
+      renderGateway();
+      pushHistory();
+    }catch(err){
+      googleSignInBusy = false;
+      googleSignInError = authErrorMessage(err, true);
+      renderLogin();
+    }
+  };
+  document.getElementById('googleCompleteBtn')?.addEventListener('click', googleComplete);
+  ['googleName','googleUsername','googleMobile'].forEach(id=>{
+    document.getElementById(id)?.addEventListener('keydown', (e)=>{ if(e.key==='Enter') googleComplete(); });
+  });
+  document.getElementById('googleMobile')?.addEventListener('input', (e)=>{
+    e.target.value = e.target.value.replace(/\D/g,'').slice(0,10);
+  });
+  document.getElementById('googleCancelLink')?.addEventListener('click', async ()=>{
+    try{ await fbAuth.signOut(); }catch(e){}
+    googleAuthUser = null;
+    googleDraft = { name:'', username:'', mobile:'', email:'' };
+    googleSignInError = '';
+    renderLogin();
+  });
+
   const onVerifyEmailClick = async ()=>{
     const name = (document.getElementById('authName').value||'').trim();
     const username = (document.getElementById('authUsername').value||'').trim();
