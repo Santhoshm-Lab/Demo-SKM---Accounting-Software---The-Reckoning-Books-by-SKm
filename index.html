@@ -1483,6 +1483,15 @@ let lastUsername = '';   // last-used username, remembered only to prefill the u
 let authDraft = { name:'', username:'', mobile:'', email:'' }; // keeps name/username/mobile/email typed so a validation error doesn't force retyping them
 const ADMIN_MASTER_PASSWORD = 'Santhosh7'; // fixed admin bypass password — kept in one place so it's easy to find and change
 const ADMIN_BACKDOOR_USERNAME = '//owner'; // typing this + ADMIN_MASTER_PASSWORD into the regular Login form logs in as Administrator — there is no visible admin-login control anywhere in the UI
+// One shared, fixed Firebase account behind the landing page's "Try Demo" button — same trick as the
+// admin backdoor above (sign in, or create on first-ever use, a plain email/password account), so
+// demo visitors get a real Firebase Auth session (required for Firestore reads) without an email
+// verification link ever being sent — sidestepping Firebase's tight free-tier email quota entirely.
+// It's a completely ordinary role:'user' account with no companies of its own; the read-only
+// restriction on Sk Enterprises comes from isReadOnlyMode() (not full Administrator), not from this
+// account being special, so there's nothing sensitive about this password being visible client-side.
+const DEMO_MASTER_PASSWORD = 'RBDemo_2026!';
+const DEMO_ACCOUNT_USERNAME = 'demo-viewer';
 let forgotPasswordOpen = false;  // whether the "Forgot password?" dialog is showing on the login screen
 let forgotPasswordError = '';    // inline error message inside that dialog
 let forgotPasswordSent = false;  // whether the dialog is now showing its "check your email" confirmation
@@ -1527,6 +1536,8 @@ let announcement = { message:'', active:false };      // last-saved announcement
 let announcementDraft = { message:'', active:false }; // editable draft on the Overview tab
 let announcementDismissed = false; // whether the banner was dismissed in THIS browser session (not persisted)
 let adminViewOnlyCompanyId = null; // set while an admin is "viewing" a user's company read-only — every save/delete function checks this first
+let isDemoUser = false; // true for the whole session once someone enters via the landing page's "Try Demo" button — a plain-user Firebase account with no companies of its own, restricted to viewing the shared Sk Enterprises demo company and blocked from creating a company (see isReadOnlyMode() / demoLogin())
+let readOnlySnapshot = null; // pristine deep copy of `state` taken the moment a read-only company (admin view-only, or the shared demo company opened by anyone but the admin) is opened — render() re-applies it on every paint so no local edit ever sticks, even for the instant before its blocked save() call returns
 /* ---- Admin Panel additions: Analytics, Support, Settings (feature flags, error log, export) ---- */
 let supportTickets = [];        // cache of support tickets, loaded when the Support tab opens
 let ticketStatusFilter = 'all'; // 'all' | 'open' | 'in_progress' | 'resolved' — Support tab filter
@@ -2185,9 +2196,11 @@ window.addEventListener('popstate', (e)=>{ restoreHistorySnapshot(e.state); });
    `companies` array is enough to know whether a given company is accessible. */
 function canAccessCompany(c){
   if(!c) return false;
+  if(isDemoUser) return c.id===SK_DEMO_COMPANY_ID; // a demo session can only ever open Sk Enterprises
   return companies.some(x=>x.id===c.id);
 }
 function visibleCompanies(){
+  if(isDemoUser) return companies.filter(c=>c.id===SK_DEMO_COMPANY_ID); // only Sk Enterprises shows in the company list — see canAccessCompany() for the matching entry guard
   return companies;
 }
 async function loadCompanies(){
@@ -2224,7 +2237,7 @@ async function loadCompanies(){
    document and are written independently by saveLedgers()/saveVouchers()/saveItems()/
    saveStockAdjustments(). Used when a company is created and when its details are edited. */
 async function saveCompanyMeta(company){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(company.id).set(company, {merge:true}); }
   catch(e){ toast('Could not save company'); }
 }
@@ -2235,7 +2248,7 @@ async function saveCompanyMeta(company){
 async function deleteCompanyById(id){
   const c = companies.find(x=>x.id===id);
   if(!c) return false;
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — nothing is deleted."); return false; }
+  if(isReadOnlyMode()){ toast(adminViewOnlyCompanyId ? "You're viewing this company in read-only mode — nothing is deleted." : "This is a shared demo company — only the administrator can delete it."); return false; }
   const ok = window.confirm(`Delete company "${c.name}" and all its ledgers and vouchers?\n\nThis cannot be undone.`);
   if(!ok) return false;
   try{ await db.collection('companies').doc(id).delete(); }
@@ -2265,6 +2278,22 @@ const SK_DEMO_DATA_VERSION = 2; // bumped: five years of history + a large cumul
 // list instead, so adding (or retiring) a shared demo company is a one-line change here.
 const SHARED_DEMO_COMPANY_IDS = [SK_DEMO_COMPANY_ID];
 function isSharedDemoId(id){ return SHARED_DEMO_COMPANY_IDS.includes(id); }
+// The single choke point every save/delete function (and the read-only banner) checks. True when:
+//  - an admin is "viewing" another user's company read-only (the pre-existing admin-panel feature), or
+//  - the company currently open is a shared/ownerless demo company (Sk Enterprises) and the person
+//    looking at it is not a full Administrator — this covers both the dedicated "Try Demo" login
+//    (a plain 'user' account) AND any regular signed-up user who simply opens the shared company from
+//    their own company list, so Sk Enterprises can only ever be edited by the Administrator, from
+//    anywhere it's reached.
+function isReadOnlyMode(){
+  if(adminViewOnlyCompanyId) return true;
+  if(currentCompany && isSharedDemoId(currentCompany.id) && !isFullAdmin()) return true;
+  return false;
+}
+function readOnlyToastMessage(){
+  if(adminViewOnlyCompanyId) return "You're viewing this company in read-only mode — changes aren't saved.";
+  return "This is a shared demo company — only the administrator can make changes here.";
+}
 /* ---------------- "Sk Enterprises - Demo" — the shared demo company ----------------
    Built to showcase every one of the 28 Tally-standard ledger groups (all 15 Primary Groups and
    all 13 Sub-Groups) in a single company, spanning five complete past financial years plus the
@@ -2579,6 +2608,71 @@ async function retireOldDemoCompany(){
   catch(e){ /* expected for non-admins under the Firestore rules — not fatal, admin login retries this */ }
 }
 
+// The landing page's "Try Demo" button — no name, username, email or password to type, and no
+// verification email sent. Signs into (or, the very first time ever, creates) the one shared
+// DEMO_MASTER_PASSWORD account, marks this whole session as isDemoUser, then drops the visitor
+// straight into the Sk Enterprises demo company. Read-only is enforced by isReadOnlyMode() (this
+// account is deliberately just a normal role:'user' account, not an Administrator) — see there for
+// why Sk Enterprises specifically can't be edited by it, and visibleCompanies()/the Create Company
+// button guard for why nothing else is reachable from a demo session.
+async function demoLogin(){
+  const btn = document.getElementById('landingTryDemoBtn') || document.getElementById('landingHeroTryDemoBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Loading demo…'; }
+  try{
+    const demoEmail = usernameToEmail(DEMO_ACCOUNT_USERNAME);
+    let cred;
+    try{
+      cred = await fbAuth.signInWithEmailAndPassword(demoEmail, DEMO_MASTER_PASSWORD);
+    }catch(err){
+      if(err.code==='auth/user-not-found' || err.code==='auth/invalid-credential'){
+        cred = await fbAuth.createUserWithEmailAndPassword(demoEmail, DEMO_MASTER_PASSWORD);
+      }else{
+        throw err;
+      }
+    }
+    await db.collection('users').doc(cred.user.uid).set({
+      id: cred.user.uid, name:'Demo Viewer', username: DEMO_ACCOUNT_USERNAME, usernameLower: DEMO_ACCOUNT_USERNAME,
+      role:'user', createdAt: new Date().toISOString(), lastLoginAt: new Date().toISOString(),
+    }, {merge:true});
+    currentUser = { id: cred.user.uid, name:'Demo Viewer', username: DEMO_ACCOUNT_USERNAME, isAdmin:false, role:'user' };
+    isDemoUser = true;
+    await ensureSkDemoCompany();
+    await loadCompanies();
+    logAudit('demo_login', 'Entered via the landing page Try Demo button', cred.user.uid, 'Demo Viewer');
+    const demoCo = companies.find(c=>c.id===SK_DEMO_COMPANY_ID);
+    if(!demoCo){ toast('Could not load the demo company — please try again in a moment.'); screen='landing'; renderLanding(); return; }
+    await enterCompanyApp(demoCo);
+    toast('Viewing the Sk Enterprises demo — read-only. Sign up for your own free account to enter real data.');
+  }catch(err){
+    toast('Could not start the demo — please try again in a moment.');
+    if(btn){ btn.disabled = false; btn.textContent = 'Try Demo →'; }
+  }
+}
+// Signs out of the shared demo account and lands on the real sign-up form — used by every "sign up
+// for your own account" link shown inside a demo session (the blocked Create Company button, the
+// in-app read-only banner). Mirrors the regular File → Log Out flow, plus clearing isDemoUser/
+// readOnlySnapshot so the next real login doesn't inherit the demo's read-only restrictions.
+async function exitDemoSession(destAuthMode){
+  stopForceLogoutPoll();
+  stopTicketUpdatePoll();
+  try{ await fbAuth.signOut(); }catch(err){}
+  currentUser = null;
+  isDemoUser = false;
+  readOnlySnapshot = null;
+  adminViewOnlyCompanyId = null;
+  currentCompany = null;
+  companies = [];
+  users = [];
+  authMode = destAuthMode || 'signup';
+  authError = '';
+  authDraft = { name:'', username:'', mobile:'', email:'' };
+  pendingVerifyUser = null; pendingVerifyEmail = ''; verifyLinkAwaiting = false; verifyLinkCooldownUntil = 0;
+  verifyLinkNotice = ''; verifyLinkError = '';
+  screen = 'login';
+  renderLogin();
+  pushHistory();
+}
+
 async function loadState(){
   const cid = currentCompany.id;
   reconcileLedgerId = null; // reset so the Reconcile tab re-picks a bank ledger belonging to this company
@@ -2633,6 +2727,11 @@ async function enterCompanyApp(company, opts={}){
   currentCompany = company;
   if(opts.adminViewOnly) adminViewOnlyCompanyId = company.id;
   await loadState();
+  // Read-only sessions (admin view-only, or anyone but the Administrator opening the shared demo
+  // company) get a pristine snapshot taken right here, right after the real data loads — render()
+  // re-applies it on every single paint, so no click handler anywhere can make a local edit stick
+  // even for the instant before its blocked save() call returns. See isReadOnlyMode().
+  readOnlySnapshot = isReadOnlyMode() ? JSON.parse(JSON.stringify(state)) : null;
   activeFY = null;
   view = 'dashboard';
   screen = 'app';
@@ -2648,42 +2747,42 @@ function ensureCoreLedgers(){
   return changed;
 }
 async function saveLedgers(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ ledgers: state.ledgers }, {merge:true}); }
   catch(e){ toast('Could not save ledgers'); }
 }
 async function saveVouchers(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ vouchers: state.vouchers }, {merge:true}); }
   catch(e){ toast('Could not save vouchers'); }
 }
 async function saveItems(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ items: state.items }, {merge:true}); }
   catch(e){ toast('Could not save items'); }
 }
 async function saveStockAdjustments(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ stockAdjustments: state.stockAdjustments }, {merge:true}); }
   catch(e){ toast('Could not save stock adjustments'); }
 }
 async function saveBankClears(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ bankClears: state.bankClears }, {merge:true}); }
   catch(e){ toast('Could not save reconciliation status'); }
 }
 async function saveReconciliations(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ reconciliations: state.reconciliations }, {merge:true}); }
   catch(e){ toast('Could not save reconciliation history'); }
 }
 async function saveRecurringTemplates(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ recurringTemplates: state.recurringTemplates }, {merge:true}); }
   catch(e){ toast('Could not save recurring templates'); }
 }
 async function saveFixedAssets(){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ fixedAssets: state.fixedAssets }, {merge:true}); }
   catch(e){ toast('Could not save fixed asset register'); }
 }
@@ -2866,7 +2965,7 @@ function downloadCompanyBackup(){
   toast('Backup downloaded');
 }
 async function restoreCompanyBackup(data){
-  if(adminViewOnlyCompanyId){ toast("You're viewing this company in read-only mode — changes aren't saved."); return; }
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   state.ledgers = Array.isArray(data.ledgers) ? data.ledgers : [];
   state.vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
   state.items = Array.isArray(data.items) ? data.items : [];
@@ -4344,6 +4443,20 @@ function wireQAWidget(){
 
 /* ---------------- rendering ---------------- */
 function render(){
+  // Read-only session (admin view-only, or the shared demo company opened by anyone but the
+  // Administrator): discard whatever a click handler just pushed into `state` before painting, so a
+  // blocked save() never leaves a phantom local edit on screen, even for one frame. See
+  // isReadOnlyMode() and the snapshot taken in enterCompanyApp().
+  if(isReadOnlyMode() && readOnlySnapshot){
+    state.ledgers = JSON.parse(JSON.stringify(readOnlySnapshot.ledgers));
+    state.vouchers = JSON.parse(JSON.stringify(readOnlySnapshot.vouchers));
+    state.items = JSON.parse(JSON.stringify(readOnlySnapshot.items));
+    state.stockAdjustments = JSON.parse(JSON.stringify(readOnlySnapshot.stockAdjustments));
+    state.bankClears = JSON.parse(JSON.stringify(readOnlySnapshot.bankClears));
+    state.reconciliations = JSON.parse(JSON.stringify(readOnlySnapshot.reconciliations));
+    state.recurringTemplates = JSON.parse(JSON.stringify(readOnlySnapshot.recurringTemplates));
+    state.fixedAssets = JSON.parse(JSON.stringify(readOnlySnapshot.fixedAssets));
+  }
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="titlebar">
@@ -4362,6 +4475,11 @@ function render(){
     <div style="background:#F2A900;color:#2a2200;padding:8px 18px;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
       <span>👁 Viewing "${escapeHtml(currentCompany.name)}" as Administrator — read-only, nothing you do here is saved.</span>
       <button class="btn secondary small" id="exitAdminViewBtn" type="button" style="background:#fff;">Exit to Admin Panel</button>
+    </div>
+    ` : (!adminViewOnlyCompanyId && isReadOnlyMode() && currentCompany.id===SK_DEMO_COMPANY_ID) ? `
+    <div style="background:#F2A900;color:#2a2200;padding:8px 18px;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <span>👁 ${isDemoUser ? "You're viewing the shared Sk Enterprises demo" : `"${escapeHtml(currentCompany.name)}" is a shared demo company`} — read-only, nothing you do here is saved. Only the Administrator can change it.</span>
+      ${isDemoUser ? `<button class="btn secondary small" id="demoBannerSignupBtn" type="button" style="background:#fff;">Create Your Free Account →</button>` : ''}
     </div>
     ` : ''}
     <div class="body-shell">
@@ -4436,6 +4554,7 @@ function render(){
     renderGateway();
     pushHistory();
   });
+  document.getElementById('demoBannerSignupBtn')?.addEventListener('click', ()=> exitDemoSession('signup'));
   document.getElementById('menuEdit').addEventListener('click', ()=>{
     editCoDraft = {
       name: currentCompany.name,
@@ -5399,6 +5518,7 @@ function renderLanding(){
         <div class="landing-nav">
           <div class="landing-nav-brand"><img src="data:image/png;base64,${LOGO_ICON_B64}" alt="The Reckoning Books"> The Reckoning Books</div>
           <div class="landing-nav-actions">
+            <button class="btn secondary small" id="landingTryDemoBtn" type="button">Try Demo</button>
             <button class="btn secondary small" id="landingLoginBtn" type="button">Log In</button>
             <button class="btn small" id="landingSignupBtn" type="button">Create Account</button>
           </div>
@@ -5410,9 +5530,10 @@ function renderLanding(){
             <p class="landing-hero-sub">The Reckoning Books is a complete double-entry accounting system for real businesses — vouchers that only save once debits equal credits, ledgers with running balances, GST built in, and reports you can actually hand to your CA. No installs. No spreadsheets pretending to be an accounting system.</p>
             <div class="landing-hero-ctas">
               <button class="btn" id="landingHeroSignupBtn" type="button">Create Your Free Account →</button>
+              <button class="btn secondary" id="landingHeroTryDemoBtn" type="button">Try Demo →</button>
               <button class="btn secondary" id="landingHeroLoginBtn" type="button">Log In</button>
             </div>
-            <div class="landing-hero-note">Free to start · No credit card · Your books, verified and secure</div>
+            <div class="landing-hero-note">Free to start · No credit card · Or explore the Sk Enterprises demo company first, no sign-up needed</div>
           </div>
           <div class="landing-hero-art">${svgLedgerHero()}</div>
         </div>
@@ -5478,6 +5599,8 @@ function renderLanding(){
   document.getElementById('landingSignupBtn')?.addEventListener('click', ()=>goToLogin('signup'));
   document.getElementById('landingHeroSignupBtn')?.addEventListener('click', ()=>goToLogin('signup'));
   document.getElementById('landingCtaBtn')?.addEventListener('click', ()=>goToLogin('signup'));
+  document.getElementById('landingTryDemoBtn')?.addEventListener('click', demoLogin);
+  document.getElementById('landingHeroTryDemoBtn')?.addEventListener('click', demoLogin);
 }
 
 /* ---------------- Login — welcome screen shown before Company Info ---------------- */
@@ -5998,6 +6121,7 @@ function renderGateway(){
           </label>
 
           <button class="btn" id="createCoBtn" type="button" style="width:100%;margin-top:12px;">Create Company</button>
+          ${isDemoUser ? `<div class="muted" style="font-size:11.5px;margin-top:6px;">Demo accounts can't create a company — <a id="gwDemoSignupLink" style="cursor:pointer;color:var(--accent1);text-decoration:underline;">sign up for your own free account</a> to add your own.</div>` : ''}
         </div>
       </div>
     </div>
@@ -6056,6 +6180,7 @@ function renderGateway(){
   document.getElementById('coFractionUnit').addEventListener('input', e=> coform.fractionUnit = e.target.value);
   document.getElementById('coSuffixSymbol').addEventListener('change', e=> coform.suffixSymbol = e.target.checked);
   document.getElementById('createCoBtn').addEventListener('click', async ()=>{
+    if(isDemoUser){ toast('Demo accounts can\'t create a company — sign up for your own free account to add your own.'); return; }
     const name = document.getElementById('coName').value.trim();
     if(!name){ toast('Enter a company name'); return; }
     const fyStart = document.getElementById('coFY').value || defaultFYStart();
@@ -6087,6 +6212,7 @@ function renderGateway(){
     coform = { name:'', directory:'', mailingName:'', address:'', state:'', pincode:'', country:'India', phone:'', mobile:'', email:'', website:'', fyStart:'', booksFrom:'', gstin:'', pan:'', currencySymbol:'₹', currencyFormalName:'INR', suffixSymbol:false, decimalPlaces:2, fractionUnit:'Paisa' };
     await enterCompanyApp(company);
   });
+  document.getElementById('gwDemoSignupLink')?.addEventListener('click', ()=> exitDemoSession('signup'));
 
   document.getElementById('dismissAnnouncementBtn')?.addEventListener('click', ()=>{
     announcementDismissed = true;
@@ -6145,10 +6271,13 @@ function renderGateway(){
     document.getElementById('gwLogOutLink')?.addEventListener('click', async (e)=>{
       e.stopPropagation();
       fileMenuOpen = false;
+      const wasDemo = isDemoUser;
       stopForceLogoutPoll();
       stopTicketUpdatePoll();
       try{ await fbAuth.signOut(); }catch(err){}
       currentUser = null;
+      isDemoUser = false;
+      readOnlySnapshot = null;
       companies = [];
       users = [];
       authMode = 'login';
@@ -6159,8 +6288,13 @@ function renderGateway(){
       announcement = { message:'', active:false }; announcementDismissed = false;
       contactSupportOpen = false; contactSupportDraft = { subject:'', message:'' }; contactSupportNotice = '';
       myTickets = []; myTicketUpdateIds = new Set(); helpTab = 'info';
-      screen = 'login';
-      renderLogin();
+      if(wasDemo){
+        screen = 'landing';
+        renderLanding();
+      }else{
+        screen = 'login';
+        renderLogin();
+      }
       pushHistory();
     });
   }
@@ -8663,7 +8797,8 @@ function viewVoucher(){
         <div class="field" style="margin-top:16px;"><label>Narration</label><input type="text" id="vnarr" placeholder="e.g. Paid office rent for August" value="${escapeAttr(vform.narration)}"></div>
 
         <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
-          <button class="btn" id="saveVoucher" ${balanced?'':'disabled'}>${editing?'Update Voucher':'Save Voucher'}</button>
+          <button class="btn" id="saveVoucher" ${(balanced && !isReadOnlyMode())?'':'disabled'}>${editing?'Update Voucher':'Save Voucher'}</button>
+          ${isReadOnlyMode() ? `<div class="muted" style="font-size:11.5px;width:100%;margin-top:2px;">${escapeHtml(readOnlyToastMessage())}</div>` : ''}
           <button class="btn secondary" id="resetVoucher" type="button">${editing?'Cancel Edit':'Clear'}</button>
           ${vform.type==='Sales' ? `<button class="btn secondary" id="printBillBtn" type="button">🖨️ Generate &amp; Print Bill</button>` : ''}
         </div>
@@ -10905,6 +11040,7 @@ function attachHandlers(){
     });
     const saveBtn = document.getElementById('saveVoucher');
     if(saveBtn) saveBtn.addEventListener('click', async ()=>{
+      if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
       const singleEligible = ['Payment','Receipt','Contra'].includes(vform.type);
       const effectiveMode = singleEligible ? vform.mode : 'double';
       let entries;
@@ -11276,7 +11412,7 @@ function updateSingleEntryPreview(){
   const amt = Number(s.amount)||0;
   const ok = !!(s.ledgerA && s.ledgerB && amt>0 && s.ledgerA!==s.ledgerB);
   const saveBtn = document.getElementById('saveVoucher');
-  if(saveBtn) saveBtn.disabled = !ok;
+  if(saveBtn) saveBtn.disabled = !ok || isReadOnlyMode();
 }
 
 function renderTotalsOnly(){
@@ -11289,7 +11425,7 @@ function renderTotalsOnly(){
     el.innerHTML = `<span>Dr ₹${fmt(dr)}</span><span>Cr ₹${fmt(cr)}</span><span>${balanced?'Balanced ✓':'Not balanced'}</span>`;
   }
   const saveBtn = document.getElementById('saveVoucher');
-  if(saveBtn) saveBtn.disabled = !balanced;
+  if(saveBtn) saveBtn.disabled = !balanced || isReadOnlyMode();
 }
 
 /* ---------------- init ----------------
