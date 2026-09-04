@@ -640,6 +640,22 @@ function bucketOf(l){
 
 const VOUCHER_TYPES = ['Payment','Receipt','Contra','Sales','Credit Note','Purchase','Debit Note','Journal'];
 
+// Common Indian withholding-tax sections offered on the voucher form's TDS/TCS panel. 'TDS' sections
+// apply to Payment vouchers (tax withheld before paying someone); 'TCS' sections apply to Receipt
+// vouchers (tax collected on top of what's received, under Sec 206C). Rate is a sensible default —
+// always editable on the voucher, since actual applicable rates depend on the payee's own status
+// (PAN on file, lower-deduction certificate, etc.) which this app doesn't track.
+const TDS_TCS_SECTIONS = [
+  { code:'194C', kind:'TDS', label:'194C — Payment to Contractors', rate:1 },
+  { code:'194J', kind:'TDS', label:'194J — Professional/Technical Fees', rate:10 },
+  { code:'194H', kind:'TDS', label:'194H — Commission or Brokerage', rate:5 },
+  { code:'194I', kind:'TDS', label:'194I — Rent', rate:10 },
+  { code:'194Q', kind:'TDS', label:'194Q — Purchase of Goods', rate:0.1 },
+  { code:'194-Other', kind:'TDS', label:'Other TDS Section', rate:10 },
+  { code:'206C(1H)', kind:'TCS', label:'206C(1H) — Sale of Goods', rate:0.1 },
+  { code:'206C-Other', kind:'TCS', label:'Other TCS Section', rate:1 },
+];
+
 const STOCK_GROUPS = ['Primary','Raw Materials','Finished Goods','Trading Goods','Packaging Materials','Consumables'];
 const UNITS = ['PCS','NOS','KG','GM','LTR','MTR','BOX','SET','DZN','BAG'];
 const INDIAN_STATES = [
@@ -1514,6 +1530,7 @@ let state = {
   salesOrders: [],
   purchaseOrders: [],
   deliveryChallans: [],
+  taxDeductions: [], // [{id, voucherId, date, kind:'TDS'|'TCS', sectionCode, sectionLabel, rate, baseAmount, taxAmount, partyLedgerId, taxLedgerId}]
 };
 let view = 'dashboard';
 let activeFY = null; // FY label (e.g. '2025-26') the user has chosen to view for the open company; null = "All Years" (no filter, the original all-time behaviour)
@@ -1864,6 +1881,28 @@ function fmtBytes(n){
   if(!n) return '0 KB';
   if(n < 1024*1024) return (n/1024).toFixed(1)+' KB';
   return (n/(1024*1024)).toFixed(2)+' MB';
+}
+// Firestore caps a single company document at 1 MiB (1,048,576 bytes) — every ledger, voucher and
+// item this company owns lives on that one document. currentCompany itself can be a stale cached
+// copy (it isn't kept in sync with in-session state.* edits), so merge live state over it here to
+// get an accurate live figure rather than reading currentCompany alone.
+const FIRESTORE_DOC_LIMIT_BYTES = 1024*1024;
+function storageUsageSection(){
+  const bytes = companyStorageBytes({...currentCompany, ...state});
+  const pct = Math.min(100, bytes/FIRESTORE_DOC_LIMIT_BYTES*100);
+  const pillClass = pct>=90 ? 'pill neg' : pct>=70 ? 'pill' : 'pill pos';
+  const pillStyle = pct>=70 && pct<90 ? ' style="background:var(--border);color:var(--ink-faint);"' : '';
+  const barColor = pct>=90 ? 'var(--debit)' : pct>=70 ? 'var(--gold)' : 'var(--credit)';
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-size:12.5px;font-weight:600;color:var(--ink);">${fmtBytes(bytes)} of ${fmtBytes(FIRESTORE_DOC_LIMIT_BYTES)} used</span>
+      <span class="${pillClass}"${pillStyle}>${pct.toFixed(1)}%</span>
+    </div>
+    <div style="height:8px;border-radius:5px;background:var(--surface-strong);overflow:hidden;">
+      <div style="height:100%;width:${pct.toFixed(2)}%;background:${barColor};border-radius:5px;"></div>
+    </div>
+    <p class="muted" style="font-size:11px;margin:6px 0 0;">This company's ledgers, vouchers, items and every other record are stored in one document, capped at 1 MiB by the database itself — voucher attachments (bills/receipts) are stored separately and don't count against this. ${pct>=70 ? 'Getting close to the limit — consider closing and eventually archiving older financial years.' : 'Plenty of headroom for a typical business.'}</p>
+  `;
 }
 function adminFilteredCompanies(){
   const q = adminCompanySearch.trim().toLowerCase();
@@ -2976,6 +3015,7 @@ async function loadState(){
     state.salesOrders = Array.isArray(data.salesOrders) ? data.salesOrders : [];
     state.purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
     state.deliveryChallans = Array.isArray(data.deliveryChallans) ? data.deliveryChallans : [];
+    state.taxDeductions = Array.isArray(data.taxDeductions) ? data.taxDeductions : [];
   }catch(e){
     console.error(e);
     state.ledgers = DEFAULT_LEDGERS.slice();
@@ -2995,6 +3035,7 @@ async function loadState(){
     state.salesOrders = [];
     state.purchaseOrders = [];
     state.deliveryChallans = [];
+    state.taxDeductions = [];
     toast('Could not load company data');
   }
   // Safety net: if this is the shared demo company but its sample vouchers are missing (e.g. an
@@ -3127,6 +3168,11 @@ async function saveDeliveryChallans(){
   if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
   try{ await db.collection('companies').doc(currentCompany.id).set({ deliveryChallans: state.deliveryChallans }, {merge:true}); }
   catch(e){ toast('Could not save delivery challans'); }
+}
+async function saveTaxDeductions(){
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
+  try{ await db.collection('companies').doc(currentCompany.id).set({ taxDeductions: state.taxDeductions }, {merge:true}); }
+  catch(e){ toast('Could not save TDS/TCS records'); }
 }
 
 /* ---------------- Voucher Attachments (bill/receipt upload) ----------------
@@ -3287,6 +3333,14 @@ function ensureDepreciationLedger(){
   if(!l){ l = {id:uid('l'), name:'Depreciation', group:'iexp', opening:0}; state.ledgers.push(l); saveLedgers(); }
   return l.id;
 }
+// Find-or-create the standing "TDS Payable" / "TCS Payable" liability ledger this company posts
+// withheld/collected tax against — one shared ledger per kind, same pattern as ensureDepreciationLedger().
+function ensureTaxLedger(kind){
+  const name = kind==='TCS' ? 'TCS Payable' : 'TDS Payable';
+  let l = state.ledgers.find(x=>x.name===name && bucketOf(x)==='curl');
+  if(!l){ l = {id:uid('l'), name, group:'duties', opening:0}; state.ledgers.push(l); saveLedgers(); }
+  return l.id;
+}
 async function postDepreciationForFY(assetId, fyLabel){
   const asset = state.fixedAssets.find(a=>a.id===assetId);
   if(!asset) return;
@@ -3429,6 +3483,7 @@ function buildCompanyBackup(){
     salesOrders: state.salesOrders,
     purchaseOrders: state.purchaseOrders,
     deliveryChallans: state.deliveryChallans,
+    taxDeductions: state.taxDeductions,
   };
 }
 // Generic "save this object as a downloaded .json file" helper, used by the e-Invoice/e-Way Bill
@@ -3479,11 +3534,13 @@ async function restoreCompanyBackup(data){
   state.salesOrders = Array.isArray(data.salesOrders) ? data.salesOrders : [];
   state.purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
   state.deliveryChallans = Array.isArray(data.deliveryChallans) ? data.deliveryChallans : [];
+  state.taxDeductions = Array.isArray(data.taxDeductions) ? data.taxDeductions : [];
   await Promise.all([
     saveLedgers(), saveVouchers(), saveItems(), saveStockAdjustments(),
     saveBankClears(), saveReconciliations(), saveRecurringTemplates(), saveFixedAssets(),
     saveCostCenters(), saveCurrencies(), saveBudgets(), saveEmployees(), saveSalaryVouchers(),
     saveQuotations(), saveSalesOrders(), savePurchaseOrders(), saveDeliveryChallans(),
+    saveTaxDeductions(),
   ]);
 }
 
@@ -5529,6 +5586,18 @@ function render(){
     document.getElementById('editCoFractionUnit').addEventListener('input', e=> editCoDraft.fractionUnit = e.target.value);
     document.getElementById('editCoSuffixSymbol').addEventListener('change', e=> editCoDraft.suffixSymbol = e.target.checked);
     document.getElementById('editCoLockDate').addEventListener('change', e=> editCoDraft.lockDate = e.target.value);
+    document.querySelectorAll('[data-close-fy]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        if(!confirm(`Close FY ${el.dataset.closeFy}? This locks every voucher dated on or before that year's end — you can reopen it again later if needed.`)) return;
+        await closeFY(el.dataset.closeFy);
+      });
+    });
+    document.querySelectorAll('[data-reopen-fy]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        if(!confirm(`Reopen FY ${el.dataset.reopenFy}? This unlocks its vouchers for editing again.`)) return;
+        await reopenFY(el.dataset.reopenFy);
+      });
+    });
     document.getElementById('saveCoEditBtn').addEventListener('click', async ()=>{
       if(!editCoDraft.name.trim()){ toast('Enter a company name'); return; }
       Object.assign(currentCompany, {
@@ -5686,9 +5755,16 @@ function editCompanyModal(){
             <input type="checkbox" id="editCoSuffixSymbol" style="width:auto;" ${editCoDraft.suffixSymbol?'checked':''}> Show symbol after the amount
           </label>
 
+          <div class="section-title" style="margin-top:14px;">Storage Usage</div>
+          ${storageUsageSection()}
+
+          <div class="section-title" style="margin-top:14px;">Year-End Close</div>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Close a financial year once it's reviewed and filed. Closing locks every voucher dated on or before that year's end (the Data Lock below moves with it) and marks the year closed here for reference — ledger balances already carry forward automatically, so there's nothing separate to post.</p>
+          ${yearEndCloseSection()}
+
           <div class="section-title" style="margin-top:14px;">Data Lock</div>
           <div class="field"><label>Lock Vouchers Before</label><input type="date" id="editCoLockDate" value="${editCoDraft.lockDate}"></div>
-          <p class="muted" style="font-size:11px;margin:-4px 0 0;">No new voucher can be created or edited to fall on or before this date — use it once a financial year is closed and filed, so nothing already reported gets changed by accident. Leave blank for no lock.</p>
+          <p class="muted" style="font-size:11px;margin:-4px 0 0;">No new voucher can be created or edited to fall on or before this date — use it once a financial year is closed and filed, so nothing already reported gets changed by accident. Leave blank for no lock. Year-End Close above sets this for you automatically.</p>
 
           <button class="btn" id="saveCoEditBtn" type="button" style="width:100%;margin-top:8px;">Save Changes</button>
         </div>
@@ -10787,6 +10863,7 @@ function viewVoucher(){
   }
   if(!vform.mode) vform.mode = 'double';
   if(!vform.single) vform.single = { ledgerA:'', ledgerB:'', amount:'' };
+  if(!vform.tax) vform.tax = { enabled:false, sectionCode:'', rate:'' };
   if(!vform.currency) vform.currency = 'inr';
   if(vform.fxRate==null) vform.fxRate = currencyOf(vform.currency)?.rate || 1;
 
@@ -10845,7 +10922,7 @@ function viewVoucher(){
       <div class="panel-body">
         <div class="field" style="max-width:220px;"><label>Date</label><input type="date" id="vdate" value="${vform.date}"></div>
 
-        ${effectiveMode==='single' ? singleEntryFields() : `
+        ${effectiveMode==='single' ? singleEntryFields() + (['Payment','Receipt'].includes(vform.type) ? taxDeductionPanel() : '') : `
         <div class="section-title">Entries</div>
         <div id="entryRows">
           ${vform.entries.map((e,i)=>entryRow(e,i)).join('')}
@@ -10907,6 +10984,54 @@ function singleEntryPreviewText(){
   if(vform.type==='Payment') return `Will record: Dr ${b.name} ₹${fmt(amt)} → Cr ${a.name} ₹${fmt(amt)}`;
   if(vform.type==='Receipt') return `Will record: Dr ${a.name} ₹${fmt(amt)} → Cr ${b.name} ₹${fmt(amt)}`;
   return `Will record: Dr ${b.name} ₹${fmt(amt)} → Cr ${a.name} ₹${fmt(amt)}`;
+}
+// TDS (Payment vouchers) / TCS (Receipt vouchers) panel — only offered in Single Entry mode, where
+// the two-ledger Dr/Cr semantics are unambiguous enough to safely auto-split. Applying it on save
+// turns the plain two-line entry into three lines: the payee/customer side stays at the full base
+// amount, and the Cash/Bank side is adjusted by the tax while the difference posts to a standing
+// TDS/TCS Payable ledger (see ensureTaxLedger()).
+function taxDeductionPanel(){
+  const kind = vform.type==='Payment' ? 'TDS' : 'TCS';
+  const sections = TDS_TCS_SECTIONS.filter(x=>x.kind===kind);
+  const t = vform.tax;
+  return `
+    <div class="panel" style="border-color:var(--gold);margin-top:14px;">
+      <div class="panel-head"><h2>${kind} Deduction</h2><span class="muted" style="font-size:11.5px;">${kind==='TDS'?'Tax withheld before paying this account':'Tax collected on top of this receipt'}</span></div>
+      <div class="panel-body">
+        <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;">
+          <input type="checkbox" id="taxEnabled" style="width:auto;" ${t.enabled?'checked':''}> Apply ${kind} to this voucher
+        </label>
+        ${t.enabled ? `
+        <div class="row" style="margin-top:8px;">
+          <div class="field"><label>Section</label>
+            <select id="taxSection">
+              <option value="">Select section…</option>
+              ${sections.map(x=>`<option value="${x.code}" ${t.sectionCode===x.code?'selected':''}>${x.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="max-width:120px;"><label>Rate %</label><input type="number" id="taxRate" value="${t.rate}" step="0.01" min="0"></div>
+        </div>
+        <p class="muted" style="font-size:12.5px;" id="taxPreview">${taxPreviewText()}</p>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+function taxPreviewText(){
+  const kind = vform.type==='Payment' ? 'TDS' : 'TCS';
+  const t = vform.tax;
+  const s = vform.single;
+  const base = Number(s.amount)||0;
+  const rate = Number(t.rate)||0;
+  if(!base || !rate || !t.sectionCode) return 'Choose a section, confirm the rate, and enter an amount above to see the split.';
+  const taxAmt = r2(base*rate/100);
+  const net = r2(base-taxAmt);
+  if(kind==='TDS'){
+    const payee = ledgerOf(s.ledgerB);
+    return `Will withhold ₹${fmt(taxAmt)} — ${payee?payee.name:'the payee'} is paid ₹${fmt(net)} net, and ₹${fmt(taxAmt)} posts to TDS Payable.`;
+  }
+  const customer = ledgerOf(s.ledgerB);
+  return `Will collect ₹${fmt(taxAmt)} on top — ₹${fmt(base+taxAmt)} is received in total from ${customer?customer.name:'the customer'}, and ₹${fmt(taxAmt)} posts to TCS Payable.`;
 }
 function entryRow(e,i){
   return `<div class="entry-row" data-idx="${i}">
@@ -11083,6 +11208,68 @@ function fyBoundsForLabel(fyLabel){
   const end = new Date(startYear+1, anchor.getMonth(), anchor.getDate());
   end.setDate(end.getDate()-1);
   return { start: start.toISOString().slice(0,10), end: end.toISOString().slice(0,10) };
+}
+// Year-End Close is a friendlier wrapper around the existing lockDate primitive, not a separate
+// posting step — ledgerBalance() already sums every voucher all-time off one static opening balance,
+// so closing a year doesn't need to "post" a new opening balance anywhere; it only needs to lock the
+// year's vouchers and remember, for display, which years have been explicitly closed. Years must be
+// closed in order (oldest first) so closedFYs always tallies with the FY the lockDate reflects.
+function yearEndCloseSection(){
+  const fys = distinctFYsInVouchers().slice().sort(); // ascending
+  if(!fys.length) return `<p class="muted" style="font-size:12px;">No vouchers yet — nothing to close.</p>`;
+  const closed = new Set(currentCompany.closedFYs||[]);
+  const nextClosable = fys.find(fy=>!closed.has(fy));
+  const closedSorted = Array.from(closed).sort();
+  const latestClosed = closedSorted.length ? closedSorted[closedSorted.length-1] : null;
+  const rows = fys.slice().reverse().map(fy=>{
+    const isClosed = closed.has(fy);
+    const bounds = fyBoundsForLabel(fy);
+    let action = '';
+    if(isClosed){
+      if(fy===latestClosed) action = `<button class="btn secondary small" data-reopen-fy="${fy}" type="button">Reopen</button>`;
+    } else if(fy===nextClosable){
+      action = `<button class="btn small" data-close-fy="${fy}" type="button">Close FY</button>`;
+    } else {
+      action = `<span class="muted" style="font-size:10.5px;">Close FY ${nextClosable} first</span>`;
+    }
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);">
+        <div><strong style="font-size:12.5px;">FY ${fy}</strong> <span class="muted" style="font-size:10.5px;">(${bounds.start} to ${bounds.end})</span></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="pill${isClosed?' pos':''}"${isClosed?'':' style="background:var(--border);color:var(--ink-faint);"'}>${isClosed?'Closed':'Open'}</span>
+          ${action}
+        </div>
+      </div>`;
+  }).join('');
+  return `<div style="margin-bottom:4px;">${rows}</div>`;
+}
+async function closeFY(fy){
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
+  const bounds = fyBoundsForLabel(fy);
+  currentCompany.closedFYs = Array.isArray(currentCompany.closedFYs) ? currentCompany.closedFYs : [];
+  if(!currentCompany.closedFYs.includes(fy)) currentCompany.closedFYs.push(fy);
+  currentCompany.lockDate = bounds.end;
+  editCoDraft.lockDate = currentCompany.lockDate;
+  const idx = companies.findIndex(c=>c.id===currentCompany.id);
+  if(idx>-1) companies[idx] = currentCompany;
+  await saveCompanyMeta(currentCompany);
+  logAudit('yearEndClose', `Closed FY ${fy} for ${currentCompany.name}`, null, null);
+  toast(`FY ${fy} closed — vouchers on or before ${bounds.end} are now locked`);
+  render();
+}
+async function reopenFY(fy){
+  if(isReadOnlyMode()){ toast(readOnlyToastMessage()); return; }
+  currentCompany.closedFYs = (currentCompany.closedFYs||[]).filter(f=>f!==fy);
+  const remaining = currentCompany.closedFYs.slice().sort();
+  const priorClosed = remaining.length ? remaining[remaining.length-1] : null;
+  currentCompany.lockDate = priorClosed ? fyBoundsForLabel(priorClosed).end : '';
+  editCoDraft.lockDate = currentCompany.lockDate;
+  const idx = companies.findIndex(c=>c.id===currentCompany.id);
+  if(idx>-1) companies[idx] = currentCompany;
+  await saveCompanyMeta(currentCompany);
+  logAudit('yearEndReopen', `Reopened FY ${fy} for ${currentCompany.name}`, null, null);
+  toast(`FY ${fy} reopened`);
+  render();
 }
 // A stable-enough invoice number derived from position among all Sales vouchers ordered by date —
 // there's no separate persisted invoice-numbering sequence, so this is recomputed each time from the
@@ -12181,6 +12368,8 @@ function viewReports(){
   if(reportsSelected==='cashFlow') return reportCashFlow();
   if(reportsSelected==='costCenterPL') return reportCostCenterPL();
   if(reportsSelected==='budgetVsActual') return reportBudgetVsActual();
+  if(reportsSelected==='tdsTcs') return reportTdsTcs();
+  if(reportsSelected==='dataIntegrity') return reportDataIntegrity();
   return reportsLanding();
 }
 function reportsLanding(){
@@ -12192,6 +12381,8 @@ function reportsLanding(){
     {id:'cashFlow', icon:'💧', title:'Cash Flow Statement', desc:'Detailed, direct-method operating, investing and financing cash flows.'},
     {id:'costCenterPL', icon:'🏷️', title:'Cost Center P&L', desc:'Income and expense broken down by the cost centers/dimensions you tag on vouchers.'},
     {id:'budgetVsActual', icon:'🎯', title:'Budget vs Actual', desc:'Every ledger budget you\'ve set, compared against what actually posted this financial year.'},
+    {id:'tdsTcs', icon:'🧾', title:'TDS / TCS Summary', desc:'Every tax deducted or collected at source via the voucher form, by section.'},
+    {id:'dataIntegrity', icon:'🔍', title:'Data Integrity Checker', desc:'Scans your ledgers, vouchers and cross-references for unbalanced entries, orphaned references and duplicate names.'},
   ];
   return `
     ${masthead('Reports','Choose a report to view in detail and download it individually')}
@@ -12766,6 +12957,150 @@ function reportBudgetVsActual(){
       </table>` : `<div class="empty">No budgets set for FY ${budgetReportFY} yet. Add one on the Accounts tab under Budgets.</div>`}
     </div></div>
     <p class="muted" style="font-size:11px;">For Income ledgers, a positive variance (actual above budget) is favourable; for Expense ledgers, a negative variance (actual below budget) is favourable — shown in green either way. Actuals are computed within FY ${budgetReportFY}'s date range only.</p>
+  `;
+}
+
+// Every TDS/TCS split recorded via the voucher form's TDS/TCS panel (see taxDeductionPanel() and the
+// saveVoucher handler) — most recent first, with running totals by kind.
+function tdsTcsSummaryData(){
+  const rows = state.taxDeductions.slice().sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  const totalsByKind = { TDS: 0, TCS: 0 };
+  for(const r of rows) totalsByKind[r.kind] = r2((totalsByKind[r.kind]||0) + (Number(r.taxAmount)||0));
+  return { rows, totalsByKind };
+}
+function reportTdsTcs(){
+  const { rows, totalsByKind } = tdsTcsSummaryData();
+  return `
+    ${reportHeader('TDS / TCS Summary')}
+    <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:14px;">
+      <div class="panel" style="flex:1;min-width:180px;margin-bottom:0;"><div class="panel-body">
+        <div class="muted" style="font-size:11px;">Total TDS Withheld</div>
+        <div style="font-size:20px;font-weight:800;color:var(--ink);">₹${fmt(totalsByKind.TDS||0)}</div>
+        <div class="muted" style="font-size:10.5px;margin-top:2px;">Posted to your TDS Payable ledger</div>
+      </div></div>
+      <div class="panel" style="flex:1;min-width:180px;margin-bottom:0;"><div class="panel-body">
+        <div class="muted" style="font-size:11px;">Total TCS Collected</div>
+        <div style="font-size:20px;font-weight:800;color:var(--ink);">₹${fmt(totalsByKind.TCS||0)}</div>
+        <div class="muted" style="font-size:10.5px;margin-top:2px;">Posted to your TCS Payable ledger</div>
+      </div></div>
+    </div>
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      ${rows.length ? `<table>
+        <tr><th>Date</th><th>Type</th><th>Section</th><th class="num">Rate</th><th class="num">Base Amount</th><th class="num">Tax Amount</th><th>Party</th></tr>
+        ${rows.map(r=>{
+          const l = ledgerOf(r.partyLedgerId);
+          return `<tr>
+            <td>${r.date}</td>
+            <td>${r.kind}</td>
+            <td>${escapeHtml(r.sectionLabel||r.sectionCode||'')}</td>
+            <td class="num">${r.rate}%</td>
+            <td class="num">₹${fmt(r.baseAmount)}</td>
+            <td class="num">₹${fmt(r.taxAmount)}</td>
+            <td>${l?escapeHtml(l.name):'—'}</td>
+          </tr>`;
+        }).join('')}
+      </table>` : `<div class="empty">No TDS/TCS applied yet — switch a Payment or Receipt voucher to Single Entry and turn on the TDS/TCS panel to start tracking it here.</div>`}
+    </div></div>
+    <p class="muted" style="font-size:11px;">Pay these amounts to the government within the statutory due date for each section, then record that payment as its own voucher against the TDS/TCS Payable ledger — this report doesn't track filing/challan status.</p>
+  `;
+}
+
+// Scans the in-memory data for cross-reference and balance problems that the UI itself shouldn't be
+// able to produce, but a bad import/restore or a very old backup could. Errors are things that would
+// likely throw off a report or a balance; warnings are worth a look but not necessarily wrong.
+function dataIntegrityChecks(){
+  const findings = [];
+  const ledgerIds = new Set(state.ledgers.map(l=>l.id));
+  const costCenterIds = new Set(state.costCenters.map(c=>c.id));
+
+  for(const v of state.vouchers){
+    const dr = v.entries.reduce((s,e)=>s+(Number(e.dr)||0),0);
+    const cr = v.entries.reduce((s,e)=>s+(Number(e.cr)||0),0);
+    if(Math.abs(dr-cr) >= 0.01){
+      findings.push({ severity:'error', category:'Unbalanced Voucher',
+        message:`${v.type} voucher dated ${v.date} — Dr ₹${fmt(dr)} vs Cr ₹${fmt(cr)}, off by ₹${fmt(Math.abs(dr-cr))}` });
+    }
+    for(const e of v.entries){
+      if(!e.ledgerId || !ledgerIds.has(e.ledgerId)){
+        findings.push({ severity:'error', category:'Orphaned Ledger Reference',
+          message:`${v.type} voucher dated ${v.date} has an entry pointing to a ledger that no longer exists` });
+      }
+    }
+    if(v.costCenterId && !costCenterIds.has(v.costCenterId)){
+      findings.push({ severity:'warning', category:'Orphaned Cost Center Reference',
+        message:`${v.type} voucher dated ${v.date} is tagged with a cost center that no longer exists` });
+    }
+  }
+
+  const nameMap = {};
+  for(const l of state.ledgers){
+    const key = (l.name||'').trim().toLowerCase();
+    if(!key) continue;
+    (nameMap[key] = nameMap[key]||[]).push(l);
+  }
+  for(const key in nameMap){
+    if(nameMap[key].length > 1){
+      findings.push({ severity:'warning', category:'Duplicate Ledger Name',
+        message:`${nameMap[key].length} ledgers are all named "${nameMap[key][0].name}" — postings could end up split across them by mistake` });
+    }
+  }
+
+  for(const b of state.budgets){
+    if(b.ledgerId && !ledgerIds.has(b.ledgerId)){
+      findings.push({ severity:'warning', category:'Orphaned Budget', message:`A budget for FY ${b.fy} points to a ledger that no longer exists` });
+    }
+  }
+  for(const a of state.fixedAssets){
+    if(a.ledgerId && !ledgerIds.has(a.ledgerId)){
+      findings.push({ severity:'warning', category:'Orphaned Fixed Asset', message:`Fixed asset "${a.name}" points to a ledger that no longer exists` });
+    }
+  }
+  for(const emp of state.employees){
+    if(emp.ledgerId && !ledgerIds.has(emp.ledgerId)){
+      findings.push({ severity:'warning', category:'Orphaned Employee Ledger', message:`Employee "${emp.name}" points to a ledger that no longer exists` });
+    }
+  }
+  const voucherIds = new Set(state.vouchers.map(v=>v.id));
+  for(const t of state.taxDeductions){
+    if(!voucherIds.has(t.voucherId)){
+      findings.push({ severity:'warning', category:'Orphaned TDS/TCS Record', message:`A ${t.kind} record dated ${t.date} points to a voucher that no longer exists` });
+    } else if(t.taxLedgerId && !ledgerIds.has(t.taxLedgerId)){
+      findings.push({ severity:'warning', category:'Orphaned TDS/TCS Record', message:`A ${t.kind} record dated ${t.date} points to a Payable ledger that no longer exists` });
+    }
+  }
+
+  return findings;
+}
+function reportDataIntegrity(){
+  const findings = dataIntegrityChecks();
+  const errors = findings.filter(f=>f.severity==='error');
+  const warnings = findings.filter(f=>f.severity==='warning');
+  return `
+    ${reportHeader('Data Integrity Checker')}
+    <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:14px;">
+      <div class="panel" style="flex:1;min-width:180px;margin-bottom:0;"><div class="panel-body">
+        <div class="muted" style="font-size:11px;">Errors</div>
+        <div style="font-size:20px;font-weight:800;color:${errors.length?'var(--debit)':'var(--ink)'};">${errors.length}</div>
+        <div class="muted" style="font-size:10.5px;margin-top:2px;">Things that likely broke a report or balance</div>
+      </div></div>
+      <div class="panel" style="flex:1;min-width:180px;margin-bottom:0;"><div class="panel-body">
+        <div class="muted" style="font-size:11px;">Warnings</div>
+        <div style="font-size:20px;font-weight:800;color:${warnings.length?'var(--gold)':'var(--ink)'};">${warnings.length}</div>
+        <div class="muted" style="font-size:10.5px;margin-top:2px;">Worth a look, not necessarily wrong</div>
+      </div></div>
+    </div>
+    ${findings.length===0 ? `<div class="panel"><div class="panel-body"><div class="empty">✓ No issues found — ledgers, vouchers and cross-references all check out.</div></div></div>` : `
+    <div class="panel"><div class="panel-body" style="padding:0;">
+      <table>
+        <tr><th>Severity</th><th>Category</th><th>Details</th></tr>
+        ${findings.map(f=>`<tr>
+          <td><span class="pill${f.severity==='error'?' neg':''}"${f.severity==='warning'?' style="background:var(--border);color:var(--ink-faint);"':''}>${f.severity==='error'?'Error':'Warning'}</span></td>
+          <td>${escapeHtml(f.category)}</td>
+          <td>${escapeHtml(f.message)}</td>
+        </tr>`).join('')}
+      </table>
+    </div></div>`}
+    <p class="muted" style="font-size:11px;">Checked ${state.vouchers.length} vouchers, ${state.ledgers.length} ledgers, ${state.budgets.length} budgets, ${state.fixedAssets.length} fixed assets, ${state.employees.length} employees and ${state.taxDeductions.length} TDS/TCS records. This scan only catches cross-reference and balance problems — it can't tell you if an amount is simply wrong.</p>
   `;
 }
 
@@ -13815,6 +14150,10 @@ function attachHandlers(){
       if(!ok) return;
       state.vouchers = state.vouchers.filter(x=>x.id!==id);
       await saveVouchers();
+      if(state.taxDeductions.some(t=>t.voucherId===id)){
+        state.taxDeductions = state.taxDeductions.filter(t=>t.voucherId!==id);
+        await saveTaxDeductions();
+      }
       toast('Voucher deleted');
       render();
     });
@@ -13891,7 +14230,11 @@ function attachHandlers(){
 
   if(view==='voucher'){
     document.querySelectorAll('[data-vtype]').forEach(b=>{
-      b.addEventListener('click',()=>{ vform.type = b.dataset.vtype; render(); });
+      b.addEventListener('click',()=>{
+        vform.type = b.dataset.vtype;
+        vform.tax = { enabled:false, sectionCode:'', rate:'' }; // TDS/TCS sections are type-specific — start fresh on a type switch
+        render();
+      });
     });
     document.getElementById('vdate').addEventListener('input', e=> vform.date = e.target.value);
     document.getElementById('vnarr').addEventListener('input', e=> vform.narration = e.target.value);
@@ -13910,6 +14253,26 @@ function attachHandlers(){
     document.getElementById('singleA')?.addEventListener('focus', ()=>{ quickLedgerFocus = {type:'single', which:'A'}; });
     document.getElementById('singleB')?.addEventListener('focus', ()=>{ quickLedgerFocus = {type:'single', which:'B'}; });
     document.getElementById('singleAmount')?.addEventListener('input', e=>{ vform.single.amount = e.target.value; updateSingleEntryPreview(); });
+    document.getElementById('taxEnabled')?.addEventListener('change', e=>{
+      vform.tax.enabled = e.target.checked;
+      if(vform.tax.enabled && !vform.tax.sectionCode){
+        const kind = vform.type==='Payment' ? 'TDS' : 'TCS';
+        const first = TDS_TCS_SECTIONS.find(x=>x.kind===kind);
+        if(first){ vform.tax.sectionCode = first.code; vform.tax.rate = first.rate; }
+      }
+      render();
+    });
+    document.getElementById('taxSection')?.addEventListener('change', e=>{
+      vform.tax.sectionCode = e.target.value;
+      const meta = TDS_TCS_SECTIONS.find(x=>x.code===e.target.value);
+      if(meta) vform.tax.rate = meta.rate;
+      render();
+    });
+    document.getElementById('taxRate')?.addEventListener('input', e=>{
+      vform.tax.rate = e.target.value;
+      const el = document.getElementById('taxPreview');
+      if(el) el.textContent = taxPreviewText();
+    });
     document.getElementById('quickAddLedgerBtn')?.addEventListener('click', ()=>{
       const inSingleMode = !!document.getElementById('singleA');
       if(inSingleMode){
@@ -14092,6 +14455,40 @@ function attachHandlers(){
         entries = vform.entries.filter(e=>e.ledgerId && (e.dr||e.cr));
         if(entries.length<2){ toast('Add at least two ledger entries'); return; }
       }
+      // TDS (Payment) / TCS (Receipt): re-split the two-line single entry above into three lines —
+      // see taxDeductionPanel()'s comment and the TDS_TCS accounting design note. Only offered (and
+      // only ever applied) in Single Entry mode, so this never touches a Double Entry save.
+      let pendingTaxRecord = null;
+      if(effectiveMode==='single' && ['Payment','Receipt'].includes(vform.type) && vform.tax.enabled){
+        const kind = vform.type==='Payment' ? 'TDS' : 'TCS';
+        const rate = Number(vform.tax.rate)||0;
+        const sectionMeta = TDS_TCS_SECTIONS.find(x=>x.code===vform.tax.sectionCode);
+        if(!sectionMeta || rate<=0){ toast('Choose a TDS/TCS section and a rate above zero, or turn TDS/TCS off'); return; }
+        const s = vform.single;
+        const base = Number(s.amount)||0;
+        const taxAmt = r2(base*rate/100);
+        if(taxAmt<=0){ toast('That TDS/TCS rate comes to ₹0 on this amount — check the rate'); return; }
+        const taxLedgerId = ensureTaxLedger(kind);
+        if(kind==='TDS'){
+          // Dr payee (full base) -> Cr Cash/Bank (base − tax) + Cr TDS Payable (tax)
+          entries = [
+            {ledgerId:s.ledgerB, dr:base, cr:0},
+            {ledgerId:s.ledgerA, dr:0, cr:r2(base-taxAmt)},
+            {ledgerId:taxLedgerId, dr:0, cr:taxAmt},
+          ];
+        } else {
+          // Dr Cash/Bank (base + tax) -> Cr customer (base) + Cr TCS Payable (tax)
+          entries = [
+            {ledgerId:s.ledgerA, dr:r2(base+taxAmt), cr:0},
+            {ledgerId:s.ledgerB, dr:0, cr:base},
+            {ledgerId:taxLedgerId, dr:0, cr:taxAmt},
+          ];
+        }
+        pendingTaxRecord = {
+          kind, sectionCode: sectionMeta.code, sectionLabel: sectionMeta.label, rate,
+          baseAmount: base, taxAmount: taxAmt, partyLedgerId: s.ledgerB, taxLedgerId,
+        };
+      }
       if(currentCompany.lockDate && vform.date <= currentCompany.lockDate){
         toast(`Vouchers dated on or before ${currentCompany.lockDate} are locked. Change the date, or clear the lock from Edit Company.`);
         return;
@@ -14106,12 +14503,17 @@ function attachHandlers(){
       if(vform.currency && vform.currency!=='inr' && fx>0){
         foreignTotal = entries.reduce((s,e)=>s+(Number(e.dr)||0),0);
         entries = entries.map(e=>({ ledgerId:e.ledgerId, dr:r2((Number(e.dr)||0)*fx), cr:r2((Number(e.cr)||0)*fx) }));
+        if(pendingTaxRecord){
+          pendingTaxRecord.baseAmount = r2(pendingTaxRecord.baseAmount*fx);
+          pendingTaxRecord.taxAmount = r2(pendingTaxRecord.taxAmount*fx);
+        }
       }
       const creditWarning = creditLimitWarningFor(vform.type, entries, vform.id);
       if(creditWarning && !confirm(creditWarning + '\n\nSave anyway?')) return;
       const appliedItems = (vform.appliedItems && vform.appliedItems.length)
         ? (foreignTotal!=null ? vform.appliedItems.map(it=>({...it, rate:r2((Number(it.rate)||0)*fx)})) : vform.appliedItems)
         : null;
+      let savedVoucherId = vform.id || null;
       if(vform.id){
         const idx = state.vouchers.findIndex(v=>v.id===vform.id);
         if(idx>-1){
@@ -14130,6 +14532,7 @@ function attachHandlers(){
         if(foreignTotal!=null){ v.currency = vform.currency; v.fxRate = fx; v.foreignAmount = foreignTotal; }
         if(vform.costCenterId) v.costCenterId = vform.costCenterId;
         state.vouchers.push(v);
+        savedVoucherId = v.id;
         await saveVouchers();
         toast('Voucher saved');
         if(pendingConvertDoc){
@@ -14138,6 +14541,12 @@ function attachHandlers(){
           if(doc){ doc.status = 'converted'; doc.convertedVoucherId = v.id; await meta.save(); }
           pendingConvertDoc = null;
         }
+      }
+      if(pendingTaxRecord && savedVoucherId){
+        state.taxDeductions.push({
+          id: uid('td'), voucherId: savedVoucherId, date: vform.date, ...pendingTaxRecord,
+        });
+        await saveTaxDeductions();
       }
       vform = null;
       view = 'daybook';
@@ -14628,6 +15037,8 @@ function updateItemsTotals(){
 function updateSingleEntryPreview(){
   const el = document.getElementById('singlePreview');
   if(el) el.textContent = singleEntryPreviewText();
+  const taxEl = document.getElementById('taxPreview');
+  if(taxEl) taxEl.textContent = taxPreviewText();
   const s = vform.single;
   const amt = Number(s.amount)||0;
   const ok = !!(s.ledgerA && s.ledgerB && amt>0 && s.ledgerA!==s.ledgerB);
