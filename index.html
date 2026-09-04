@@ -1576,6 +1576,7 @@ let readOnlySnapshot = null; // pristine deep copy of `state` taken the moment a
 /* ---- Admin Panel additions: Analytics, Support, Settings (feature flags, error log, export) ---- */
 let supportTickets = [];        // cache of support tickets, loaded when the Support tab opens
 let ticketStatusFilter = 'all'; // 'all' | 'open' | 'in_progress' | 'resolved' — Support tab filter
+let ticketEscalatedOnly = false; // Support tab checkbox — show only tickets a Support (group admin) user escalated up
 let editingTicketId = null;     // id of the ticket row currently showing its admin-note editor
 let ticketNoteDraft = '';
 let contactSupportOpen = false; // whether the "Contact Support" mini-form is expanded inside the Help modal
@@ -1609,6 +1610,10 @@ let adminAuditRangeDays = 'all'; // 'all' | 1 | 7 | 30 — date-range filter on 
    menu tab (visible only to role==='support'), fully separate from the full Admin Panel's
    adminTab / modal==='adminPanel' state above — a support user never reaches that modal at all. */
 let groupAdminTab = 'overview';   // 'overview' | 'users' | 'support' | 'settings' | 'audit' — which tab the Group Admin modal shows
+let groupUserSearch = '';         // search box text on the Group Admin Users tab (matches name/username/email/mobile)
+let groupSelectedUserIds = {};    // uid -> true, for the Group Admin Users tab's bulk-action checkboxes (block/unblock only -- delete stays full-Admin-only)
+let groupAuditSearch = '';        // search box text on the Group Admin Audit tab (matches actor/action/target/detail)
+let groupAuditRangeDays = 'all';  // 'all' | 1 | 7 | 30 — date-range filter on the Group Admin Audit tab
 let groupMembers = [];            // cache: users where groupOwnerId === currentUser.id
 let groupCompanies = [];          // cache: companies owned by any group member (for read-only viewing + stats)
 let groupTickets = [];            // cache: support tickets raised by group members
@@ -1979,6 +1984,39 @@ async function loadGroupAdminData(){
   }catch(err){ groupAuditLog = []; }
   groupNameDraft = currentUser.groupName || '';
 }
+// Search (name/username/email/mobile) for the Group Admin Users tab — mirrors adminFilteredSortedUsers()
+// but scoped to groupMembers (already loaded/scoped by loadGroupAdminData()) and with no sort, since
+// the Group Admin Users table has never had a sort control.
+function groupFilteredUsers(){
+  const q = groupUserSearch.trim().toLowerCase();
+  if(!q) return groupMembers;
+  return groupMembers.filter(u=>
+    (u.name||'').toLowerCase().includes(q) ||
+    (u.username||'').toLowerCase().includes(q) ||
+    (u.email||'').toLowerCase().includes(q) ||
+    (u.mobile||'').toLowerCase().includes(q)
+  );
+}
+// Search + date-range filter for the Group Admin Audit tab — mirrors adminFilteredAuditLog() exactly,
+// over whatever loadGroupAdminData() already cached in groupAuditLog (last 200 events involving this
+// Support user or their group).
+function groupFilteredAuditLog(){
+  let list = groupAuditLog;
+  if(groupAuditRangeDays!=='all'){
+    const cutoff = Date.now() - Number(groupAuditRangeDays)*24*60*60*1000;
+    list = list.filter(e=>{ const t = e.at ? new Date(e.at).getTime() : NaN; return !isNaN(t) && t>=cutoff; });
+  }
+  const q = groupAuditSearch.trim().toLowerCase();
+  if(q){
+    list = list.filter(e=>
+      (e.actorName||'').toLowerCase().includes(q) ||
+      (e.action||'').toLowerCase().includes(q) ||
+      (e.targetName||'').toLowerCase().includes(q) ||
+      (e.detail||'').toLowerCase().includes(q)
+    );
+  }
+  return list;
+}
 function computeGroupAdminStats(){
   const totalCompanies = groupCompanies.length;
   const blocked = groupMembers.filter(u=>u.blocked).length;
@@ -2131,6 +2169,21 @@ function wireContactSupportHandlers(rerender){
     rerender();
   });
 }
+// "Request more seats" — a Support (group admin) user files this as a regular support ticket, using
+// their OWN uid as userId (which submitSupportTicket() already does via currentUser), so it needs no
+// schema or Firestore-rules change: the existing "allow create: userId == request.auth.uid" rule
+// already covers a Support account creating a ticket about itself, and it shows up automatically in
+// the full Admin's existing (unscoped) Support tab, distinguishable by its subject.
+async function submitSeatIncreaseRequest(){
+  if(!currentUser) return;
+  const stats = computeGroupAdminStats();
+  const requestedLimit = stats.limit + 10;
+  const subject = 'Seat limit increase request';
+  const message = `${currentUser.name} (@${currentUser.username})${currentUser.groupName?` — group "${currentUser.groupName}"`:''} `+
+    `is requesting a higher user limit. Currently at ${stats.totalUsers} of ${stats.limit} users used. `+
+    `Requesting an increase to ${requestedLimit} (adjust as needed from this ticket, then raise the limit from Users > this account's Details).`;
+  await submitSupportTicket(subject, message);
+}
 async function submitSupportTicket(subject, message){
   const id = 't_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
   await db.collection('supportTickets').doc(id).set({
@@ -2157,13 +2210,18 @@ async function loadFeatureFlags(){
   }catch(e){ featureFlags = { inventoryRequiresPaid:false, importRequiresPaid:false, reconcileRequiresPaid:false }; }
   featureFlagsDraft = { ...featureFlags };
 }
-function userEntitled(){
+function userEntitled(featureKey){
   // Whether the current user's plan clears a "requires paid" feature flag. Admins/support always
   // pass. Reads plan/planExpiry straight off currentUser (set at login) rather than the `users`
   // cache, since that cache is only populated while the Admin Panel is open — a regular user's
   // session never loads it.
+  // A per-user featureOverrides flag (set by a full Administrator on the Users tab's per-user
+  // drill-down) grants a single gated feature regardless of plan -- e.g. a beta tester or pilot
+  // account -- without changing that user's plan for everything else. Checked before the plan
+  // fallback so an override always wins.
   if(!currentUser) return false;
   if(currentUser.isAdmin) return true;
+  if(featureKey && currentUser.featureOverrides && currentUser.featureOverrides[featureKey]) return true;
   const label = planLabel(currentUser);
   return label==='Paid' || label==='Lifetime';
 }
@@ -4940,7 +4998,7 @@ function tab(id,label,shortcutLetter){
   const labelHtml = idx>=0
     ? `${escapeHtml(label.slice(0,idx))}<b>${escapeHtml(label[idx])}</b>${escapeHtml(label.slice(idx+1))}`
     : escapeHtml(label);
-  const gated = ((id==='inventory' && featureFlags.inventoryRequiresPaid) || (id==='reconcile' && featureFlags.reconcileRequiresPaid)) && !userEntitled();
+  const gated = ((id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled('inventory')) || (id==='reconcile' && featureFlags.reconcileRequiresPaid && !userEntitled('reconcile')));
   return `<button class="navtab ${view===id?'active':''}" data-tab="${id}" title="${gated?'Paid-plan feature':'Shortcut: '+(shortcutLetter||'')}">${tabIcon(id)}<span>${labelHtml}${gated?' 🔒':''}</span></button>`;
 }
 /* Keyboard shortcuts (plain letter keys, no modifiers) for jumping straight to a section —
@@ -4949,11 +5007,11 @@ function tab(id,label,shortcutLetter){
 const TAB_SHORTCUTS = { d:'dashboard', v:'voucher', b:'daybook', c:'calendar', l:'ledgers', a:'coa', i:'inventory', r:'reports', g:'gst', e:'reconcile', s:'assets', p:'parties' };
 function goToTab(id){
   if(!id || view===id) return;
-  if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled()){
+  if(id==='inventory' && featureFlags.inventoryRequiresPaid && !userEntitled('inventory')){
     toast('Inventory is a Paid-plan feature — contact the administrator to upgrade.');
     return;
   }
-  if(id==='reconcile' && featureFlags.reconcileRequiresPaid && !userEntitled()){
+  if(id==='reconcile' && featureFlags.reconcileRequiresPaid && !userEntitled('reconcile')){
     toast('Reconcile is a Paid-plan feature — contact the administrator to upgrade.');
     return;
   }
@@ -7115,6 +7173,41 @@ function renderGateway(){
         btn.disabled = false;
       }
     });
+    document.getElementById('saveFeatureOverridesBtn')?.addEventListener('click', async ()=>{
+      if(!isFullAdmin()) return;
+      const uid = adminUserDetailId;
+      const u = users.find(x=>x.id===uid);
+      if(!u) return;
+      const overrides = {
+        inventory: !!document.getElementById('overrideInventory')?.checked,
+        import: !!document.getElementById('overrideImport')?.checked,
+        reconcile: !!document.getElementById('overrideReconcile')?.checked,
+      };
+      const btn = document.getElementById('saveFeatureOverridesBtn');
+      btn.disabled = true;
+      try{
+        await db.collection('users').doc(uid).set({ featureOverrides: overrides }, {merge:true});
+        u.featureOverrides = overrides;
+        if(currentUser && currentUser.id===uid) currentUser.featureOverrides = overrides;
+        const granted = Object.keys(overrides).filter(k=>overrides[k]);
+        await logAudit('feature_override_updated', granted.length ? `Granted: ${granted.join(', ')}` : 'Cleared all overrides', uid, u.name);
+        toast('Feature overrides saved');
+        renderGateway();
+      }catch(err){
+        console.error('Save feature overrides failed:', err);
+        toast('Could not save feature overrides — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+      }
+    });
+    document.querySelectorAll('[data-view-company-from-detail]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const cid = el.dataset.viewCompanyFromDetail;
+        const c = companies.find(x=>x.id===cid);
+        if(!c) return;
+        await logAudit('company_viewed', `Opened "${c.name}" in read-only View mode (from user detail)`, cid, c.name);
+        await enterCompanyApp(c, {adminViewOnly:true});
+      });
+    });
   }
   if(modal==='adminPanel' && adminAddUserOpen){
     const closeAddUser = ()=>{ adminAddUserOpen = false; adminAddUserError = ''; renderGateway(); };
@@ -7262,6 +7355,10 @@ function renderGateway(){
       ticketStatusFilter = e.target.value;
       renderGateway();
     });
+    document.getElementById('ticketEscalatedOnlyCheckbox')?.addEventListener('change', (e)=>{
+      ticketEscalatedOnly = e.target.checked;
+      renderGateway();
+    });
     document.querySelectorAll('[data-ticket-status]').forEach(el=>{
       el.addEventListener('change', async ()=>{
         const tid = el.dataset.ticketStatus;
@@ -7391,12 +7488,77 @@ function renderGateway(){
     document.querySelectorAll('[data-group-admin-tab]').forEach(el=>{
       el.addEventListener('click', ()=>{
         groupAdminTab = el.dataset.groupAdminTab;
-        editingUserId = null; groupEditingTicketId = null; groupUserDetailId = null;
+        editingUserId = null; groupEditingTicketId = null; groupUserDetailId = null; groupSelectedUserIds = {};
         renderGateway();
       });
     });
   }
   if(modal==='groupAdmin' && groupAdminTab==='users'){
+    document.getElementById('groupUserSearchInput')?.addEventListener('input', (e)=>{
+      groupUserSearch = e.target.value;
+      const caret = e.target.selectionStart;
+      renderGateway();
+      const el = document.getElementById('groupUserSearchInput');
+      if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
+    document.getElementById('selectAllGroupUsersCheckbox')?.addEventListener('change', (e)=>{
+      const list = groupFilteredUsers();
+      if(e.target.checked){ list.forEach(u=>{ groupSelectedUserIds[u.id] = true; }); }
+      else { list.forEach(u=>{ delete groupSelectedUserIds[u.id]; }); }
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-select-user]').forEach(el=>{
+      el.addEventListener('change', (e)=>{
+        const uid = el.dataset.groupSelectUser;
+        if(e.target.checked) groupSelectedUserIds[uid] = true; else delete groupSelectedUserIds[uid];
+        renderGateway();
+      });
+    });
+    document.getElementById('clearGroupSelectionBtn')?.addEventListener('click', ()=>{
+      groupSelectedUserIds = {};
+      renderGateway();
+    });
+    document.querySelectorAll('[data-group-bulk-status]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const nextBlocked = el.dataset.groupBulkStatus === 'blocked';
+        const uids = Object.keys(groupSelectedUserIds).filter(id=>groupSelectedUserIds[id]);
+        if(!uids.length) return;
+        const ok = window.confirm(`${nextBlocked?'Block':'Unblock'} ${uids.length} account${uids.length===1?'':'s'}?`);
+        if(!ok) return;
+        el.disabled = true;
+        try{
+          for(const uid of uids){
+            await db.collection('users').doc(uid).set({ blocked: nextBlocked }, {merge:true});
+            const u = groupMembers.find(x=>x.id===uid);
+            if(u) u.blocked = nextBlocked;
+            await logAudit(nextBlocked?'account_blocked':'account_unblocked', 'Bulk action', uid, u?u.name:uid);
+          }
+          groupSelectedUserIds = {};
+          toast(`${uids.length} account${uids.length===1?'':'s'} ${nextBlocked?'blocked':'unblocked'}`);
+          renderGateway();
+        }catch(err){
+          console.error('Bulk status update failed:', err);
+          toast('Could not update those accounts — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
+    document.getElementById('requestMoreSeatsBtn')?.addEventListener('click', async (e)=>{
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Sending…';
+      try{
+        await submitSeatIncreaseRequest();
+        toast('Request sent to the Administrators');
+        btn.textContent = 'Request Sent';
+      }catch(err){
+        console.error('Seat increase request failed:', err);
+        toast('Could not send that request — ' + (err && (err.code || err.message) || 'unknown error'));
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
     document.getElementById('openGroupAddUserBtn')?.addEventListener('click', ()=>{
       const limit = (currentUser && currentUser.groupUserLimit) || 10;
       if(groupMembers.length >= limit) return; // belt-and-braces — the button is disabled at the cap already
@@ -7625,6 +7787,30 @@ function renderGateway(){
         }
       });
     });
+    document.querySelectorAll('[data-group-escalate-ticket]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const tid = el.dataset.groupEscalateTicket;
+        const t = groupTickets.find(x=>x.id===tid);
+        if(!t) return;
+        el.disabled = true;
+        try{
+          const now = new Date().toISOString();
+          await db.collection('supportTickets').doc(tid).set({
+            escalated: true, escalatedAt: now, escalatedBy: currentUser ? currentUser.name : null,
+            status: 'open', updatedAt: now, seenByUser: false,
+          }, {merge:true});
+          t.escalated = true; t.escalatedAt = now; t.escalatedBy = currentUser ? currentUser.name : null;
+          t.status = 'open'; t.seenByUser = false;
+          await logAudit('ticket_escalated', `Escalated ticket "${t.subject}" to a full Administrator`, t.userId, t.userName);
+          toast('Ticket escalated to a full Administrator');
+          renderGateway();
+        }catch(err){
+          console.error('Escalate ticket failed:', err);
+          toast('Could not escalate that ticket — ' + (err && (err.code || err.message) || 'unknown error'));
+          el.disabled = false;
+        }
+      });
+    });
   }
   if(modal==='groupAdmin' && groupAdminTab==='settings'){
     document.getElementById('saveGroupNameBtn')?.addEventListener('click', async ()=>{
@@ -7666,6 +7852,20 @@ function renderGateway(){
         groupSettingsBusy = false;
         renderGateway();
       }
+    });
+  }
+  if(modal==='groupAdmin' && groupAdminTab==='audit'){
+    document.getElementById('groupAuditSearchInput')?.addEventListener('input', (e)=>{
+      groupAuditSearch = e.target.value;
+      const caret = e.target.selectionStart;
+      renderGateway();
+      const el = document.getElementById('groupAuditSearchInput');
+      if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(err){} }
+    });
+    document.getElementById('groupAuditRangeSelect')?.addEventListener('change', (e)=>{
+      const v = e.target.value;
+      groupAuditRangeDays = v==='all' ? 'all' : Number(v);
+      renderGateway();
     });
   }
 }
@@ -7784,7 +7984,13 @@ function adminAnalyticsTab(){
   `;
 }
 function adminSupportTab(){
-  const filtered = ticketStatusFilter==='all' ? supportTickets : supportTickets.filter(t=>t.status===ticketStatusFilter);
+  let filtered = ticketStatusFilter==='all' ? supportTickets : supportTickets.filter(t=>t.status===ticketStatusFilter);
+  if(ticketEscalatedOnly) filtered = filtered.filter(t=>t.escalated);
+  // Escalated tickets float to the top (within whatever status/date order they already have) so they
+  // can't get buried under everyday tickets — the whole point of escalating one is that it needs a
+  // full Administrator's eyes without having to hunt for it.
+  filtered = filtered.slice().sort((a,b)=> (b.escalated?1:0) - (a.escalated?1:0));
+  const escalatedCount = supportTickets.filter(t=>t.escalated).length;
   const statusPill = (s)=> s==='resolved' ? 'pos' : (s==='in_progress' ? '' : 'neg');
   const statusLabel = (s)=> s==='in_progress' ? 'In Progress' : (s==='resolved' ? 'Resolved' : 'Open');
   return `
@@ -7795,6 +8001,9 @@ function adminSupportTab(){
         <option value="in_progress" ${ticketStatusFilter==='in_progress'?'selected':''}>In Progress</option>
         <option value="resolved" ${ticketStatusFilter==='resolved'?'selected':''}>Resolved</option>
       </select>
+      <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;">
+        <input type="checkbox" id="ticketEscalatedOnlyCheckbox" style="width:auto;" ${ticketEscalatedOnly?'checked':''}> Escalated only${escalatedCount?` (${escalatedCount})`:''}
+      </label>
       <span class="muted" style="font-size:12px;">${filtered.length} of ${supportTickets.length} ticket${supportTickets.length===1?'':'s'}</span>
     </div>
     ${filtered.length ? `
@@ -7804,7 +8013,7 @@ function adminSupportTab(){
       ${filtered.map(t=>`<tr>
         <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(t.createdAt)}</td>
         <td>${escapeHtml(t.userName||'—')}${t.username?`<div class="muted" style="font-size:10px;">@${escapeHtml(t.username)}</div>`:''}</td>
-        <td>${escapeHtml(t.subject||'—')}</td>
+        <td>${escapeHtml(t.subject||'—')}${t.escalated?` <span class="pill neg" title="${t.escalatedBy?('Escalated by '+escapeAttr(t.escalatedBy)+(t.escalatedAt?(' · '+fmtTimestamp(t.escalatedAt)):'')):''}">Escalated</span>`:''}</td>
         <td class="muted" style="font-size:11.5px;max-width:260px;">${escapeHtml(t.message||'')}
           ${editingTicketId===t.id ? `
             <textarea data-ticket-note="${escapeAttr(t.id)}" rows="2" placeholder="Internal note (not sent to the user)" style="margin-top:6px;font-size:11px;">${escapeHtml(ticketNoteDraft)}</textarea>
@@ -8104,7 +8313,7 @@ function adminUserDetailModal(){
           <div class="section-title">Companies (${owned.length})</div>
           ${owned.length ? `
           <table>
-            <tr><th>Company</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th></tr>
+            <tr><th>Company</th><th class="num">Ledgers</th><th class="num">Vouchers</th><th>Last Activity</th><th></th></tr>
             ${owned.map(c=>{
               const lastActivity = companyLastActivity(c);
               return `<tr>
@@ -8112,6 +8321,7 @@ function adminUserDetailModal(){
                 <td class="num">${(c.ledgers||[]).length}</td>
                 <td class="num">${(c.vouchers||[]).length}</td>
                 <td class="muted" style="font-size:11px;">${lastActivity ? escapeHtml(lastActivity) : '—'}</td>
+                <td><button class="btn secondary small" data-view-company-from-detail="${escapeAttr(c.id)}" type="button">View</button></td>
               </tr>`;
             }).join('')}
           </table>
@@ -8124,6 +8334,18 @@ function adminUserDetailModal(){
             <button class="btn secondary small" id="saveGroupUserLimitBtn" type="button" ${isFullAdmin()?'':'disabled'}>Save Limit</button>
           </div>
           ` : ''}
+          <div class="section-title">Feature Overrides</div>
+          <p class="muted" style="font-size:12px;margin-top:0;">Grant this one account a gated feature regardless of their plan — for a pilot, a beta tester, or a one-off exception — without changing their plan for everything else.</p>
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:10px;">
+            <input type="checkbox" id="overrideInventory" style="width:auto;" ${u.featureOverrides&&u.featureOverrides.inventory?'checked':''} ${isFullAdmin()?'':'disabled'}> Grant <strong>Inventory</strong> regardless of plan
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
+            <input type="checkbox" id="overrideImport" style="width:auto;" ${u.featureOverrides&&u.featureOverrides.import?'checked':''} ${isFullAdmin()?'':'disabled'}> Grant <strong>Import Accounting Data</strong> regardless of plan
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12.5px;color:var(--ink);font-weight:500;margin-top:8px;">
+            <input type="checkbox" id="overrideReconcile" style="width:auto;" ${u.featureOverrides&&u.featureOverrides.reconcile?'checked':''} ${isFullAdmin()?'':'disabled'}> Grant <strong>Reconcile</strong> regardless of plan
+          </label>
+          <button class="btn secondary small" id="saveFeatureOverridesBtn" type="button" style="margin-top:10px;" ${isFullAdmin()?'':'disabled'}>Save Overrides</button>
         </div>
       </div>
     </div>
@@ -8314,18 +8536,34 @@ function groupAdminOverviewTab(){
 function groupAdminUsersTab(){
   const stats = computeGroupAdminStats();
   const atCap = stats.totalUsers >= stats.limit;
+  const list = groupFilteredUsers();
+  const selectedCount = Object.keys(groupSelectedUserIds).filter(id=>groupSelectedUserIds[id]).length;
+  const allVisibleSelected = list.length>0 && list.every(u=>groupSelectedUserIds[u.id]);
   return `
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-      <span class="muted" style="font-size:12px;">${stats.totalUsers} of ${stats.limit} user${stats.limit===1?'':'s'} used</span>
-      <button class="btn small" id="openGroupAddUserBtn" type="button" style="margin-left:auto;" ${atCap?'disabled':''} title="${atCap?'You have reached your user limit — ask an Administrator to raise it':''}">+ Add User</button>
+      <input type="text" id="groupUserSearchInput" placeholder="Search name, username, email or mobile…" value="${escapeAttr(groupUserSearch)}" style="max-width:280px;">
+      <span class="muted" style="font-size:12px;">${list.length} of ${stats.totalUsers} shown · ${stats.totalUsers} of ${stats.limit} used</span>
+      <button class="btn secondary small" id="requestMoreSeatsBtn" type="button" style="margin-left:auto;" ${atCap?'':'title="Ask an Administrator to raise your user limit"'}>Request More Seats</button>
+      <button class="btn small" id="openGroupAddUserBtn" type="button" ${atCap?'disabled':''} title="${atCap?'You have reached your user limit — ask an Administrator to raise it':''}">+ Add User</button>
     </div>
+    ${selectedCount ? `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface-strong);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;">
+      <strong style="font-size:12px;">${selectedCount} selected</strong>
+      <button class="btn secondary small" data-group-bulk-status="active" type="button">Unblock</button>
+      <button class="btn secondary small" data-group-bulk-status="blocked" type="button">Block</button>
+      <button class="btn secondary small" id="clearGroupSelectionBtn" type="button">Clear</button>
+    </div>
+    ` : ''}
     ${groupMembers.length ? `
     <div style="overflow-x:auto;">
     <table>
-      <tr><th>#</th><th>Account</th><th>Mobile</th><th>Email</th><th>Signed Up</th><th class="num">Companies</th><th>Status</th><th>Actions</th></tr>
-      ${groupMembers.map((u,i)=>{
+      <tr>
+        <th><input type="checkbox" id="selectAllGroupUsersCheckbox" ${allVisibleSelected?'checked':''}></th>
+        <th>#</th><th>Account</th><th>Mobile</th><th>Email</th><th>Signed Up</th><th class="num">Companies</th><th>Status</th><th>Actions</th></tr>
+      ${list.map((u,i)=>{
         const isEditing = editingUserId===u.id;
         return `<tr>
+          <td><input type="checkbox" data-group-select-user="${escapeAttr(u.id)}" ${groupSelectedUserIds[u.id]?'checked':''}></td>
           <td class="muted">${i+1}</td>
           <td>
             ${isEditing ? `<input type="text" data-edit-name="${escapeAttr(u.id)}" value="${escapeAttr(editUserDraft.name)}" style="margin-bottom:4px;">` : escapeHtml(u.name)}
@@ -8357,6 +8595,7 @@ function groupAdminUsersTab(){
     </table>
     </div>
     ` : `<div class="empty">You haven't created any users yet.</div>`}
+    ${groupMembers.length && !list.length ? `<div class="empty">No accounts match your search.</div>` : ''}
   `;
 }
 // Per-group-member drill-down — stacked above the Group Admin panel (groupUserDetailId, not `modal`,
@@ -8483,7 +8722,14 @@ function groupAdminSupportTab(){
             <option value="resolved" ${t.status==='resolved'?'selected':''}>Resolved</option>
           </select>
         </td>
-        <td>${groupEditingTicketId===t.id ? '' : `<button class="btn secondary small" data-group-edit-ticket-note="${escapeAttr(t.id)}" type="button">${t.adminNote?'Edit Note':'Add Note'}</button>`}</td>
+        <td>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;">
+            ${groupEditingTicketId===t.id ? '' : `<button class="btn secondary small" data-group-edit-ticket-note="${escapeAttr(t.id)}" type="button">${t.adminNote?'Edit Note':'Add Note'}</button>`}
+            ${t.escalated
+              ? `<span class="pill neg" title="${t.escalatedAt?('Escalated '+fmtTimestamp(t.escalatedAt)):''}">Escalated</span>`
+              : `<button class="btn secondary small" data-group-escalate-ticket="${escapeAttr(t.id)}" type="button" title="Hand this ticket to a full Administrator">Escalate to Admin</button>`}
+          </div>
+        </td>
       </tr>`).join('')}
     </table>
     </div>
@@ -8510,13 +8756,23 @@ function groupAdminSettingsTab(){
   `;
 }
 function groupAdminAuditTab(){
+  const filtered = groupFilteredAuditLog();
   return `
-    <p class="muted" style="font-size:12px;margin-top:0;">${groupAuditLog.length} event${groupAuditLog.length===1?'':'s'} involving you or your group, newest first.</p>
-    ${groupAuditLog.length ? `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="text" id="groupAuditSearchInput" placeholder="Search actor, action, target or detail…" value="${escapeAttr(groupAuditSearch)}" style="max-width:280px;">
+      <select id="groupAuditRangeSelect" style="max-width:160px;">
+        <option value="all" ${groupAuditRangeDays==='all'?'selected':''}>All time</option>
+        <option value="1" ${groupAuditRangeDays===1?'selected':''}>Last 24 hours</option>
+        <option value="7" ${groupAuditRangeDays===7?'selected':''}>Last 7 days</option>
+        <option value="30" ${groupAuditRangeDays===30?'selected':''}>Last 30 days</option>
+      </select>
+      <span class="muted" style="font-size:12px;">${filtered.length} of ${groupAuditLog.length} event${groupAuditLog.length===1?'':'s'} involving you or your group, newest first.</span>
+    </div>
+    ${filtered.length ? `
     <div style="overflow-x:auto;">
     <table>
       <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
-      ${groupAuditLog.map(e=>`<tr>
+      ${filtered.map(e=>`<tr>
         <td class="muted" style="font-size:11px;white-space:nowrap;">${fmtTimestamp(e.at)}</td>
         <td>${escapeHtml(e.actorName||'—')}</td>
         <td>${escapeHtml(e.action||'—')}</td>
@@ -8525,7 +8781,7 @@ function groupAdminAuditTab(){
       </tr>`).join('')}
     </table>
     </div>
-    ` : `<div class="empty">No activity recorded yet.</div>`}
+    ` : `<div class="empty">${(groupAuditSearch || groupAuditRangeDays!=='all') ? 'No events match your filters.' : 'No activity recorded yet.'}</div>`}
   `;
 }
 
@@ -11993,7 +12249,7 @@ function attachHandlers(){
       render();
     });
     document.getElementById('openImportBtn')?.addEventListener('click', ()=>{
-      if(featureFlags.importRequiresPaid && !userEntitled()){
+      if(featureFlags.importRequiresPaid && !userEntitled('import')){
         toast('Import is a Paid-plan feature — contact the administrator to upgrade.');
         return;
       }
